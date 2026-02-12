@@ -1,6 +1,6 @@
 use adw::prelude::AdwDialogExt;
 use gtk::prelude::GtkApplicationExt;
-use relm4::{adw, gtk, ComponentParts, ComponentSender, SimpleComponent};
+use relm4::{ComponentParts, ComponentSender, SimpleComponent, adw, gtk};
 
 use crate::config::{APP_ID, VERSION};
 
@@ -8,27 +8,23 @@ pub struct AboutDialog {}
 
 impl SimpleComponent for AboutDialog {
     type Init = ();
-    type Widgets = adw::AboutDialog;
+    type Root = adw::AboutDialog;
     type Input = ();
     type Output = ();
-    type Root = adw::AboutDialog;
+    type Widgets = adw::AboutDialog;
 
     fn init_root() -> Self::Root {
         adw::AboutDialog::builder()
+            .application_name("Papo")
             .application_icon(APP_ID)
-            // Insert your license of choice here
-            // .license_type(gtk::License::MitX11)
-            // Insert your website here
-            // .website("https://gitlab.gnome.org/bilelmoussaoui/papo/")
-            // Insert your Issues page
-            // .issue_url("https://gitlab.gnome.org/World/Rust/papo/-/issues")
-            // Insert your application name here
-            .application_name("Relm4-template")
+            .license_type(gtk::License::Apache20)
+            .website("https://github.com/AmanoTeam/Papo")
+            .issue_url("https://github.com/AmanoTeam/Papo/issues")
             .version(VERSION)
+            .copyright("© 2026 Andriel Ferreira")
+            .developers(["Andriel Ferreira"])
+            .designers(["Andriel Ferreira"])
             .translator_credits("translator-credits")
-            .copyright("© 2024 Andriel Ferreira")
-            .developers(vec!["Andriel Ferreira"])
-            .designers(vec!["Andriel Ferreira"])
             .build()
     }
 

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Andriel Ferreira 2026 <andrielfr@proton.me> -->
+<component type="desktop-application">
+  <id>@app-id@</id>
+  <metadata_license>CC0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Papo</name>
+  <summary>Chat on WhatsApp</summary>
+  <description>
+    <p>
+      Papo is a WhatsApp messaging app for GNOME written in Rust. Its interface will
+      fit all screens, big or small.
+    </p>
+  </description>
+
+  <url type="homepage">https://github.com/AmanoTeam/Papo</url>
+  <url type="bugtracker">https://github.com/AmanoTeam/Papo/issues</url>
+  <url type="translate">https://github.com/AmanoTeam/Papo/-/tree/master/po</url>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+    <internet>always</internet>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+
+  <content_rating type="oars-1.1">
+     <content_attribute id="social-chat">intense</content_attribute>
+     <content_attribute id="social-audio">intense</content_attribute>
+   </content_rating>
+
+  <developer id="com.amanoteam.papo">
+    <name translate="no">Andriel Ferreira</name>
+  </developer>
+  <update_contact>andrielfr@proton.me</update_contact>
+  <launchable type="desktop-id">@app-id@.desktop</launchable>
+  <translation type="gettext">@gettext-package@</translation>
+
+  <!--
+    Branding colors:
+    https://docs.flathub.org/docs/for-app-authors/metainfo-guidelines/#brand-color
+  -->
+  <branding>
+    <color type="primary" scheme_preference="light">#bdfbff</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <releases>
+    <release version="0.1.0" date="2026-02-12" />
+  </releases>
+</component>

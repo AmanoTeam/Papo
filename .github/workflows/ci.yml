@@ -33,5 +33,5 @@ jobs:
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: papo.flatpak
-          manifest-path: build-aux/com.amanoteam.papo.json
+          manifest-path: build-aux/com.amanoteam.Papo.json
           cache-key: flatpak-builder-${{ github.sha }}

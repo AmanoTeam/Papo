@@ -6,11 +6,11 @@ use relm4::prelude::*;
 pub struct ShortcutsDialog;
 
 impl SimpleComponent for ShortcutsDialog {
-    type Root = adw::ShortcutsDialog;
-    type Widgets = adw::ShortcutsDialog;
     type Init = ();
+    type Root = adw::ShortcutsDialog;
     type Input = ();
     type Output = ();
+    type Widgets = adw::ShortcutsDialog;
 
     fn init_root() -> Self::Root {
         adw::ShortcutsDialog::builder().build()
@@ -26,13 +26,12 @@ impl SimpleComponent for ShortcutsDialog {
 
         // Shortcuts section
         let section = adw::ShortcutsSection::new(None);
-
-        // Add more shortcuts items below or create new section
         section.add(adw::ShortcutsItem::new("Quit", "<Control>q"));
         // section.add(adw::ShortcutsItem::new("New Tab", "<Control>t"));
 
         widgets.add(section);
         widgets.present(Some(&relm4::main_adw_application().windows()[0]));
+
         ComponentParts { model, widgets }
     }
 }

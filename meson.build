@@ -3,17 +3,21 @@ project(
   'rust',
   version: '0.1.0',
   meson_version: '>= 0.59',
-  # license: 'MIT',
+  license: 'Apache-2.0',
 )
 
 i18n = import('i18n')
 gnome = import('gnome')
 
-base_id = 'com.amanoteam.papo'
+base_id = 'com.amanoteam.Papo'
+application_id = base_id
 
-dependency('glib-2.0', version: '>= 2.66')
-dependency('gio-2.0', version: '>= 2.66')
-dependency('gtk4', version: '>= 4.0.0')
+dependency('glib-2.0', version: '>= 2.82')
+dependency('gio-2.0', version: '>= 2.82')
+dependency('gtk4', version: '>= 4.20.2')
+dependency('libadwaita-1', version: '>= 1.8.0')
+
+# Please keep these dependencies sorted.
 
 find_program('glib-compile-resources')
 glib_compile_schemas = find_program('glib-compile-schemas')
@@ -35,30 +39,37 @@ gettext_package = meson.project_name()
 
 if get_option('profile') == 'development'
   profile = 'Devel'
+  application_id += '.Devel'
+elif get_option('profile') == 'beta'
+  profile = 'Beta'
+  version_suffix = '-beta'
+else
+  profile = 'Stable'
+  version_suffix = ''
+endif
+
+if profile == 'Devel'
   vcs_tag = run_command('git', 'rev-parse', '--short', 'HEAD', check: false).stdout().strip()
   if vcs_tag == ''
     version_suffix = '-devel'
   else
     version_suffix = '-@0@'.format(vcs_tag)
   endif
-  application_id = '@0@.@1@'.format(base_id, profile)
-else
-  profile = ''
-  version_suffix = ''
-  application_id = base_id
-endif
 
-meson.add_dist_script(
-  'build-aux/dist-vendor.sh',
-  meson.project_build_root() / 'meson-dist' / meson.project_name() + '-' + version,
-  meson.project_source_root()
-)
+  release_date = run_command('git', 'show', '-s', '--format=%cI', check: true).stdout().strip()
 
-if get_option('profile') == 'development'
   # Setup pre-commit hook for ensuring coding style is always consistent
   message('Setting up git pre-commit hook..')
   run_command('cp', '-f', 'hooks/pre-commit.hook', '.git/hooks/pre-commit', check: false)
 endif
+
+meson.add_dist_script(
+  'build-aux/dist-vendor.sh',
+  meson.project_build_root() / 'meson-dist' / meson.project_name()
+  + '-'
+  + version,
+  meson.project_source_root(),
+)
 
 subdir('data')
 subdir('po')

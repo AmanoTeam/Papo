@@ -4,10 +4,10 @@ mod app;
 mod modals;
 
 use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, RESOURCES_FILE};
-use gettextrs::{gettext, LocaleCategory};
+use gettextrs::{LocaleCategory, gettext};
 use gtk::prelude::ApplicationExt;
 use gtk::{gio, glib};
-use relm4::{gtk, main_application, RelmApp};
+use relm4::{RelmApp, gtk, main_application};
 
 use app::App;
 
@@ -15,15 +15,15 @@ relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
 
 fn main() {
-    gtk::init().unwrap();
+    adw::init().expect("Failed to init GTK/libadwaita");
 
-    // Enable logging
+    // enable logging
     tracing_subscriber::fmt()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    // setup gettext
+    // prepare i18n
     gettextrs::setlocale(LocaleCategory::LcAll, "");
     gettextrs::bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR).expect("Unable to bind the text domain");
     gettextrs::textdomain(GETTEXT_PACKAGE).expect("Unable to switch to the text domain");
@@ -36,13 +36,13 @@ fn main() {
     gtk::Window::set_default_icon_name(APP_ID);
 
     let app = main_application();
-    app.set_resource_base_path(Some("/com/amanoteam/papo/"));
+    app.set_resource_base_path(Some("/com/amanoteam/Papo/"));
 
     let app = RelmApp::from_app(app);
 
     let data = res
         .lookup_data(
-            "/com/amanoteam/papo/style.css",
+            "/com/amanoteam/Papo/style.css",
             gio::ResourceLookupFlags::NONE,
         )
         .unwrap();

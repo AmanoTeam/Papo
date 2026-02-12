@@ -1,6 +1,6 @@
-data/com.amanoteam.papo.desktop.in.in
-data/com.amanoteam.papo.gschema.xml.in
-data/com.amanoteam.papo.metainfo.xml.in.in
+data/com.amanoteam.Papo.desktop.in.in
+data/com.amanoteam.Papo.gschema.xml.in
+data/com.amanoteam.Papo.metainfo.xml.in.in
 data/resources/ui/shortcuts.ui
 src/app.rs
 src/main.rs
