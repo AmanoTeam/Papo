@@ -18,6 +18,11 @@ dependency('gtk4', version: '>= 4.20.2')
 dependency('libadwaita-1', version: '>= 1.8.0')
 
 # Please keep these dependencies sorted.
+dependency('glycin-2', version: '>= 2.0.0')
+dependency('glycin-gtk4-2', version: '>= 2.0.0')
+dependency('libwebp', version: '>= 1.0.0')
+dependency('openssl', version: '>= 3.0.0')
+dependency('sqlite3', version: '>= 3.24.0')
 
 find_program('glib-compile-resources')
 glib_compile_schemas = find_program('glib-compile-schemas')

@@ -1,6 +1,9 @@
-{ pkgs, ... }:
+{
+  pkgs,
+  rustToolchain,
+  ...
+}:
 let
-  # Manifest via Cargo.toml
   manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 in
 pkgs.stdenv.mkDerivation {
@@ -8,41 +11,32 @@ pkgs.stdenv.mkDerivation {
 
   # Compile time dependencies
   nativeBuildInputs = with pkgs; [
-    # Hail the Nix
-    nil
-    nixfmt
-    statix
-    deadnix
+    # Rust
+    rustToolchain
 
-    # Rust
-    rustc
-    cargo
-    clippy
-    rustfmt
-    cargo-watch
-    rust-analyzer
-
-    # Other compile time dependencies
-    openssl
-
-    # Gnome related
     gtk4
     meson
     ninja
     parted
+    sqlite
     gettext
+    libwebp
+    openssl
     appstream
     pkg-config
     gdk-pixbuf
+    grass-sass
     libadwaita
+    libglycin
     gnome-desktop
+    glycin-loaders
+    libglycin-gtk4
     wrapGAppsHook4
     desktop-file-utils
     gobject-introspection
     rustPlatform.bindgenHook
   ];
 
-  # Set Environment Variables
   RUST_BACKTRACE = "full";
-  RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+  RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
 }

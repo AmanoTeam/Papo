@@ -8,13 +8,12 @@
       };
     in
     import nixpkgs { overlays = [ ]; },
+  rustToolchain,
   ...
 }:
 let
-  # Helpful nix function
   getLibFolder = pkg: "${pkg}/lib";
 
-  # Manifest via Cargo.toml
   manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 in
 pkgs.stdenv.mkDerivation {
@@ -22,30 +21,29 @@ pkgs.stdenv.mkDerivation {
   version = manifest.version;
 
   src = pkgs.lib.cleanSource ./.;
-
   cargoDeps = pkgs.rustPlatform.importCargoLock {
     lockFile = ./Cargo.lock;
+    outputHashes = {
+      "wacore-0.2.0" = "sha256-BA+xdc1+iAK8yDAOH+k0xpu6SHc2b8QNn64dsjpGRj0=";
+      "libglycin-gtk4-rebind-0.0.1" = "sha256-QYMFay6HHQxdAV3xZy29SkSAt2zU/yMLvDp6f3EwfvY=";
+    };
+  };
 
-    # Use this if you have dependencies from git instead
-    # of crates.io in your Cargo.toml
-    # outputHashes = {
-    #   # Sha256 of the git repository, doesn't matter if it's monorepo
-    #   "example-0.1.0" = "sha256-80EwvwMPY+rYyti8DMG4hGEpz/8Pya5TGjsbOBF0P0c=";
-    # };
+  meta = with pkgs.lib; {
+    description = "GTK WhatsApp client";
+    license = licenses.asl20;
+    platforms = platforms.linux;
   };
 
   # Compile time dependencies
   nativeBuildInputs = with pkgs; [
-    git
-    rustc
-    cargo
     ninja
     meson
-    clippy
     gettext
     appstream
+    grass-sass
     pkg-config
-    rust-analyzer
+    rustToolchain
     wrapGAppsHook4
     desktop-file-utils
     rustPlatform.cargoSetupHook
@@ -56,10 +54,15 @@ pkgs.stdenv.mkDerivation {
   buildInputs = with pkgs; [
     gtk4
     glib
+    sqlite
+    libwebp
     openssl
     libadwaita
     gdk-pixbuf
+    libglycin
     gnome-desktop
+    glycin-loaders
+    libglycin-gtk4
     adwaita-icon-theme
     desktop-file-utils
     rustPlatform.bindgenHook

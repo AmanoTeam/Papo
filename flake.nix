@@ -1,34 +1,39 @@
 {
-  description = "nixed gtk-rust-template";
+  description = "Papo - GTK WhatsApp client";
 
   inputs = {
-    # Fresh and new for testing
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-
-    # The flake-utils library
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       nixpkgs,
       flake-utils,
+      rust-overlay,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
+
+        # Rust (nightly required for wacore-binary portable_simd)
+        rustToolchain = pkgs.rust-bin.nightly."2026-01-30".default.override {
+          extensions = [ "rust-analyzer" ];
+        };
       in
       {
-        # Nix script formatter
         formatter = pkgs.nixfmt;
 
-        # Development environment
-        devShells.default = import ./shell.nix { inherit pkgs; };
-
-        # Output package
-        packages.default = pkgs.callPackage ./. { inherit pkgs; };
+        devShells.default = import ./shell.nix { inherit pkgs rustToolchain; };
+        packages.default = pkgs.callPackage ./. { inherit pkgs rustToolchain; };
       }
     );
 }

@@ -1,7 +1,7 @@
-use adw::gtk::prelude::GtkApplicationExt;
-use adw::prelude::AdwDialogExt;
-use relm4::adw;
+use adw::prelude::*;
 use relm4::prelude::*;
+
+use crate::i18n;
 
 pub struct ShortcutsDialog;
 
@@ -25,8 +25,8 @@ impl SimpleComponent for ShortcutsDialog {
         let widgets = root.clone();
 
         // Shortcuts section
-        let section = adw::ShortcutsSection::new(None);
-        section.add(adw::ShortcutsItem::new("Quit", "<Control>q"));
+        let section = adw::ShortcutsSection::new(Some(&i18n!("General")));
+        section.add(adw::ShortcutsItem::new(&i18n!("Quit"), "<Control>q"));
         // section.add(adw::ShortcutsItem::new("New Tab", "<Control>t"));
 
         widgets.add(section);

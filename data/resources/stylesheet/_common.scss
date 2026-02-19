@@ -1,0 +1,17 @@
+// Global selectors.
+
+@use "vendor";
+
+:root {
+  --focus-outline-color: color-mix(
+    in srgb,
+    var(--accent-color) 50%,
+    transparent
+  );
+}
+
+textview,
+text {
+  color: inherit;
+  background: none;
+}

@@ -1,10 +1,12 @@
-use adw::prelude::AdwDialogExt;
-use gtk::prelude::GtkApplicationExt;
-use relm4::{ComponentParts, ComponentSender, SimpleComponent, adw, gtk};
+use adw::prelude::*;
+use relm4::prelude::*;
 
-use crate::config::{APP_ID, VERSION};
+use crate::{
+    config::{APP_ID, VERSION},
+    i18n,
+};
 
-pub struct AboutDialog {}
+pub struct AboutDialog;
 
 impl SimpleComponent for AboutDialog {
     type Init = ();
@@ -24,7 +26,7 @@ impl SimpleComponent for AboutDialog {
             .copyright("© 2026 Andriel Ferreira")
             .developers(["Andriel Ferreira"])
             .designers(["Andriel Ferreira"])
-            .translator_credits("translator-credits")
+            .translator_credits(i18n!("translator-credits"))
             .build()
     }
 
@@ -36,7 +38,7 @@ impl SimpleComponent for AboutDialog {
         let model = Self {};
 
         let widgets = root.clone();
-        widgets.present(Some(&relm4::main_application().windows()[0]));
+        widgets.present(Some(&relm4::main_adw_application().windows()[0]));
 
         ComponentParts { model, widgets }
     }

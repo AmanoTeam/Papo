@@ -1,0 +1,92 @@
+# Papo translation template
+# Copyright (C) 2026 Andriel Ferreira
+# This file is distributed under the same license as the papo package.
+# Andriel Ferreira <andrielfr@proton.me>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: papo 0.1.0\n"
+"Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
+"POT-Creation-Date: 2026-02-13 04:30+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: data/com.amanoteam.Papo.desktop.in.in:2
+msgid "Papo"
+msgstr ""
+
+#: data/com.amanoteam.Papo.desktop.in.in:3
+msgid "A GTK WhatsApp client"
+msgstr ""
+
+#: data/com.amanoteam.Papo.desktop.in.in:4
+msgid "Chat with your friends on WhatsApp"
+msgstr ""
+
+#: data/com.amanoteam.Papo.desktop.in.in:11
+msgid "whatsapp;chat;message;messaging;"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:7
+msgid "Window width"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:8
+msgid "The width of the window"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:12
+msgid "Window height"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:13
+msgid "The height of the window"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:17
+msgid "Is maximized"
+msgstr ""
+
+#: data/com.amanoteam.Papo.gschema.xml.in:18
+msgid "Whether the window is maximized"
+msgstr ""
+
+#: data/com.amanoteam.Papo.metainfo.xml.in.in:7
+msgid "Papo — A GTK WhatsApp client"
+msgstr ""
+
+#: data/com.amanoteam.Papo.metainfo.xml.in.in:10
+msgid "Papo is a WhatsApp client for GNOME."
+msgstr ""
+
+#: src/application.rs:36
+msgid "Preferences"
+msgstr ""
+
+#: src/application.rs:37
+msgid "Keyboard"
+msgstr ""
+
+#: src/application.rs:38
+msgid "About Papo"
+msgstr ""
+
+#. Translators: Replace "translator-credits" with your names, one per line.
+#: src/modals/about.rs:27
+msgid "translator-credits"
+msgstr ""
+
+#: src/modals/shortcuts.rs:30
+msgid "General"
+msgstr ""
+
+#: src/modals/shortcuts.rs:31
+msgid "Quit"
+msgstr ""
