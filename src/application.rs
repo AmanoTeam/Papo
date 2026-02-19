@@ -4,7 +4,7 @@ use adw::prelude::*;
 use gtk::{gio, glib, pango};
 use relm4::{
     abstractions::Toaster,
-    actions::{AccelsPlus,  RelmAction, RelmActionGroup},
+    actions::{AccelsPlus, RelmAction, RelmActionGroup},
     main_application,
     prelude::*,
 };
@@ -20,16 +20,22 @@ use crate::{
 };
 
 pub struct Application {
-    /// Page app is displaying.
+    /// Page main stack is displaying.
     page: AppPage,
     /// User login component.
     login: AsyncController<Login>,
+    /// Current app state.
+    state: AppState,
     /// WhatsApp client wrapper.
     client: AsyncController<Client>,
     /// Toaster overlay.
     toaster: Toaster,
     /// Chat list data to avoid recomputation on every render.
     chat_list: AsyncController<ChatList>,
+    /// Page session view is displaying.
+    session_page: AppSessionPage,
+    /// Page sidebar is displaying.
+    sidebar_page: AppSidebarPage,
     /// Currently selected chat JID.
     selected_chat: Option<String>,
 }
@@ -47,12 +53,56 @@ enum AppPage {
     Error,
 }
 
+#[derive(Debug, PartialEq)]
+enum AppState {
+    /// Application is loading.
+    Loading,
+
+    /// Client is ready.
+    Ready,
+    /// Client is pairing.
+    Pairing,
+    /// Client is syncing.
+    Syncing,
+    /// Client is disconnected.
+    Disconnected,
+
+    /// Error state.
+    Error(String),
+}
+
+#[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
+#[strum(serialize_all = "kebab-case")]
+enum AppSessionPage {
+    /// No chat selected view.
+    Welcome,
+    /// Chat conversation view.
+    Chat,
+}
+
+#[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
+#[strum(serialize_all = "kebab-case")]
+enum AppSidebarPage {
+    /// Chat list page.
+    ChatList,
+    /// Statuses page.
+    Statuses,
+    /// Channels page.
+    Channels,
+    /// Communities page.
+    Communities,
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
     /// User has been connected.
     Connected,
+    /// Client has been logged out.
+    LoggedOut,
     /// Reset the client session.
     ResetSession,
+    /// Client has been disconnected.
+    Disconnected,
 
     /// Pair device.
     PairDevice {
@@ -72,9 +122,18 @@ pub enum AppMsg {
 
     Unknown,
     /// Error occurred.
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// Quit the application.
     Quit,
+}
+
+impl Application {
+    /// Updates application state.
+    fn update_state(&mut self, state: AppState) {
+        self.state = state;
+    }
 }
 
 relm4::new_action_group!(pub(super) WindowActionGroup, "win");
@@ -127,7 +186,7 @@ impl SimpleAsyncComponent for Application {
                 gtk::Stack {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
 
-                    add_child = &adw::ToolbarView {
+                    add_named[Some("loading")] = &adw::ToolbarView {
                         add_top_bar = &adw::HeaderBar {
                             pack_end = &gtk::Button {
                                 set_icon_name: "info-outline-symbolic",
@@ -144,7 +203,7 @@ impl SimpleAsyncComponent for Application {
                             set_orientation: gtk::Orientation::Vertical,
 
                             gtk::Label {
-                                set_label: &i18n!("Fething account data..."),
+                                set_label: &i18n!("Fetching account data..."),
                                 set_halign: gtk::Align::Center,
                                 set_justify: gtk::Justification::Center,
                                 set_css_classes: &["title-2"],
@@ -158,17 +217,16 @@ impl SimpleAsyncComponent for Application {
                                 set_height_request: 48
                             }
                         }
-                    } -> {
-                        set_name: "loading"
                     },
 
                     #[local_ref]
-                    add_child = &login_widget -> adw::ToolbarView {} -> {
-                        set_name: "login"
-                    },
+                    add_named[Some("login")] = &login_widget -> adw::ToolbarView {},
 
                     #[name = "split_view"]
-                    add_child = &adw::NavigationSplitView {
+                    add_named[Some("session")] = &adw::NavigationSplitView {
+                        set_min_sidebar_width: 280.0,
+                        set_max_sidebar_width: 350.0,
+
                         #[name = "sidebar"]
                         #[wrap(Some)]
                         set_sidebar = &adw::NavigationPage {
@@ -179,19 +237,15 @@ impl SimpleAsyncComponent for Application {
                                 add_top_bar = &adw::HeaderBar {
                                     set_show_title: false,
 
-                                    pack_start = &gtk::Button {
+                                    pack_start = &gtk::ToggleButton {
                                         set_css_classes: &["flat", "circular"],
                                         set_tooltip_text: Some(&i18n!("Your profile")),
 
                                         adw::Avatar {
                                             set_text: Some(&i18n!("You")),
-                                            set_size: 32,
+                                            set_size: 24,
                                             set_show_initials: true,
                                         }
-                                    },
-                                    pack_end = &gtk::Button {
-                                        set_icon_name: "list-add-symbolic",
-                                        set_tooltip_text: Some(&i18n!("New Chat")),
                                     },
                                     pack_end = &gtk::MenuButton {
                                         set_icon_name: "open-menu-symbolic",
@@ -199,15 +253,12 @@ impl SimpleAsyncComponent for Application {
                                         set_tooltip_text: Some(&i18n!("Menu")),
                                     }
                                 },
-                                add_top_bar = &gtk::SearchEntry {
-                                    set_margin_start: 12,
-                                    set_margin_end: 12,
-                                    set_margin_top: 6,
-                                    set_margin_bottom: 6,
-
-                                    set_css_classes: &["sidebar-search"],
-                                    set_placeholder_text: Some(&i18n!("Search chats...")),
-                                },
+                                /* add_top_bar = &gtk::SearchEntry {
+                                    set_margin_start: 8,
+                                    set_margin_end: 8,
+                                    set_margin_top: 4,
+                                    set_margin_bottom: 12,
+                                }, */
 
                                 #[name = "view_stack"]
                                 #[wrap(Some)]
@@ -223,19 +274,75 @@ impl SimpleAsyncComponent for Application {
                             },
                         },
 
+                        #[name = "content"]
                         #[wrap(Some)]
                         set_content = &adw::NavigationPage {
                             set_title: "Chat",
 
                             #[wrap(Some)]
                             set_child = &adw::ToolbarView {
-                                add_top_bar = &adw::HeaderBar {},
+                                add_top_bar = &adw::HeaderBar {
+                                    #[watch]
+                                    set_show_back_button: model.selected_chat.is_some(),
 
-                                // set_content = {}
+                                    #[name = "header_bar"]
+                                    #[wrap(Some)]
+                                    set_title_widget = &gtk::Button {
+                                        set_halign: gtk::Align::Center,
+                                        set_valign: gtk::Align::Center,
+                                        set_css_classes: &["flat"],
+
+                                        // connect_clicked => AppMsg::OpenChatProfile { ... },
+
+                                        gtk::Box {
+                                            set_halign: gtk::Align::Center,
+                                            set_valign: gtk::Align::Center,
+                                            set_orientation: gtk::Orientation::Vertical,
+
+                                            gtk::Label {
+                                                set_label: "", // TODO: show chat name
+                                                #[watch]
+                                                set_visible: model.selected_chat.is_some(),
+                                                set_css_classes: &["title"]
+                                            },
+
+                                            gtk::Label {
+                                                set_label: "A beautiful description", // TODO: show contact's status when chatting with a person and the chat's description when it's a group, channel or community
+                                                #[watch]
+                                                set_visible: model.selected_chat.is_some(),
+                                                set_css_classes: &["dimmed"]
+                                            }
+                                        }
+                                    }
+                                },
+
+                                #[wrap(Some)]
+                                set_content = &gtk::Overlay {
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Stack {
+                                        set_transition_type: gtk::StackTransitionType::Crossfade,
+
+                                        add_named[Some("welcome")] = &adw::StatusPage {
+                                            set_title: &i18n!("No Chat Selected"),
+                                            set_vexpand: true,
+                                            set_icon_name: Some("chat-bubbles-empty-symbolic"),
+                                            set_description: Some(&i18n!("Select a chat to start chatting"))
+                                        },
+
+                                        #[watch]
+                                        set_visible_child_name: model.session_page.as_ref(),
+                                    },
+
+                                    add_overlay = &adw::Banner {
+                                        set_title: &i18n!("Synchronizing data..."),
+                                        set_halign: gtk::Align::Fill,
+                                        set_valign: gtk::Align::Start,
+                                        #[watch]
+                                        set_revealed: model.state == AppState::Syncing
+                                    }
+                                }
                             }
                         }
-                    } -> {
-                        set_name: "session"
                     },
 
                     #[watch]
@@ -261,16 +368,23 @@ impl SimpleAsyncComponent for Application {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let login = Login::builder().launch(()).forward(sender.input_sender(), |output| match output {
-            LoginOutput::ResetSession => AppMsg::ResetSession,
+        let login =
+            Login::builder()
+                .launch(())
+                .forward(sender.input_sender(), |output| match output {
+                    LoginOutput::ResetSession => AppMsg::ResetSession,
 
-            LoginOutput::PairWithPhoneNumber { phone_number } => AppMsg::PairWithPhoneNumber { phone_number },
-        });
+                    LoginOutput::PairWithPhoneNumber { phone_number } => {
+                        AppMsg::PairWithPhoneNumber { phone_number }
+                    }
+                });
 
         let client = Client::builder()
             .launch(())
             .forward(sender.input_sender(), |output| match output {
                 ClientOutput::Connected => AppMsg::Connected,
+                ClientOutput::LoggedOut => AppMsg::LoggedOut,
+                ClientOutput::Disconnected => AppMsg::Disconnected,
 
                 ClientOutput::PairCode {
                     code,
@@ -298,9 +412,12 @@ impl SimpleAsyncComponent for Application {
         let model = Self {
             page: AppPage::Loading,
             login,
+            state: AppState::Loading,
             client,
             toaster: Toaster::default(),
             chat_list,
+            session_page: AppSessionPage::Welcome,
+            sidebar_page: AppSidebarPage::ChatList,
             selected_chat: None,
         };
 
@@ -343,10 +460,22 @@ impl SimpleAsyncComponent for Application {
         AsyncComponentParts { model, widgets }
     }
 
-    async fn update(&mut self, message: Self::Input, _sender: AsyncComponentSender<Self>) {
+    async fn update(&mut self, message: Self::Input, sender: AsyncComponentSender<Self>) {
         match message {
             AppMsg::Connected => {
-                self.page = AppPage::Session;
+                if self.page != AppPage::Session {
+                    self.page = AppPage::Session;
+                }
+                self.update_state(AppState::Ready);
+            }
+            AppMsg::LoggedOut => {
+                self.page = AppPage::Loading;
+                self.update_state(AppState::Pairing);
+
+                sender.input(AppMsg::ResetSession);
+            }
+            AppMsg::Disconnected => {
+                self.update_state(AppState::Disconnected);
             }
             AppMsg::ResetSession => {
                 self.client.emit(ClientInput::Restart);
@@ -369,23 +498,33 @@ impl SimpleAsyncComponent for Application {
             }
             AppMsg::DevicePaired => {
                 self.login.emit(LoginInput::PairSuccess);
-
                 time::sleep(Duration::from_secs(1)).await;
+
                 self.page = AppPage::Session;
+                self.update_state(AppState::Syncing);
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
-                self.client.emit(ClientInput::PairWithPhoneNumber { phone_number });
+                self.client
+                    .emit(ClientInput::PairWithPhoneNumber { phone_number });
             }
 
             AppMsg::ChatSelected(_id) => {}
 
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
-                if self.page == AppPage::Login {
-                    self.login.emit(LoginInput::Error { message });
-                } else {
-                    self.page = AppPage::Error;
-                    // TODO: show error
+                self.update_state(AppState::Error(message.clone()));
+
+                match self.page {
+                    AppPage::Login => {
+                        self.login.emit(LoginInput::Error { message });
+                    }
+                    AppPage::Loading => {
+                        self.page = AppPage::Error;
+                    }
+                    AppPage::Session => {
+                        // TODO: display error
+                    }
+                    AppPage::Error => {}
                 }
             }
             AppMsg::Quit => main_application().quit(),

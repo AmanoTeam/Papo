@@ -2,7 +2,7 @@
 //!
 //! This is the main entry point for the Papo application.
 
-// FIXME: Allow dead code for WIP features (calls, media playback, etc.)
+// FIXME: Allow dead code for WIP features.
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 

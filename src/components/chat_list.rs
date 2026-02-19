@@ -58,11 +58,7 @@ impl SimpleAsyncComponent for ChatList {
         AsyncComponentParts { model, widgets }
     }
 
-    async fn update(
-        &mut self,
-        message: Self::Input,
-        sender: AsyncComponentSender<Self>,
-    ) {
+    async fn update(&mut self, message: Self::Input, sender: AsyncComponentSender<Self>) {
         match message {
             ChatListMsg::Select(chat_id) => {
                 let _ = sender.output(ChatListOutput::ChatSelected(chat_id));

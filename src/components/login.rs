@@ -13,6 +13,7 @@ use tokio::time::{self, Instant};
 
 use crate::i18n;
 
+#[derive(Debug)]
 pub struct Login {
     state: LoginState,
     qr_code: Option<gdk::Paintable>,
@@ -33,13 +34,23 @@ enum LoginBottomPage {
 
 #[derive(Clone, Default)]
 struct LoginState {
+    /// 8-character pair code.
     code: Option<[char; 8]>,
+    /// Whether the client has been paired.
     paired: bool,
+    /// QR code image.
     qr_code: Option<QrCode>,
+    /// QR code scan attempts.
     scan_attempts: u8,
+    /// QR code expiration bar's progress.
     progress_fraction: f64,
+    /// Whether the phone number is valid.
     valid_phone_number: bool,
+    /// Whether all QR codes from session has been expired.
     session_scan_expired: bool,
+    /// Whether a request to pair with phone number has been sent.
+    pairing_with_phone_number: bool,
+    /// Phone number country emoji.
     phone_number_country_emoji: Option<String>,
 }
 
@@ -52,7 +63,11 @@ impl fmt::Debug for LoginState {
             .field("progress_fraction", &self.progress_fraction)
             .field("valid_phone_number", &self.valid_phone_number)
             .field("session_scan_expired", &self.session_scan_expired)
-            .field("phone_number_country_emoji", &self.phone_number_country_emoji)
+            .field("pairing_with_phone_number", &self.pairing_with_phone_number)
+            .field(
+                "phone_number_country_emoji",
+                &self.phone_number_country_emoji,
+            )
             .finish()
     }
 }
@@ -95,6 +110,8 @@ pub enum LoginCommand {
     QrCodeExpired,
     /// Update the expiration bar.
     UpdateExpirationBar(f32),
+    /// Request the session to pair with a phone number.
+    PairWithPhoneNumber { phone_number: String },
 
     /// Validate the phone number.
     ValidatePhoneNumber,
@@ -211,7 +228,6 @@ impl AsyncComponent for Login {
                                         set_label: &i18n!("Reset Session"),
                                         #[watch]
                                         set_visible: model.state.session_scan_expired,
-                                        set_icon_name: "view-refresh-symbolic",
                                         set_css_classes: &["pill", "suggested-action"],
 
                                         connect_clicked => LoginInput::ResetRequest,
@@ -278,7 +294,7 @@ impl AsyncComponent for Login {
                                     connect_changed[sender] => move |_| { sender.oneshot_command(async { LoginCommand::ValidatePhoneNumber }); },
                                     connect_activate[sender] => move |entry| {
                                         let phone_number = entry.text().to_string();
-                                        let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number, });
+                                        sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
                                     }
                                 },
 
@@ -291,9 +307,15 @@ impl AsyncComponent for Login {
                                         &[]
                                     },
 
+                                    #[wrap(Some)]
+                                    set_child = &adw::Spinner {
+                                        #[watch]
+                                        set_visible: model.state.pairing_with_phone_number,
+                                    },
+
                                     connect_clicked[sender, phone_number_entry] => move |_| {
                                         let phone_number = phone_number_entry.text().to_string();
-                                        let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number, });
+                                        sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
                                     }
                                 },
                             }
@@ -317,6 +339,7 @@ impl AsyncComponent for Login {
                                 set_hexpand: true,
                                 set_spacing: 4,
                                 set_orientation: gtk::Orientation::Horizontal,
+                                set_homogeneous: true,
 
                                 gtk::Label {
                                     inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
@@ -613,6 +636,11 @@ impl AsyncComponent for Login {
             }
             LoginCommand::UpdateExpirationBar(progress) => {
                 self.state.progress_fraction = progress as f64;
+            }
+            LoginCommand::PairWithPhoneNumber { phone_number } => {
+                self.state.pairing_with_phone_number = true;
+
+                let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
             }
 
             LoginCommand::ValidatePhoneNumber => {

@@ -34,11 +34,13 @@ pub struct Client {
 pub enum ClientState {
     /// Client is loading.
     Loading,
-    /// Connected and authenticated.
+    /// Client is connected and authenticated.
     Connected,
-    /// Connecting in progress.
+    /// Client is logged out.
+    LoggedOut,
+    /// Connection in progress.
     Connecting,
-    /// Client disconnected.
+    /// Client is disconnected.
     Disconnected,
 
     /// Pairing in progress.
@@ -103,11 +105,13 @@ pub enum ClientInput {
 pub enum ClientOutput {
     /// Client is loading.
     Loading,
-    /// Client successfully connected and authenticated.
+    /// Client has been successfully connected and authenticated.
     Connected,
+    /// Client has been logged out.
+    LoggedOut,
     /// Client is connecting.
     Connecting,
-    /// Client disconnected.
+    /// Client has been disconnected.
     Disconnected,
 
     /// 8-character pairing code or qr code received.
@@ -156,6 +160,12 @@ pub enum ClientCommand {
     Stop,
     /// Restart the client connection.
     Restart,
+    /// Client has been successfully connected and authenticated.
+    Connected,
+    /// Client has been logged out.
+    LoggedOut,
+    /// Client has been disconnected.
+    Disconnected,
 
     /// Pair the account.
     Pair {
@@ -272,102 +282,110 @@ impl AsyncComponent for Client {
     ) {
         match command {
             ClientCommand::Start => {
-                // Initialize SQLite backend.
-                let backend = match SqliteStore::new(DATABASE_PATH).await {
-                    Ok(store) => Arc::new(store),
-                    Err(e) => {
-                        tracing::error!("Failed to initialize SQLite storage: {}", e);
-                        let _ = sender.output(ClientOutput::Error {
-                            message: format!("Database error: {}", e),
-                        });
+                if !matches!(
+                    self.state,
+                    ClientState::Connected | ClientState::Connecting | ClientState::Syncing
+                ) {
+                    // Initialize SQLite backend.
+                    let backend = match SqliteStore::new(DATABASE_PATH).await {
+                        Ok(store) => Arc::new(store),
+                        Err(e) => {
+                            tracing::error!("Failed to initialize SQLite storage: {}", e);
+                            let _ = sender.output(ClientOutput::Error {
+                                message: format!("Database error: {}", e),
+                            });
 
-                        return;
-                    }
-                };
-                tracing::info!("SQLite storage initialized successfully");
-
-                // Get application version from cargo package.
-                let app_version = (
-                    env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap(),
-                    env!("CARGO_PKG_VERSION_MINOR").parse().unwrap(),
-                    env!("CARGO_PKG_VERSION_PATCH").parse().unwrap(),
-                );
-
-                // Create bot with event handler.
-                let sender_clone = sender.clone();
-                let mut bot = Bot::builder()
-                    .with_backend(backend)
-                    .with_http_client(UreqHttpClient::new())
-                    .with_device_props(
-                        Some(self.os_type.clone()),
-                        Some(AppVersion {
-                            primary: Some(app_version.0),
-                            secondary: Some(app_version.1),
-                            tertiary: Some(app_version.2),
-                            ..Default::default()
-                        }),
-                        Some(PlatformType::Desktop),
-                    )
-                    .with_transport_factory(TokioWebSocketTransportFactory::new())
-                    .on_event(move |event, _client| {
-                        let sender = sender_clone.clone();
-
-                        async move {
-                            match event {
-                                Event::Connected(_) => {
-                                    tracing::info!("Connected to WhatsApp!");
-                                    let _ = sender.output(ClientOutput::Connected);
-                                }
-                                Event::LoggedOut(_) => {
-                                    tracing::info!("Logged out from WhatsApp");
-                                    let _ = sender.output(ClientOutput::Disconnected);
-                                }
-
-                                Event::PairingCode { code, timeout } => {
-                                    tracing::info!("Pair code received: {}", code);
-                                    sender.oneshot_command(async move {
-                                        ClientCommand::Pair {
-                                            code: Some(code),
-                                            qr_code: None,
-                                            timeout,
-                                        }
-                                    });
-                                }
-                                Event::PairingQrCode { code, timeout } => {
-                                    tracing::info!("QR code received");
-                                    sender.oneshot_command(async move {
-                                        ClientCommand::Pair {
-                                            code: None,
-                                            qr_code: Some(code),
-                                            timeout,
-                                        }
-                                    });
-                                }
-                                Event::PairSuccess(_) => {
-                                    tracing::info!("Pairing successful, syncing...");
-                                    sender.oneshot_command(async { ClientCommand::PairSuccess });
-                                }
-
-                                e => tracing::warn!("Unhandled event type: {:?}", e),
-                            }
+                            return;
                         }
-                    })
-                    .build()
-                    .await
-                    .expect("Failed to build bot");
+                    };
+                    tracing::info!("SQLite storage initialized successfully");
 
-                // Extract client from bot.
-                let client = bot.client();
-                *self.handle.lock().await = Some(client);
+                    // Get application version from cargo package.
+                    let app_version = (
+                        env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap(),
+                        env!("CARGO_PKG_VERSION_MINOR").parse().unwrap(),
+                        env!("CARGO_PKG_VERSION_PATCH").parse().unwrap(),
+                    );
 
-                self.update_state(ClientState::Connecting);
+                    // Create bot with event handler.
+                    let sender_clone = sender.clone();
+                    let mut bot = Bot::builder()
+                        .with_backend(backend)
+                        .with_http_client(UreqHttpClient::new())
+                        .with_device_props(
+                            Some(self.os_type.clone()),
+                            Some(AppVersion {
+                                primary: Some(app_version.0),
+                                secondary: Some(app_version.1),
+                                tertiary: Some(app_version.2),
+                                ..Default::default()
+                            }),
+                            Some(PlatformType::Desktop),
+                        )
+                        .with_transport_factory(TokioWebSocketTransportFactory::new())
+                        .on_event(move |event, _client| {
+                            let sender = sender_clone.clone();
 
-                // Runs the bot.
-                if let Err(e) = bot.run().await {
-                    tracing::error!("Bot failed to start: {}", e);
-                    let _ = sender.output(ClientOutput::Error {
-                        message: format!("Connection failed: {}", e),
-                    });
+                            async move {
+                                match event {
+                                    Event::Connected(_) => {
+                                        sender.oneshot_command(async { ClientCommand::Connected });
+                                    }
+                                    Event::LoggedOut(_) => {
+                                        sender.oneshot_command(async { ClientCommand::LoggedOut });
+                                    }
+                                    Event::Disconnected(_) => {
+                                        sender
+                                            .oneshot_command(async { ClientCommand::Disconnected });
+                                    }
+
+                                    Event::PairingCode { code, timeout } => {
+                                        tracing::info!("Pair code received: {}", code);
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::Pair {
+                                                code: Some(code),
+                                                qr_code: None,
+                                                timeout,
+                                            }
+                                        });
+                                    }
+                                    Event::PairingQrCode { code, timeout } => {
+                                        tracing::info!("QR code received");
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::Pair {
+                                                code: None,
+                                                qr_code: Some(code),
+                                                timeout,
+                                            }
+                                        });
+                                    }
+                                    Event::PairSuccess(_) => {
+                                        sender
+                                            .oneshot_command(async { ClientCommand::PairSuccess });
+                                    }
+
+                                    e => tracing::warn!("Unhandled event type: {:?}", e),
+                                }
+                            }
+                        })
+                        .build()
+                        .await
+                        .expect("Failed to build bot");
+
+                    // Extract client from bot.
+                    let client = bot.client();
+                    *self.handle.lock().await = Some(client);
+
+                    self.update_state(ClientState::Connecting);
+
+                    // Runs the bot.
+                    if let Err(e) = bot.run().await {
+                        tracing::error!("Bot failed to start: {}", e);
+
+                        let message = format!("Connection failed: {}", e);
+                        self.update_state(ClientState::Error(message.clone()));
+                        let _ = sender.output(ClientOutput::Error { message });
+                    }
                 }
             }
             ClientCommand::Stop => {
@@ -397,6 +415,24 @@ impl AsyncComponent for Client {
                 // Start the client.
                 sender.oneshot_command(async { ClientCommand::Start });
             }
+            ClientCommand::Connected => {
+                tracing::info!("Connected to WhatsApp!");
+
+                self.update_state(ClientState::Connected);
+                let _ = sender.output(ClientOutput::Connected);
+            }
+            ClientCommand::LoggedOut => {
+                tracing::info!("Logged out from WhatsApp");
+
+                self.update_state(ClientState::LoggedOut);
+                let _ = sender.output(ClientOutput::LoggedOut);
+            }
+            ClientCommand::Disconnected => {
+                tracing::info!("Disconnected from WhatsApp");
+
+                self.update_state(ClientState::Disconnected);
+                let _ = sender.output(ClientOutput::Disconnected);
+            }
 
             ClientCommand::Pair {
                 code,
@@ -424,6 +460,8 @@ impl AsyncComponent for Client {
                 });
             }
             ClientCommand::PairSuccess => {
+                tracing::info!("Pairing successful, syncing...");
+
                 self.update_state(ClientState::Syncing);
                 let _ = sender.output(ClientOutput::PairSuccess);
             }
