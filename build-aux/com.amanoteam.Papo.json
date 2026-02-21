@@ -1,5 +1,5 @@
 {
-    "id": "com.amanoteam.Papo.Devel",
+    "id": "com.amanoteam.Papo",
     "runtime": "org.gnome.Platform",
     "runtime-version": "49",
     "sdk": "org.gnome.Sdk",
@@ -13,12 +13,11 @@
         "--socket=fallback-x11",
         "--socket=wayland",
         "--device=dri",
-        "--env=RUST_LOG=papo=debug",
-        "--env=G_MESSAGES_DEBUG=none",
-        "--env=RUST_BACKTRACE=1"
+        "--env=RUST_LOG=papo=warn",
+        "--env=G_MESSAGES_DEBUG=none"
     ],
     "build-options": {
-        "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin",
+        "append-path": "/usr/lib/sdk/rust-nightly/bin:/usr/lib/sdk/llvm21/bin",
         "build-args": ["--share=network"],
         "env": {
             "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
@@ -34,7 +33,7 @@
             "name": "papo",
             "buildsystem": "meson",
             "run-tests": true,
-            "config-opts": ["-Dprofile=development"],
+            "config-opts": ["-Dprofile=default"],
             "sources": [
                 {
                     "type": "dir",
