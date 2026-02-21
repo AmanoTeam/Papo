@@ -50,13 +50,19 @@ mod icon_names {
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
 
+use std::sync::LazyLock;
+
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
 use relm4::{RelmApp, gtk, main_application, once_cell::sync::OnceCell};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use application::Application;
-use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PKGDATADIR, PROFILE, RESOURCES_FILE, VERSION};
+use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSION};
+
+/// Papo's data directory path (e.g., ~/.local/share/papo on Linux).
+pub static DATA_DIR: LazyLock<std::path::PathBuf> =
+    LazyLock::new(|| glib::user_data_dir().join("papo"));
 
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
@@ -118,7 +124,6 @@ fn main() {
 
     tracing::info!("Papo ({})", APP_ID);
     tracing::info!("Version: {} ({})", VERSION, PROFILE);
-    tracing::info!("Datadir: {}", PKGDATADIR);
 
     let data = res
         .lookup_data(
