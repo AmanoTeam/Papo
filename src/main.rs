@@ -9,10 +9,19 @@
 #[rustfmt::skip]
 mod config;
 mod application;
-mod client;
 mod components;
 mod modals;
+mod session;
+mod state;
+mod store;
+mod utils;
 mod widgets;
+
+mod icon_names {
+    #[allow(unused_imports)]
+    pub use shipped::*; // Include all shipped icons by default
+    include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
+}
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
@@ -91,6 +100,7 @@ fn main() {
         )
         .unwrap();
     relm4::set_global_css(&glib::GString::from_utf8_checked(data.to_vec()).unwrap());
+    relm4_icons::initialize_icons(icon_names::GRESOURCE_BYTES, icon_names::RESOURCE_PREFIX);
 
     app.visible_on_activate(false).run_async::<Application>(());
 }

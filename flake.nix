@@ -26,7 +26,11 @@
 
         # Rust (nightly required for wacore-binary portable_simd)
         rustToolchain = pkgs.rust-bin.nightly."2026-01-30".default.override {
-          extensions = [ "rust-analyzer" ];
+          extensions = [
+            "clippy"
+            "rustfmt"
+            "rust-analyzer"
+          ];
         };
       in
       {

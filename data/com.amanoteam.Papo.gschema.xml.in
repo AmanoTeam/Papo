@@ -17,11 +17,6 @@
       <default>false</default>
       <summary>Default window maximized state</summary>
     </key>
-    <key name="last-used-session" type="s">
-      <default>''</default>
-      <summary>Last used session</summary>
-      <description>The directory name of the last used session</description>
-    </key>
     <key name="color-scheme" type="s">
       <choices>
         <choice value="default" />
@@ -31,6 +26,11 @@
       <default>'default'</default>
       <summary>Color Scheme</summary>
       <description>The color scheme to be used in the app</description>
+    </key>
+    <key name="pinned-chats" type="as">
+      <default>[]</default>
+      <summary>Chats pinned</summary>
+      <description>The list of chats pinned by the user</description>
     </key>
   </schema>
 </schemalist>

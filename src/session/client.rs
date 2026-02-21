@@ -7,12 +7,15 @@ use wacore::{
     pair_code::{PairCodeOptions, PlatformId},
     types::{events::Event, message::MessageInfo},
 };
-use waproto::whatsapp::device_props::{AppVersion, PlatformType};
+use waproto::whatsapp::{
+    Message,
+    device_props::{AppVersion, PlatformType},
+};
 use whatsapp_rust::{bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
-use crate::config::DATABASE_PATH;
+use crate::{config::ZAP_DATABASE_PATH, i18n, session::RuntimeCache};
 
 /// Shared client handle for accessing the WhatsApp client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -27,6 +30,9 @@ pub struct Client {
     handle: ClientHandle,
     /// System OS type.
     os_type: String,
+
+    /// Runtime cache shared with Application.
+    runtime_cache: Arc<RuntimeCache>,
 }
 
 /// Current state of the client connection.
@@ -106,7 +112,10 @@ pub enum ClientOutput {
     /// Client is loading.
     Loading,
     /// Client has been successfully connected and authenticated.
-    Connected,
+    Connected {
+        jid: Option<String>,
+        push_name: String,
+    },
     /// Client has been logged out.
     LoggedOut,
     /// Client is connecting.
@@ -146,7 +155,10 @@ pub enum ClientOutput {
     /// Message failed to send.
     MessageFailed { id: String, error: String },
     /// New message received.
-    MessageReceived { message: Box<Message> },
+    MessageReceived {
+        info: MessageInfo,
+        message: Box<Message>,
+    },
 
     /// Error occurred.
     Error { message: String },
@@ -177,15 +189,8 @@ pub enum ClientCommand {
     PairSuccess,
 }
 
-/// Wrapper for message data.
-#[derive(Debug, Clone)]
-pub struct Message {
-    pub info: MessageInfo,
-    pub content: Arc<waproto::whatsapp::Message>,
-}
-
 impl Client {
-    /// Updates WhatsApp client state.
+    /// Update WhatsApp client state.
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
     }
@@ -193,19 +198,20 @@ impl Client {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for Client {
-    type Init = ();
+    type Init = Arc<RuntimeCache>;
     type Input = ClientInput;
     type Output = ClientOutput;
     type CommandOutput = ClientCommand;
 
     view! {
+        // This is a non-visual component, no UI needed
         gtk::Box {
             set_visible: false,
         }
     }
 
     async fn init(
-        _init: Self::Init,
+        init: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
@@ -215,6 +221,7 @@ impl AsyncComponent for Client {
             state: ClientState::Loading,
             handle: Arc::new(Mutex::new(None)),
             os_type,
+            runtime_cache: init,
         };
 
         let widgets = view_output!();
@@ -246,7 +253,7 @@ impl AsyncComponent for Client {
 
             ClientInput::PairWithPhoneNumber { phone_number } => {
                 let handle = self.handle.lock().await;
-                if let Some(client) = handle.clone() {
+                if let Some(client) = handle.as_ref() {
                     // Sanitize the phone number
                     let phone_number = phone_number
                         .chars()
@@ -287,7 +294,7 @@ impl AsyncComponent for Client {
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
                     // Initialize SQLite backend.
-                    let backend = match SqliteStore::new(DATABASE_PATH).await {
+                    let backend = match SqliteStore::new(ZAP_DATABASE_PATH).await {
                         Ok(store) => Arc::new(store),
                         Err(e) => {
                             tracing::error!("Failed to initialize SQLite storage: {}", e);
@@ -364,7 +371,28 @@ impl AsyncComponent for Client {
                                             .oneshot_command(async { ClientCommand::PairSuccess });
                                     }
 
-                                    e => tracing::warn!("Unhandled event type: {:?}", e),
+                                    Event::Receipt(receipt) => {
+                                        let chat_jid = receipt.source.chat.to_string();
+                                        let message_ids = receipt
+                                            .message_ids
+                                            .iter()
+                                            .map(|id| id.to_string())
+                                            .collect::<Vec<_>>();
+
+                                        let _ = sender.output(ClientOutput::ReadReceipts {
+                                            chat_jid,
+                                            message_ids,
+                                        });
+                                    }
+
+                                    Event::Message(message, info) => {
+                                        let _ = sender.output(ClientOutput::MessageReceived {
+                                            info,
+                                            message,
+                                        });
+                                    }
+
+                                    e => tracing::warn!("Unhandled event type: {:#?}", e),
                                 }
                             }
                         })
@@ -393,7 +421,7 @@ impl AsyncComponent for Client {
                     let mut handle = self.handle.lock().await;
 
                     // TODO: graceful shutdown
-                    if let Some(client) = handle.clone() {
+                    if let Some(client) = handle.as_ref() {
                         client.disconnect().await;
 
                         // Clear client reference on disconnect.
@@ -418,8 +446,21 @@ impl AsyncComponent for Client {
             ClientCommand::Connected => {
                 tracing::info!("Connected to WhatsApp!");
 
+                // Get connected user's push name.
+                let (jid, push_name) = {
+                    let handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        (
+                            client.get_pn().await.map(|j| j.to_string()),
+                            client.get_push_name().await,
+                        )
+                    } else {
+                        (None, i18n!("You!"))
+                    }
+                };
+
                 self.update_state(ClientState::Connected);
-                let _ = sender.output(ClientOutput::Connected);
+                let _ = sender.output(ClientOutput::Connected { jid, push_name });
             }
             ClientCommand::LoggedOut => {
                 tracing::info!("Logged out from WhatsApp");

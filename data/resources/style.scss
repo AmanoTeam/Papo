@@ -1,1 +1,19 @@
+@use "sass:color";
+
 @use "stylesheet/common";
+
+.badge {
+  color: var(--accent-fg-color);
+  padding: 2px 5px;
+  min-width: 4px;
+  font-size: 0.70em;
+  min-height: 6px;
+  font-weight: bold;
+  border-radius: 100%;
+  background-color: var(--accent-bg-color);
+
+  .muted {
+    color: var(--window-fg-color);
+    /* background-color: color.adjust($color: var(--shade-color), $alpha: 0.5); */
+  }
+}

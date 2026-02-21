@@ -18,8 +18,8 @@ pub struct Login {
     state: LoginState,
     qr_code: Option<gdk::Paintable>,
     bottom_page: LoginBottomPage,
-    error_dialog: Connector<Alert>,
-    reset_dialog: Controller<Alert>,
+    error_dialog: Connector<Alert>,  // TODO: use a custom alert dialog
+    reset_dialog: Controller<Alert>, // TODO: use a custom alert dialog
     phone_number_entry: gtk::Entry,
 }
 
@@ -278,9 +278,6 @@ impl AsyncComponent for Login {
                                     set_label: model.state.phone_number_country_emoji.as_deref().unwrap_or("🇺🇳"),
                                     set_can_focus: false,
                                     set_width_request: 2,
-
-                                    stop_signal_emission_by_name: "activate",
-                                    stop_signal_emission_by_name: "clicked"
                                 },
 
                                 #[local_ref]
@@ -314,8 +311,10 @@ impl AsyncComponent for Login {
                                     },
 
                                     connect_clicked[sender, phone_number_entry] => move |_| {
-                                        let phone_number = phone_number_entry.text().to_string();
-                                        sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
+                                        if model.state.valid_phone_number {
+                                            let phone_number = phone_number_entry.text().to_string();
+                                            sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
+                                        }
                                     }
                                 },
                             }
@@ -342,7 +341,7 @@ impl AsyncComponent for Login {
                                 set_homogeneous: true,
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[0].to_string()),
                                     set_justify: gtk::Justification::Center,
@@ -351,7 +350,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[1].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -362,7 +361,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[2].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -373,7 +372,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[3].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -392,7 +391,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[4].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -403,7 +402,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[5].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -414,7 +413,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[6].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -425,7 +424,7 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Label {
-                                    inline_css: "padding-top: 5px; padding-left: 5px; padding-right: 5px; padding-bottom: 5px;",
+                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[7].to_string()),
                                     set_halign: gtk::Align::Center,
@@ -540,6 +539,8 @@ impl AsyncComponent for Login {
             }
 
             LoginInput::Error { message } => {
+                self.state.pairing_with_phone_number = false;
+
                 self.error_dialog.widgets().gtk_label_2.set_text(&message);
                 self.error_dialog.emit(AlertMsg::Show);
             }

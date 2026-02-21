@@ -15,12 +15,22 @@ lto = true
 # UI
 adw = { version = "0.8", package = "libadwaita", features = ["v1_8"] }
 relm4 = { version = "0.10", features = ["libadwaita", "gnome_48"] }
+relm4-icons = "0.10"
 relm4-components = { version = "0.10", features = ["libadwaita"] }
-tracker = "0.2"
+
+# Database
+libsql = { version = "0.9", features = ["encryption"] }
 
 # Utilities
+rand = "0.10"
+moka = { version = "0.12", features = ["future"] }
 strum = { version = "0.27", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = [
+  "std",
+  "clock",
+] }
 os_info = "3.14"
+indexmap = "2.13"
 # humantime = "2.3"
 country-emoji = "0.3"
 rlibphonenumber = "0.3"
@@ -32,7 +42,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Localization
 gettext-rs = { version = "0.7", features = ["gettext-system"] }
 
-# WhatsApp
+# Image handling
 image = { version = "0.25", default-features = false, features = [
   "png",
   "jpeg",
@@ -48,6 +58,7 @@ futures-util = { version = "0.3", default-features = false, features = [
   "async-await",
 ] }
 
+# WhatsApp
 [dependencies.wacore]
 git = "https://github.com/jlucaso1/whatsapp-rust"
 rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
@@ -67,3 +78,6 @@ rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
 [dependencies.whatsapp-rust-ureq-http-client]
 git = "https://github.com/jlucaso1/whatsapp-rust"
 rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+
+[build-dependencies]
+relm4-icons-build = "0.10"
