@@ -1,15 +1,13 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use libsql::{Builder, Cipher, Connection, EncryptionConfig};
 
-use crate::state::{Chat, ChatMessage, Media, MediaType};
-
-/// Get the path to the Papo database.
-fn papo_database_path() -> PathBuf {
-    crate::DATA_DIR.join("papo.db")
-}
+use crate::{
+    DATA_DIR,
+    state::{Chat, ChatMessage, Media, MediaType},
+};
 
 /// Papo's own database for UI state persistence.
 /// Separate from whatsapp-rust's protocol database.
@@ -22,12 +20,7 @@ pub struct Database {
 impl Database {
     /// Create a new database.
     pub async fn new() -> Result<Self, libsql::Error> {
-        let path = papo_database_path();
-
-        // Create parent directory.
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
+        let path = DATA_DIR.join("papo.db");
 
         let db = Arc::new(
             Builder::new_local(&path)

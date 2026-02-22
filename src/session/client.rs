@@ -15,15 +15,7 @@ use whatsapp_rust::{bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
-use crate::{i18n, session::RuntimeCache};
-
-/// Get the path to the WhatsApp (ZAP) database.
-fn zap_database_path() -> String {
-    crate::DATA_DIR
-        .join("whatsapp.db")
-        .to_string_lossy()
-        .into_owned()
-}
+use crate::{DATA_DIR, i18n, session::RuntimeCache};
 
 /// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -301,7 +293,8 @@ impl AsyncComponent for Client {
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
                     // Initialize SQLite backend.
-                    let backend = match SqliteStore::new(&zap_database_path()).await {
+                    let path = DATA_DIR.join("whatsapp.db").to_string_lossy().into_owned();
+                    let backend = match SqliteStore::new(&path).await {
                         Ok(store) => Arc::new(store),
                         Err(e) => {
                             tracing::error!("Failed to initialize SQLite storage: {e}");
