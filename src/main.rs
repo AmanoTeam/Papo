@@ -50,7 +50,7 @@ mod icon_names {
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
 
-use std::sync::LazyLock;
+use std::{path::PathBuf, sync::LazyLock};
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
@@ -61,8 +61,10 @@ use application::Application;
 use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSION};
 
 /// Papo's data directory path (e.g., ~/.local/share/papo on Linux).
-pub static DATA_DIR: LazyLock<std::path::PathBuf> =
-    LazyLock::new(|| glib::user_data_dir().join("papo"));
+pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_data_dir().join("papo"));
+
+/// How many threads that Relm4 should use for asynchronous background tasks.
+static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
 
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
@@ -87,9 +89,6 @@ macro_rules! ni18n {
         gettextrs::ngettext($singular, $plural, $n)
     };
 }
-
-/// How many threads that Relm4 should use for asynchronous background tasks.
-static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
 
 fn main() {
     // Initialize logger.
