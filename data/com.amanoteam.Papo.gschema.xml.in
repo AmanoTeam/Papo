@@ -27,10 +27,5 @@
       <summary>Color Scheme</summary>
       <description>The color scheme to be used in the app</description>
     </key>
-    <key name="pinned-chats" type="as">
-      <default>[]</default>
-      <summary>Chats pinned</summary>
-      <description>The list of chats pinned by the user</description>
-    </key>
   </schema>
 </schemalist>

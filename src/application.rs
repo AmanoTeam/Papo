@@ -170,7 +170,7 @@ impl Application {
                 .then_with(|| a.last_message_time.cmp(&b.last_message_time))
         });
 
-        // Save to database.
+        // Save to database in background.
         relm4::spawn({
             async move {
                 if let Err(e) = chat.save().await {
@@ -242,7 +242,7 @@ impl Application {
             }
         }
 
-        // Save to database.
+        // Save to database in background.
         relm4::spawn({
             let chat = chat.clone();
 
