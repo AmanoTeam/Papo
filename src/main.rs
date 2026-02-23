@@ -50,7 +50,7 @@ mod icon_names {
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
 
-use std::{path::PathBuf, sync::LazyLock};
+use std::{fs::create_dir_all, path::PathBuf, sync::LazyLock};
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
@@ -64,7 +64,7 @@ use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSIO
 pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_data_dir().join("papo"));
 
 /// How many threads that Relm4 should use for asynchronous background tasks.
-static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
+pub static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
 
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
@@ -106,6 +106,11 @@ fn main() {
     gettextrs::bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR).expect("Unable to bind the text domain");
     gettextrs::textdomain(GETTEXT_PACKAGE).expect("Unable to switch to the text domain");
 
+    // Create datadir if it's missing.
+    if let Err(e) = create_dir_all(DATA_DIR.as_path()) {
+        tracing::error!("Failed to create data dir: {e}");
+    }
+
     glib::set_application_name("Papo");
 
     adw::init().expect("Failed to init GTK/libadwaita");
@@ -123,6 +128,7 @@ fn main() {
 
     tracing::info!("Papo ({})", APP_ID);
     tracing::info!("Version: {} ({})", VERSION, PROFILE);
+    tracing::info!("Datadir: {}", DATA_DIR.as_path().display());
 
     let data = res
         .lookup_data(

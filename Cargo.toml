@@ -12,7 +12,7 @@ description = "GTK client for WhatsApp Web"
 lto = true
 
 [dependencies]
-# UI
+# GTK
 adw = { version = "0.8", package = "libadwaita", features = ["v1_8"] }
 relm4 = { version = "0.10", features = ["libadwaita", "gnome_48"] }
 relm4-icons = "0.10"
