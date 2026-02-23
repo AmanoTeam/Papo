@@ -42,7 +42,7 @@ pub struct Message {
 impl Message {
     /// Insert or update the current message in the database.
     pub async fn save(&self) -> Result<(), libsql::Error> {
-        self.db.save_message(&self.chat_jid, &self).await
+        self.db.save_message(&self.chat_jid, self).await
     }
 
     /// Load the chat this message is attached to.

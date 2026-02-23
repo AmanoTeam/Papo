@@ -17,10 +17,10 @@ use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
 use crate::{config::ZAP_DATABASE_PATH, i18n, session::RuntimeCache};
 
-/// Shared client handle for accessing the WhatsApp client.
+/// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
 
-/// WhatsApp client wrapper that manages the connection and provides
+/// `WhatsApp` client wrapper that manages the connection and provides
 /// a clean interface for UI operations.
 #[derive(Clone)]
 pub struct Client {
@@ -156,7 +156,7 @@ pub enum ClientOutput {
     MessageFailed { id: String, error: String },
     /// New message received.
     MessageReceived {
-        info: MessageInfo,
+        info: Box<MessageInfo>,
         message: Box<Message>,
     },
 
@@ -190,7 +190,7 @@ pub enum ClientCommand {
 }
 
 impl Client {
-    /// Update WhatsApp client state.
+    /// Update `WhatsApp` client state.
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
     }
@@ -227,9 +227,7 @@ impl AsyncComponent for Client {
         let widgets = view_output!();
 
         // Start the client.
-        relm4::spawn_local(async move {
-            sender.oneshot_command(async { ClientCommand::Start });
-        });
+        sender.oneshot_command(async { ClientCommand::Start });
 
         AsyncComponentParts { model, widgets }
     }
@@ -257,7 +255,7 @@ impl AsyncComponent for Client {
                     // Sanitize the phone number
                     let phone_number = phone_number
                         .chars()
-                        .filter(|c| c.is_ascii_digit())
+                        .filter(char::is_ascii_digit)
                         .collect::<String>();
 
                     if let Err(e) = client
@@ -271,7 +269,7 @@ impl AsyncComponent for Client {
                         .await
                     {
                         let _ = sender.output(ClientOutput::Error {
-                            message: format!("Failed to pair with phone number: {}", e),
+                            message: format!("Failed to pair with phone number: {e}"),
                         });
                     }
                 }
@@ -281,6 +279,7 @@ impl AsyncComponent for Client {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
@@ -297,9 +296,9 @@ impl AsyncComponent for Client {
                     let backend = match SqliteStore::new(ZAP_DATABASE_PATH).await {
                         Ok(store) => Arc::new(store),
                         Err(e) => {
-                            tracing::error!("Failed to initialize SQLite storage: {}", e);
+                            tracing::error!("Failed to initialize SQLite storage: {e}");
                             let _ = sender.output(ClientOutput::Error {
-                                message: format!("Database error: {}", e),
+                                message: format!("Database error: {e}"),
                             });
 
                             return;
@@ -373,11 +372,7 @@ impl AsyncComponent for Client {
 
                                     Event::Receipt(receipt) => {
                                         let chat_jid = receipt.source.chat.to_string();
-                                        let message_ids = receipt
-                                            .message_ids
-                                            .iter()
-                                            .map(|id| id.to_string())
-                                            .collect::<Vec<_>>();
+                                        let message_ids = receipt.message_ids;
 
                                         let _ = sender.output(ClientOutput::ReadReceipts {
                                             chat_jid,
@@ -387,12 +382,12 @@ impl AsyncComponent for Client {
 
                                     Event::Message(message, info) => {
                                         let _ = sender.output(ClientOutput::MessageReceived {
-                                            info,
+                                            info: Box::new(info),
                                             message,
                                         });
                                     }
 
-                                    e => tracing::warn!("Unhandled event type: {:#?}", e),
+                                    e => tracing::warn!("Unhandled event type: {e:#?}"),
                                 }
                             }
                         })
@@ -408,9 +403,9 @@ impl AsyncComponent for Client {
 
                     // Runs the bot.
                     if let Err(e) = bot.run().await {
-                        tracing::error!("Bot failed to start: {}", e);
+                        tracing::error!("Bot failed to start: {e}");
 
-                        let message = format!("Connection failed: {}", e);
+                        let message = format!("Connection failed: {e}");
                         self.update_state(ClientState::Error(message.clone()));
                         let _ = sender.output(ClientOutput::Error { message });
                     }

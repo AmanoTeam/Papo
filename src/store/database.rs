@@ -49,7 +49,7 @@ impl Database {
         // Chats.
         self.conn
             .execute(
-                r#"
+                r"
             CREATE TABLE IF NOT EXISTS chats (
                 jid TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -59,7 +59,7 @@ impl Database {
                 last_message_time INTEGER,
                 archived INTEGER DEFAULT 0
             )
-            "#,
+            ",
                 (),
             )
             .await?;
@@ -67,7 +67,7 @@ impl Database {
         // Messages.
         self.conn
             .execute(
-                r#"
+                r"
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
                 chat_jid TEXT NOT NULL,
@@ -81,7 +81,7 @@ impl Database {
                 media_data BLOB,
                 FOREIGN KEY (chat_jid) REFERENCES chats(jid) ON DELETE CASCADE
             )
-            "#,
+            ",
                 (),
             )
             .await?;
@@ -89,7 +89,7 @@ impl Database {
         // Contacts.
         self.conn
             .execute(
-                r#"
+                r"
             CREATE TABLE IF NOT EXISTS contacts (
                 jid TEXT PRIMARY KEY,
                 phone_number TEXT,
@@ -99,7 +99,7 @@ impl Database {
                 is_registered INTEGER DEFAULT 0,
                 last_updated INTEGER
             )
-            "#,
+            ",
                 (),
             )
             .await?;
@@ -131,12 +131,11 @@ impl Database {
             .get_last_message()
             .await
             .expect("Failed to get the last message of a chat")
-            .map(|m| m.timestamp.timestamp())
-            .unwrap_or(0);
+            .map_or(0, |m| m.timestamp.timestamp());
 
         self.conn
             .execute(
-                r#"
+                r"
             INSERT INTO chats (jid, name, muted, pinned, unread_count, last_message_time, archived)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(jid) DO UPDATE SET
@@ -146,13 +145,13 @@ impl Database {
                 unread_count = excluded.unread_count,
                 last_message_time = excluded.last_message_time,
                 archived = excluded.archived
-            "#,
+            ",
                 libsql::params![
                     chat.jid.clone(),
                     chat.name.clone(),
-                    chat.muted as i32,
-                    chat.pinned as i32,
-                    chat.unread_count as i32,
+                    i32::from(chat.muted),
+                    i32::from(chat.pinned),
+                    chat.unread_count,
                     last_msg_time,
                     0i32 // archived
                 ],
@@ -166,13 +165,13 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                r#"
+                r"
             SELECT jid, name, muted, pinned, unread_count, last_message_time
             FROM chats
             WHERE jid = ?1 AND archived = 0
             ORDER BY pinned DESC, last_message_time DESC
             LIMIT 1
-            "#,
+            ",
                 [jid],
             )
             .await?;
@@ -185,7 +184,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
-                unread_count: row.get::<i32>(4)? as u32,
+                unread_count: row.get::<u32>(4)?,
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(5)?, 0)
                     .expect("Invalid timestamp"),
@@ -201,12 +200,12 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                r#"
+                r"
             SELECT jid, name, muted, pinned, unread_count, last_message_time
             FROM chats
             WHERE archived = 0
             ORDER BY pinned DESC, last_message_time DESC
-            "#,
+            ",
                 (),
             )
             .await?;
@@ -220,7 +219,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
-                unread_count: row.get::<i32>(4)? as u32,
+                unread_count: row.get::<u32>(4)?,
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(5)?, 0)
                     .expect("Invalid timestamp"),
@@ -245,7 +244,7 @@ impl Database {
         self.conn
             .execute(
                 "UPDATE chats SET unread_count = ?1 WHERE jid = ?2",
-                libsql::params![count as i32, jid],
+                libsql::params![count, jid],
             )
             .await?;
 
@@ -260,27 +259,27 @@ impl Database {
         chat_jid: &str,
         msg: &ChatMessage,
     ) -> Result<(), libsql::Error> {
-        let media_type = msg.media.as_ref().map(|m| format!("{:?}", m.media_type));
+        let media_type = msg.media.as_ref().map(|m| format!("{:?}", m.r#type));
         let media_data = msg.media.as_ref().map(|m| m.data.as_ref().clone());
 
         self.conn
             .execute(
-                r#"
+                r"
             INSERT INTO messages (id, chat_jid, sender_jid, sender_name, content,
                                   outgoing, unread, timestamp, media_type, media_data)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(id) DO UPDATE SET
                 unread = excluded.unread,
                 content = excluded.content
-            "#,
+            ",
                 libsql::params![
                     msg.id.clone(),
                     chat_jid,
                     msg.sender_jid.clone(),
                     msg.sender_name.clone(),
                     msg.content.clone(),
-                    msg.outgoing as i32,
-                    msg.unread as i32,
+                    i32::from(msg.outgoing),
+                    i32::from(msg.unread),
                     msg.timestamp.timestamp(),
                     media_type,
                     media_data
@@ -305,33 +304,29 @@ impl Database {
         msg_id: &str,
     ) -> Result<Option<ChatMessage>, libsql::Error> {
         let mut rows = self.conn.query(
-            r#"
+            r"
             SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
             FROM messages
             WHERE chat_jid = ?1 AND id = ?2
             ORDER BY timestamp DESC
             LIMIT ?2
-            "#,
+            ",
             libsql::params![chat_jid, msg_id],
         ).await?;
 
         if let Some(row) = rows.next().await? {
-            let media = if let Ok(media_type) = row.get::<String>(8) {
-                if let Ok(data) = row.get::<Vec<u8>>(9) {
+            let media = row.get::<String>(8).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(9).map_or(None, |data| {
                     let media_type: MediaType = media_type.into();
 
                     Some(Media {
                         data: Arc::new(data),
+                        r#type: media_type,
                         mime_type: media_type.guess_mime_type(),
-                        media_type,
                         ..Default::default()
                     })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+                })
+            });
 
             Ok(Some(ChatMessage {
                 id: row.get(0)?,
@@ -359,34 +354,30 @@ impl Database {
         limit: u32,
     ) -> Result<Vec<ChatMessage>, libsql::Error> {
         let mut rows = self.conn.query(
-            r#"
+            r"
             SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
             FROM messages
             WHERE chat_jid = ?1
             ORDER BY timestamp DESC
             LIMIT ?2
-            "#,
+            ",
             libsql::params![chat_jid, limit],
         ).await?;
 
         let mut messages = Vec::new();
         while let Some(row) = rows.next().await? {
-            let media = if let Ok(media_type) = row.get::<String>(8) {
-                if let Ok(data) = row.get::<Vec<u8>>(9) {
+            let media = row.get::<String>(8).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(9).map_or(None, |data| {
                     let media_type: MediaType = media_type.into();
 
                     Some(Media {
                         data: Arc::new(data),
+                        r#type: media_type,
                         mime_type: media_type.guess_mime_type(),
-                        media_type,
                         ..Default::default()
                     })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+                })
+            });
 
             messages.push(ChatMessage {
                 id: row.get(0)?,
@@ -418,13 +409,13 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                r#"
+                r"
             SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
             FROM messages
             WHERE chat_jid = ?1 AND timestamp < ?2
             ORDER BY timestamp DESC
             LIMIT ?3
-            "#,
+            ",
                 libsql::params![chat_jid, before_timestamp, limit],
             )
             .await?;
@@ -486,7 +477,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_unread_count(&self, chat_jid: &str) -> Result<u32, libsql::Error> {
+    pub async fn get_unread_count(&self, chat_jid: &str) -> Result<usize, libsql::Error> {
         let mut rows = self
             .conn
             .query(
@@ -496,7 +487,7 @@ impl Database {
             .await?;
 
         if let Some(row) = rows.next().await? {
-            Ok(row.get::<i64>(0)? as u32)
+            Ok(usize::try_from(row.get::<u64>(0)?).unwrap_or(0))
         } else {
             Ok(0)
         }
@@ -517,7 +508,7 @@ impl Database {
     pub async fn save_contact(&self, contact: &Contact) -> Result<(), libsql::Error> {
         self.conn
             .execute(
-                r#"
+                r"
             INSERT INTO contacts (jid, phone_number, name, push_name, is_registered, last_updated)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(jid) DO UPDATE SET
@@ -526,13 +517,13 @@ impl Database {
                 push_name = excluded.push_name,
                 is_registered = excluded.is_registered,
                 last_updated = excluded.last_updated
-            "#,
+            ",
                 libsql::params![
                     contact.jid.clone(),
                     contact.phone_number.clone(),
                     contact.name.clone(),
                     contact.push_name.clone(),
-                    contact.is_registered as i32,
+                    i32::from(contact.is_registered),
                     Utc::now().timestamp()
                 ],
             )
@@ -584,17 +575,17 @@ impl Database {
 /// Search operations.
 impl Database {
     pub async fn search_contacts(&self, query: &str) -> Result<Vec<Contact>, libsql::Error> {
-        let search_pattern = format!("%{}%", query);
+        let search_pattern = format!("%{query}%");
 
         let mut rows = self
             .conn
             .query(
-                r#"
+                r"
             SELECT jid, phone_number, name, push_name, is_registered
             FROM contacts
             WHERE name LIKE ?1 OR push_name LIKE ?1 OR jid LIKE ?1
             ORDER BY name
-            "#,
+            ",
                 [search_pattern],
             )
             .await?;
@@ -618,18 +609,18 @@ impl Database {
         query: &str,
         limit: u32,
     ) -> Result<Vec<(String, ChatMessage)>, libsql::Error> {
-        let search_pattern = format!("%{}%", query);
+        let search_pattern = format!("%{query}%");
 
         let mut rows = self
             .conn
             .query(
-                r#"
+                r"
             SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
             FROM messages
             WHERE content LIKE ?1
             ORDER BY timestamp DESC
             LIMIT ?2
-            "#,
+            ",
                 libsql::params![search_pattern, limit],
             )
             .await?;

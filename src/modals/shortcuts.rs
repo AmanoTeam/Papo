@@ -22,14 +22,14 @@ impl SimpleComponent for ShortcutsDialog {
         _sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let model = Self {};
-        let widgets = root.clone();
+        let widgets = root;
 
-        // Shortcuts section
-        let section = adw::ShortcutsSection::new(Some(&i18n!("General")));
-        section.add(adw::ShortcutsItem::new(&i18n!("Quit"), "<Control>q"));
+        // General section
+        let general = adw::ShortcutsSection::new(Some(&i18n!("General")));
+        general.add(adw::ShortcutsItem::new(&i18n!("Quit"), "<Control>q"));
         // section.add(adw::ShortcutsItem::new("New Tab", "<Control>t"));
+        widgets.add(general);
 
-        widgets.add(section);
         widgets.present(Some(&relm4::main_adw_application().windows()[0]));
 
         ComponentParts { model, widgets }

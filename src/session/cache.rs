@@ -12,7 +12,7 @@ use whatsapp_rust::ContactInfo;
 
 use crate::state::{Chat, ChatMessage};
 
-/// Runtime cache for WhatsApp data fetched from network.
+/// Runtime cache for `WhatsApp` data fetched from network.
 /// Uses Moka for automatic TTL eviction.
 pub struct RuntimeCache {
     /// Group info cache, maps JID -> group metadata.
@@ -40,7 +40,7 @@ impl RuntimeCache {
                 tracing::debug!("Initializing group cache...");
 
                 Cache::builder()
-                    .time_to_live(Duration::from_secs(3600))
+                    .time_to_live(Duration::from_hours(1))
                     .max_capacity(1_000)
                     .build()
             })
@@ -54,7 +54,7 @@ impl RuntimeCache {
                 tracing::debug!("Initializing device cache...");
 
                 Cache::builder()
-                    .time_to_live(Duration::from_secs(3600))
+                    .time_to_live(Duration::from_hours(1))
                     .max_capacity(5_000)
                     .build()
             })
@@ -68,7 +68,7 @@ impl RuntimeCache {
                 tracing::debug!("Initializing contact cache...");
 
                 Cache::builder()
-                    .time_to_live(Duration::from_secs(3600))
+                    .time_to_live(Duration::from_hours(1))
                     .max_capacity(2_000)
                     .build()
             })
@@ -89,7 +89,6 @@ pub struct ChatListCache {
 pub struct MessageListCache {
     pub count: usize,
     pub messages: Arc<[ChatMessage]>,
-    pub max_media_size: f32,
 }
 
 /// UI render cache with interior mutability.
@@ -139,18 +138,12 @@ impl RenderCache {
     }
 
     /// Get or compute message list cache for a chat.
-    pub fn get_message_list(
-        &self,
-        chat_jid: &str,
-        messages: &[ChatMessage],
-        max_media_size: f32,
-    ) -> Arc<[ChatMessage]> {
+    pub fn get_message_list(&self, chat_jid: &str, messages: &[ChatMessage]) -> Arc<[ChatMessage]> {
         let mut caches = self.message_lists.borrow_mut();
 
         // Check if cache is valid.
         if let Some(cached) = caches.get(chat_jid)
             && cached.count == messages.len()
-            && cached.max_media_size == max_media_size
         {
             return cached.messages.clone();
         }
@@ -162,7 +155,6 @@ impl RenderCache {
             MessageListCache {
                 count: messages_arc.len(),
                 messages: messages_arc.clone(),
-                max_media_size,
             },
         );
 

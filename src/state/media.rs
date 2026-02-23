@@ -13,14 +13,14 @@ pub struct Media {
     pub width: Option<u32>,
     /// Height in pixels.
     pub height: Option<u32>,
+    /// Type of the media.
+    pub r#type: MediaType,
     /// Caption text.
     pub caption: Option<String>,
     /// Whether this is an animated sticker (WebP animation).
     pub animated: bool,
     /// MIME type of the data.
     pub mime_type: String,
-    /// Type of the media.
-    pub media_type: MediaType,
     /// Download info for fetching full media (videos, documents).
     pub downloadable: Option<DownloadableMedia>,
     /// Duration in seconds (for audio/video).
@@ -45,7 +45,7 @@ impl Media {
 }
 
 /// Type of media.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum MediaType {
     /// Audio.
     Audio,
@@ -62,24 +62,24 @@ pub enum MediaType {
 
 impl MediaType {
     /// Gets a display label.
-    pub fn display_label(&self) -> String {
+    pub fn display_label(self) -> String {
         match self {
-            MediaType::Audio => format!("🎤 {}", i18n!("Voice message")),
-            MediaType::Image => format!("📷 {}", i18n!("Photo")),
-            MediaType::Video => format!("🎥 {}", i18n!("Video")),
-            MediaType::Sticker => format!("🎭 {}", i18n!("Sticker")),
-            MediaType::Document => format!("📄 {}", i18n!("Document")),
+            Self::Audio => format!("🎤 {}", i18n!("Voice message")),
+            Self::Image => format!("📷 {}", i18n!("Photo")),
+            Self::Video => format!("🎥 {}", i18n!("Video")),
+            Self::Sticker => format!("🎭 {}", i18n!("Sticker")),
+            Self::Document => format!("📄 {}", i18n!("Document")),
         }
     }
 
     /// Guess the mime type from the media.
-    pub fn guess_mime_type(&self) -> String {
+    pub fn guess_mime_type(self) -> String {
         match self {
-            MediaType::Audio => "audio/ogg".to_string(),
-            MediaType::Image => "image/jpeg".to_string(),
-            MediaType::Video => "video/mp4".to_string(),
-            MediaType::Sticker => "image/webp".to_string(),
-            MediaType::Document => "application/pdf".to_string(),
+            Self::Audio => "audio/ogg".to_string(),
+            Self::Image => "image/jpeg".to_string(),
+            Self::Video => "video/mp4".to_string(),
+            Self::Sticker => "image/webp".to_string(),
+            Self::Document => "application/pdf".to_string(),
         }
     }
 }
@@ -88,7 +88,6 @@ impl From<&str> for MediaType {
     fn from(value: &str) -> Self {
         match value.to_lowercase().as_str() {
             "audio" => Self::Audio,
-            "image" => Self::Image,
             "video" => Self::Video,
             "sticker" => Self::Sticker,
             "document" => Self::Document,
@@ -99,11 +98,11 @@ impl From<&str> for MediaType {
 
 impl From<String> for MediaType {
     fn from(value: String) -> Self {
-        value.into()
+        Self::from(value.as_str())
     }
 }
 
-/// Information needed to download encrypted media from WhatsApp servers.
+/// Information needed to download encrypted media from `WhatsApp` servers.
 /// This is stored separately from the thumbnail/preview data.
 #[derive(Clone, Debug)]
 pub struct DownloadableMedia {

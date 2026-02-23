@@ -5,12 +5,16 @@ use chrono::Local;
 use indexmap::IndexMap;
 use relm4::prelude::*;
 
-use crate::{i18n, state::Chat, utils::get_initials};
+use crate::{
+    i18n,
+    state::Chat,
+    utils::{format_lid_as_number, get_first_name},
+};
 
 pub struct ChatList {
     /// Cached chat list.
     chats: Vec<Chat>,
-    /// ListBox widget containing all chats.
+    /// `ListBox` widget containing all chats.
     list_box: gtk::ListBox,
     /// Chat rows.
     chat_rows: Rc<RefCell<IndexMap<String, adw::ActionRow>>>,
@@ -51,13 +55,19 @@ impl ChatList {
     }
 
     /// Build a new chat row.
+    #[allow(clippy::too_many_lines)]
     async fn build_chat_row(&self, chat: &Chat) -> adw::ActionRow {
         let avatar = {
             let overlay = gtk::Overlay::new();
 
+            let name = if chat.name.trim().is_empty() {
+                format_lid_as_number(&chat.jid)
+            } else {
+                chat.name.trim().to_string()
+            };
             let avatar = adw::Avatar::builder()
                 .size(36)
-                .text(chat.name.trim())
+                .text(name)
                 .show_initials(true)
                 .build();
             overlay.set_child(Some(&avatar));
@@ -75,9 +85,9 @@ impl ChatList {
 
             if let Ok(Some(last_message)) = chat.get_last_message().await {
                 let mut content = last_message.content;
-                let mut first_line = if content.contains("\n") {
+                let mut first_line = if content.contains('\n') {
                     content
-                        .split_once("\n")
+                        .split_once('\n')
                         .map(|(f, s)| {
                             if s.is_empty() {
                                 f.to_string()
@@ -92,11 +102,11 @@ impl ChatList {
 
                 if let Some(ref name) = last_message.sender_name {
                     if chat.is_group() && !last_message.outgoing {
-                        content = format!("{}: {}", name, content);
-                        first_line = format!("{}: {}", get_initials(name), first_line);
+                        content = format!("{name}: {content}");
+                        first_line = format!("{}: {first_line}", get_first_name(name));
                     } else if last_message.outgoing {
-                        content = format!("{}: {}", i18n!("You"), content);
-                        first_line = format!("{}: {}", i18n!("You"), first_line);
+                        content = format!("{}: {content}", i18n!("You"));
+                        first_line = format!("{}: {first_line}", i18n!("You"));
                     }
                 }
 
@@ -224,7 +234,7 @@ impl SimpleAsyncComponent for ChatList {
 
     async fn init(
         _init: Self::Init,
-        _root: Self::Root,
+        root: Self::Root,
         _sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let list_box = gtk::ListBox::new();

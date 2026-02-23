@@ -22,7 +22,7 @@ use crate::{
     session::{Client, ClientInput, ClientOutput, RenderCache, RuntimeCache},
     state::{Chat, ChatMessage},
     store::Database,
-    utils::extract_phone_from_jid,
+    utils::format_lid_as_number,
 };
 
 pub struct Application {
@@ -32,7 +32,7 @@ pub struct Application {
     login: AsyncController<Login>,
     /// Current app state.
     state: AppState,
-    /// WhatsApp client wrapper.
+    /// `WhatsApp` client wrapper.
     client: AsyncController<Client>,
     /// Toaster overlay.
     toaster: Toaster,
@@ -56,7 +56,7 @@ pub struct Application {
     chats: Vec<Chat>,
     /// UI render cache.
     render_cache: RenderCache,
-    /// Runtime cache for WhatsApp data.
+    /// Runtime cache for `WhatsApp` data.
     runtime_cache: Arc<RuntimeCache>,
 }
 
@@ -138,7 +138,7 @@ pub enum AppMsg {
 
     /// New message received.
     MessageReceived {
-        info: MessageInfo,
+        info: Box<MessageInfo>,
         message: Box<Message>,
     },
 
@@ -159,7 +159,7 @@ pub enum AppCmd {
 
 impl Application {
     /// Add a chat.
-    fn add_chat(&mut self, chat: Chat) {
+    async fn add_chat(&mut self, chat: Chat) {
         // Add chat to the cache.
         self.chats.push(chat.clone());
 
@@ -170,14 +170,10 @@ impl Application {
                 .then_with(|| a.last_message_time.cmp(&b.last_message_time))
         });
 
-        // Save to database in background.
-        relm4::spawn({
-            async move {
-                if let Err(e) = chat.save().await {
-                    tracing::error!("Failed to save chat: {}", e);
-                }
-            }
-        });
+        // Save to database.
+        if let Err(e) = chat.save().await {
+            tracing::error!("Failed to save chat: {}", e);
+        }
 
         // Invalidate cache.
         self.render_cache.invalidate_chat_list();
@@ -200,15 +196,13 @@ impl Application {
         } else {
             let name = if is_group {
                 format!("{} {}", i18n!("Group"), &chat_jid[..8])
+            } else if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
+                i18n!("You")
             } else {
-                if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
-                    i18n!("You")
-                } else {
-                    message
-                        .sender_name
-                        .clone()
-                        .unwrap_or_else(|| extract_phone_from_jid(chat_jid))
-                }
+                message
+                    .sender_name
+                    .clone()
+                    .unwrap_or_else(|| format_lid_as_number(chat_jid))
             };
 
             // Create a new chat.
@@ -222,7 +216,8 @@ impl Application {
                 last_message_time: message.timestamp,
 
                 db: Arc::clone(&self.db),
-            });
+            })
+            .await;
             self.chats.last_mut().unwrap()
         };
 
@@ -242,20 +237,14 @@ impl Application {
             }
         }
 
-        // Save to database in background.
-        relm4::spawn({
-            let chat = chat.clone();
+        // Save to database.
+        if let Err(e) = chat.save().await {
+            tracing::error!("Failed to update chat: {}", e);
+        }
 
-            async move {
-                if let Err(e) = chat.save().await {
-                    tracing::error!("Failed to update chat: {}", e);
-                }
-
-                if let Err(e) = message.save().await {
-                    tracing::error!("Failed to save message: {}", e);
-                }
-            }
-        });
+        if let Err(e) = message.save().await {
+            tracing::error!("Failed to save message: {}", e);
+        }
 
         // Invalidate cache.
         self.render_cache.invalidate_message_list(chat_jid);
@@ -329,11 +318,7 @@ impl AsyncComponent for Application {
                 glib::Propagation::Stop
             },
 
-            add_css_class?: if PROFILE == "Devel" {
-                Some("devel")
-            } else {
-                None
-            },
+            add_css_class?: (PROFILE == "Devel").then_some("devel"),
 
             #[local_ref]
             toast_overlay -> adw::ToastOverlay {
@@ -399,11 +384,7 @@ impl AsyncComponent for Application {
 
                                         adw::Avatar {
                                             #[watch]
-                                            set_text: Some(&if let Some(push_name) = model.user_push_name.clone() {
-                                                push_name
-                                            } else {
-                                                i18n!("You")
-                                            }),
+                                            set_text: Some(&model.user_push_name.clone().unwrap_or_else(|| i18n!("You"))),
                                             set_size: 30,
                                             set_show_initials: true,
                                         }
@@ -597,7 +578,7 @@ impl AsyncComponent for Application {
             chat_list,
             session_page: AppSessionPage::Empty,
             selected_chat: None,
-            sync_progress_bar: sync_progress_bar.clone(),
+            sync_progress_bar,
 
             user_jid: None,
             user_push_name: None,
@@ -650,6 +631,7 @@ impl AsyncComponent for Application {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update(
         &mut self,
         message: Self::Input,
@@ -662,9 +644,7 @@ impl AsyncComponent for Application {
                 self.user_push_name = Some(push_name);
 
                 // Sync in background.
-                relm4::spawn(async move {
-                    sender.oneshot_command(async { AppCmd::Sync });
-                });
+                sender.oneshot_command(async { AppCmd::Sync });
 
                 if self.page != AppPage::Session {
                     self.page = AppPage::Session;
@@ -787,26 +767,24 @@ impl AsyncComponent for Application {
                             );
                         }
                     }
-                } else {
-                    if let Some(sent_message) = message.device_sent_message {
-                        if let Some(_chat_jid) = sent_message.destination_jid {
-                            if let Some(msg) = sent_message.message {
-                                if let Some(_reaction) = msg.reaction_message {
-                                    // TODO: handle
-                                } else if let Some(_sticker) = msg.sticker_message {
-                                    // TODO: handle
-                                }
+                } else if let Some(sent_message) = message.device_sent_message {
+                    if let Some(_chat_jid) = sent_message.destination_jid {
+                        if let Some(msg) = sent_message.message {
+                            if let Some(_reaction) = msg.reaction_message {
+                                // TODO: handle
+                            } else if let Some(_sticker) = msg.sticker_message {
+                                // TODO: handle
                             }
-                        } else {
-                            // TODO: maybe add message to "You" chat?
                         }
                     } else {
-                        tracing::trace!(
-                            "Message without content received: info = {:#?}, message = {:#?}",
-                            info,
-                            message
-                        );
+                        // TODO: maybe add message to "You" chat?
                     }
+                } else {
+                    tracing::trace!(
+                        "Message without content received: info = {:#?}, message = {:#?}",
+                        info,
+                        message
+                    );
                 }
             }
 
@@ -814,6 +792,7 @@ impl AsyncComponent for Application {
             AppMsg::Error { message } => {
                 self.update_state(AppState::Error(message.clone()));
 
+                #[allow(clippy::match_same_arms)] // FIXME: remove when `Error` page is added
                 match self.page {
                     AppPage::Login => {
                         self.login.emit(LoginInput::Error { message });

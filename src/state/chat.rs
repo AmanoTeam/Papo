@@ -28,7 +28,7 @@ pub struct Chat {
 impl Chat {
     /// Insert or update the current chat in the database.
     pub async fn save(&self) -> Result<(), libsql::Error> {
-        self.db.save_chat(&self).await
+        self.db.save_chat(self).await
     }
 
     /// Check if the chat is a group.

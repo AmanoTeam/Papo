@@ -1,17 +1,15 @@
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use adw::prelude::*;
 use futures_util::FutureExt;
-use gtk::{gdk, glib, pango};
-use image::{ExtendedColorType, ImageEncoder, Luma, codecs::png::PngEncoder};
-use qrcode::QrCode;
+use gtk::{gdk, pango};
 use relm4::{component::Connector, prelude::*};
 use relm4_components::alert::{Alert, AlertMsg, AlertResponse, AlertSettings};
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 use strum::{AsRefStr, EnumString};
 use tokio::time::{self, Instant};
 
-use crate::i18n;
+use crate::{i18n, utils::generate_qr_code};
 
 #[derive(Debug)]
 pub struct Login {
@@ -32,14 +30,12 @@ enum LoginBottomPage {
     EnterPhoneNumber,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct LoginState {
     /// 8-character pair code.
     code: Option<[char; 8]>,
-    /// Whether the client has been paired.
-    paired: bool,
-    /// QR code image.
-    qr_code: Option<QrCode>,
+    /// Current pair state.
+    pair_state: PairState,
     /// QR code scan attempts.
     scan_attempts: u8,
     /// QR code expiration bar's progress.
@@ -48,28 +44,19 @@ struct LoginState {
     valid_phone_number: bool,
     /// Whether all QR codes from session has been expired.
     session_scan_expired: bool,
-    /// Whether a request to pair with phone number has been sent.
-    pairing_with_phone_number: bool,
     /// Phone number country emoji.
     phone_number_country_emoji: Option<String>,
 }
 
-impl fmt::Debug for LoginState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LoginState")
-            .field("code", &self.code)
-            .field("paired", &self.paired)
-            .field("scan_attempts", &self.scan_attempts)
-            .field("progress_fraction", &self.progress_fraction)
-            .field("valid_phone_number", &self.valid_phone_number)
-            .field("session_scan_expired", &self.session_scan_expired)
-            .field("pairing_with_phone_number", &self.pairing_with_phone_number)
-            .field(
-                "phone_number_country_emoji",
-                &self.phone_number_country_emoji,
-            )
-            .finish()
-    }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PairState {
+    /// The client was paired successfully.
+    Paired,
+    /// The client is still pairing.
+    #[default]
+    Pairing,
+    /// The client is pairing with phone number.
+    PairingWithPhoneNumber,
 }
 
 #[derive(Debug)]
@@ -189,7 +176,7 @@ impl AsyncComponent for Login {
                                 set_vexpand: true,
                                 set_opacity: 0.96,
                                 #[watch]
-                                set_visible: model.state.qr_code.is_none(),
+                                set_visible: model.qr_code.is_none(),
                                 set_css_classes: &["card", "view"],
                                 set_width_request: 200,
                                 set_height_request: 200,
@@ -239,7 +226,7 @@ impl AsyncComponent for Login {
                                 set_halign: gtk::Align::Center,
                                 set_valign: gtk::Align::End,
                                 #[watch]
-                                set_visible: model.state.qr_code.is_some(),
+                                set_visible: model.qr_code.is_some(),
                                 #[watch]
                                 set_fraction: model.state.progress_fraction,
                                 set_margin_bottom: 1,
@@ -307,7 +294,7 @@ impl AsyncComponent for Login {
                                     #[wrap(Some)]
                                     set_child = &adw::Spinner {
                                         #[watch]
-                                        set_visible: model.state.pairing_with_phone_number,
+                                        set_visible: model.state.pair_state == PairState::PairingWithPhoneNumber,
                                     },
 
                                     connect_clicked[sender, phone_number_entry] => move |_| {
@@ -340,13 +327,14 @@ impl AsyncComponent for Login {
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_homogeneous: true,
 
+                                // TODO: use custom component
                                 gtk::Label {
                                     inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
                                     #[watch]
                                     set_label?: &model.state.code.map(|c| c[0].to_string()),
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.paired { "success" } else { "accent" }],
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -357,7 +345,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -368,7 +356,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -379,7 +367,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -398,7 +386,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -409,7 +397,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -420,7 +408,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
 
                                 gtk::Label {
@@ -431,7 +419,7 @@ impl AsyncComponent for Login {
                                     set_hexpand: true,
                                     set_justify: gtk::Justification::Center,
                                     #[watch]
-                                    set_css_classes: &["title-3", "card", if model.state.paired { "success" } else { "accent" }]
+                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
                                 },
                             }
                         } -> {
@@ -524,22 +512,20 @@ impl AsyncComponent for Login {
                     self.state.code = Some(split_code);
                     self.bottom_page = LoginBottomPage::ConfirmCode;
                 } else if let Some(qr_code) = qr_code {
-                    relm4::spawn(async move {
-                        sender.oneshot_command(async move {
-                            LoginCommand::UpdateQrCode {
-                                data: qr_code,
-                                timeout,
-                            }
-                        });
+                    sender.oneshot_command(async move {
+                        LoginCommand::UpdateQrCode {
+                            data: qr_code,
+                            timeout,
+                        }
                     });
                 }
             }
             LoginInput::PairSuccess => {
-                self.state.paired = true;
+                self.state.pair_state = PairState::Paired;
             }
 
             LoginInput::Error { message } => {
-                self.state.pairing_with_phone_number = false;
+                self.state.pair_state = PairState::Pairing;
 
                 self.error_dialog.widgets().gtk_label_2.set_text(&message);
                 self.error_dialog.emit(AlertMsg::Show);
@@ -556,8 +542,8 @@ impl AsyncComponent for Login {
         match input {
             LoginCommand::ResetSession => {
                 // Reset the session.
+                self.qr_code = None;
                 self.state.code = None;
-                self.state.qr_code = None;
                 self.state.scan_attempts = 0;
                 self.state.progress_fraction = 0.0;
                 self.state.session_scan_expired = true;
@@ -567,7 +553,6 @@ impl AsyncComponent for Login {
 
             LoginCommand::UpdateQrCode { data, timeout } => {
                 // Reset the QR code and progress bar.
-                self.state.qr_code = None;
                 self.state.progress_fraction = 0.0;
 
                 if self.state.scan_attempts >= 5 {
@@ -577,37 +562,15 @@ impl AsyncComponent for Login {
                 self.state.scan_attempts += 1;
 
                 // Generate the QR code.
-                let qr_code = QrCode::new(data.as_bytes()).expect("Failed to generate QR code");
-                let image = qr_code.render::<Luma<u8>>().build();
-
-                // Encode the QR code as a PNG.
-                let mut bytes = Vec::new();
-                let encoder = PngEncoder::new(&mut bytes);
-                encoder
-                    .write_image(
-                        image.as_raw(),
-                        image.width(),
-                        image.height(),
-                        ExtendedColorType::L8,
-                    )
-                    .expect("Failed to encode QR code");
-
-                // Load the image through glycin.
-                let loader = glycin::Loader::new_bytes(glib::Bytes::from_owned(bytes));
-                let image = loader.load().await.expect("Failed to load QR code");
-                let frame = image
-                    .next_frame()
+                let texture = generate_qr_code(&data)
                     .await
-                    .expect("Failed to extract QR code frame");
-                let texture = frame.texture();
-
-                let start = Instant::now();
+                    .expect("Failed to generate QR code");
                 self.qr_code = Some(texture.into());
-                self.state.qr_code = Some(qr_code);
 
                 // Make sure to not reset the qr code after it refreshes.
-                let timeout = timeout - Duration::from_secs(2);
+                let timeout = timeout.checked_sub(Duration::from_secs(2)).unwrap();
 
+                let start = Instant::now();
                 sender.command(move |output, shutdown| {
                     shutdown
                         .register(async move {
@@ -632,14 +595,14 @@ impl AsyncComponent for Login {
             }
             LoginCommand::QrCodeExpired => {
                 // Reset the QR code and progress bar.
-                self.state.qr_code = None;
+                self.qr_code = None;
                 self.state.progress_fraction = 0.0;
             }
             LoginCommand::UpdateExpirationBar(progress) => {
-                self.state.progress_fraction = progress as f64;
+                self.state.progress_fraction = f64::from(progress);
             }
             LoginCommand::PairWithPhoneNumber { phone_number } => {
-                self.state.pairing_with_phone_number = true;
+                self.state.pair_state = PairState::PairingWithPhoneNumber;
 
                 let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
             }

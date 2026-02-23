@@ -1,4 +1,31 @@
-//! Papo - GTK WhatsApp client
+#![deny(clippy::all)]
+#![deny(clippy::cargo)]
+#![deny(clippy::pedantic)]
+// To keep consistency.
+#![deny(clippy::use_self)]
+#![deny(clippy::redundant_clone)]
+#![deny(clippy::equatable_if_let)]
+#![deny(clippy::needless_collect)]
+#![deny(clippy::option_if_let_else)]
+#![deny(clippy::useless_let_if_seq)]
+#![deny(clippy::non_zero_suggestions)]
+#![deny(clippy::string_lit_chars_any)]
+#![deny(clippy::branches_sharing_code)]
+#![deny(clippy::if_then_some_else_none)]
+#![deny(clippy::set_contains_or_insert)]
+#![deny(clippy::semicolon_outside_block)]
+#![deny(clippy::needless_pass_by_ref_mut)]
+#![deny(clippy::separated_literal_suffix)]
+#![deny(clippy::empty_structs_with_brackets)]
+#![deny(clippy::significant_drop_in_scrutinee)]
+#![deny(clippy::empty_enum_variants_with_brackets)]
+// Use tracing crate.
+#![deny(clippy::print_stdout)]
+#![deny(clippy::print_stderr)]
+// Expected
+#![expect(clippy::multiple_crate_versions)]
+
+//! Papo - GTK `WhatsApp` client.
 //!
 //! This is the main entry point for the Papo application.
 

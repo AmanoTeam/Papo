@@ -31,13 +31,13 @@ impl SimpleComponent for AboutDialog {
     }
 
     fn init(
-        _: Self::Init,
+        _init: Self::Init,
         root: Self::Root,
         _sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let model = Self {};
 
-        let widgets = root.clone();
+        let widgets = root;
         widgets.present(Some(&relm4::main_adw_application().windows()[0]));
 
         ComponentParts { model, widgets }
