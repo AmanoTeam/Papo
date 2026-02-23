@@ -50,13 +50,21 @@ mod icon_names {
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
 
+use std::{fs::create_dir_all, path::PathBuf, sync::LazyLock};
+
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
 use relm4::{RelmApp, gtk, main_application, once_cell::sync::OnceCell};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use application::Application;
-use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PKGDATADIR, PROFILE, RESOURCES_FILE, VERSION};
+use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSION};
+
+/// Papo's data directory path (e.g., ~/.local/share/papo on Linux).
+pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_data_dir().join("papo"));
+
+/// How many threads that Relm4 should use for asynchronous background tasks.
+pub static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
 
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
@@ -82,9 +90,6 @@ macro_rules! ni18n {
     };
 }
 
-/// How many threads that Relm4 should use for asynchronous background tasks.
-static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
-
 fn main() {
     // Initialize logger.
     // Default to the INFO level for this crate and WARN for everything else.
@@ -100,6 +105,11 @@ fn main() {
     gettextrs::setlocale(LocaleCategory::LcAll, "");
     gettextrs::bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR).expect("Unable to bind the text domain");
     gettextrs::textdomain(GETTEXT_PACKAGE).expect("Unable to switch to the text domain");
+
+    // Create datadir if it's missing.
+    if let Err(e) = create_dir_all(DATA_DIR.as_path()) {
+        tracing::error!("Failed to create data dir: {e}");
+    }
 
     glib::set_application_name("Papo");
 
@@ -118,7 +128,7 @@ fn main() {
 
     tracing::info!("Papo ({})", APP_ID);
     tracing::info!("Version: {} ({})", VERSION, PROFILE);
-    tracing::info!("Datadir: {}", PKGDATADIR);
+    tracing::info!("Datadir: {}", DATA_DIR.as_path().display());
 
     let data = res
         .lookup_data(

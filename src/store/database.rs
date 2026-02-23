@@ -1,11 +1,11 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use libsql::{Builder, Cipher, Connection, EncryptionConfig};
 
 use crate::{
-    config::PAPO_DATABASE_PATH,
+    DATA_DIR,
     state::{Chat, ChatMessage, Media, MediaType},
 };
 
@@ -20,15 +20,10 @@ pub struct Database {
 impl Database {
     /// Create a new database.
     pub async fn new() -> Result<Self, libsql::Error> {
-        let path = PAPO_DATABASE_PATH;
-
-        // Create parent directory.
-        if let Some(parent) = Path::new(path).parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
+        let path = DATA_DIR.join("papo.db");
 
         let db = Arc::new(
-            Builder::new_local(path)
+            Builder::new_local(&path)
                 .encryption_config(EncryptionConfig {
                     cipher: Cipher::Aes256Cbc,
                     encryption_key: "".into(), // TODO: use a proper encryption key
