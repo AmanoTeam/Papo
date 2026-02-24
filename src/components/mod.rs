@@ -5,4 +5,5 @@ mod chat_view;
 mod login;
 
 pub use chat_list::{ChatList, ChatListInput, ChatListOutput};
+pub use chat_view::{ChatView, ChatViewInput, ChatViewOutput};
 pub use login::{Login, LoginInput, LoginOutput};

@@ -1,16 +1,9 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
 use moka::future::Cache;
 use tokio::sync::OnceCell;
 use wacore::client::context::GroupInfo;
 use whatsapp_rust::ContactInfo;
-
-use crate::state::{Chat, ChatMessage};
 
 /// Runtime cache for `WhatsApp` data fetched from network.
 /// Uses Moka for automatic TTL eviction.
@@ -73,101 +66,5 @@ impl RuntimeCache {
                     .build()
             })
             .await
-    }
-}
-
-/// Cache for chat list data.
-#[derive(Clone)]
-pub struct ChatListCache {
-    pub count: usize,
-    pub chats: Arc<[Chat]>,
-    pub last_updated: Instant,
-}
-
-/// Cache for messages in a specific chat.
-#[derive(Clone)]
-pub struct MessageListCache {
-    pub count: usize,
-    pub messages: Arc<[ChatMessage]>,
-}
-
-/// UI render cache with interior mutability.
-/// This avoids recomputing expensive UI data on every render.
-pub struct RenderCache {
-    /// Chat list cache, None means needs recompute.
-    chat_list: RefCell<Option<ChatListCache>>,
-    /// Message list cache per chat JID.
-    message_lists: RefCell<HashMap<String, MessageListCache>>,
-}
-
-impl RenderCache {
-    /// Create a new empty render cache.
-    pub fn new() -> Self {
-        Self {
-            chat_list: RefCell::new(None),
-            message_lists: RefCell::new(HashMap::new()),
-        }
-    }
-
-    /// Get or compute chat list cache.
-    /// Uses count comparison for cheap invalidation check.
-    pub fn get_chat_list(&self, chats: &[Chat]) -> Arc<[Chat]> {
-        let mut cache = self.chat_list.borrow_mut();
-
-        // Check if cache is still valid (compare count).
-        if let Some(ref cached) = *cache
-            && cached.count == chats.len()
-        {
-            return cached.chats.clone();
-        }
-
-        // Cache miss - recompute.
-        let chats_arc = chats.iter().cloned().collect::<Arc<[Chat]>>();
-        *cache = Some(ChatListCache {
-            count: chats_arc.len(),
-            chats: chats_arc.clone(),
-            last_updated: std::time::Instant::now(),
-        });
-
-        chats_arc
-    }
-
-    /// Invalidate chat list cache (call when chats change).
-    pub fn invalidate_chat_list(&self) {
-        *self.chat_list.borrow_mut() = None;
-    }
-
-    /// Get or compute message list cache for a chat.
-    pub fn get_message_list(&self, chat_jid: &str, messages: &[ChatMessage]) -> Arc<[ChatMessage]> {
-        let mut caches = self.message_lists.borrow_mut();
-
-        // Check if cache is valid.
-        if let Some(cached) = caches.get(chat_jid)
-            && cached.count == messages.len()
-        {
-            return cached.messages.clone();
-        }
-
-        // Cache miss - recompute.
-        let messages_arc = messages.iter().cloned().collect::<Arc<[ChatMessage]>>();
-        caches.insert(
-            chat_jid.to_string(),
-            MessageListCache {
-                count: messages_arc.len(),
-                messages: messages_arc.clone(),
-            },
-        );
-
-        messages_arc
-    }
-
-    /// Invalidate message cache for a specific chat.
-    pub fn invalidate_message_list(&self, chat_jid: &str) {
-        self.message_lists.borrow_mut().remove(chat_jid);
-    }
-
-    /// Invalidate all message caches.
-    pub fn invalidate_all_messages(&self) {
-        self.message_lists.borrow_mut().clear();
     }
 }

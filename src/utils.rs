@@ -15,7 +15,7 @@ pub fn get_first_name(name: &str) -> String {
 
         first.chars().next().unwrap().to_string()
     } else {
-        name.chars().next().unwrap().to_string()
+        name.to_string()
     }
 }
 

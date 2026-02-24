@@ -52,4 +52,14 @@ impl Message {
             .await
             .map(|c| c.expect("Failed to get chat attached to message"))
     }
+
+    /// Mark this message as read.
+    pub async fn mark_read(&mut self) -> Result<(), libsql::Error> {
+        if self.unread {
+            self.unread = false;
+            self.save().await
+        } else {
+            Ok(())
+        }
+    }
 }

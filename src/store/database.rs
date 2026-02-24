@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
-use libsql::{Builder, Cipher, Connection, EncryptionConfig};
+use libsql::{Builder, Cipher, Connection, EncryptionConfig, params::IntoParams};
 
 use crate::{
     DATA_DIR,
@@ -39,6 +39,11 @@ impl Database {
         Ok(this)
     }
 
+    /// Execute a SQL expression in the running connection.
+    pub async fn execute(&self, sql: &str, params: impl IntoParams) -> Result<u64, libsql::Error> {
+        self.conn.execute(sql, params).await
+    }
+
     /// Initialize the database tables.
     async fn init_tables(&self) -> Result<(), libsql::Error> {
         // Chats.
@@ -50,7 +55,6 @@ impl Database {
                 name TEXT NOT NULL,
                 muted INTEGER DEFAULT 0,
                 pinned INTEGER DEFAULT 0,
-                unread_count INTEGER DEFAULT 0,
                 last_message_time INTEGER,
                 archived INTEGER DEFAULT 0
             )
@@ -131,13 +135,12 @@ impl Database {
         self.conn
             .execute(
                 r"
-            INSERT INTO chats (jid, name, muted, pinned, unread_count, last_message_time, archived)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO chats (jid, name, muted, pinned, last_message_time, archived)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(jid) DO UPDATE SET
                 name = excluded.name,
                 muted = excluded.muted,
                 pinned = excluded.pinned,
-                unread_count = excluded.unread_count,
                 last_message_time = excluded.last_message_time,
                 archived = excluded.archived
             ",
@@ -146,7 +149,6 @@ impl Database {
                     chat.name.clone(),
                     i32::from(chat.muted),
                     i32::from(chat.pinned),
-                    chat.unread_count,
                     last_msg_time,
                     0i32 // archived
                 ],
@@ -161,7 +163,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, unread_count, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time
             FROM chats
             WHERE jid = ?1 AND archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -179,9 +181,8 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
-                unread_count: row.get::<u32>(4)?,
                 participants: HashMap::new(),
-                last_message_time: DateTime::from_timestamp(row.get::<i64>(5)?, 0)
+                last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
 
                 db: Arc::new(self.clone()),
@@ -196,7 +197,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, unread_count, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time
             FROM chats
             WHERE archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -214,9 +215,8 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
-                unread_count: row.get::<u32>(4)?,
                 participants: HashMap::new(),
-                last_message_time: DateTime::from_timestamp(row.get::<i64>(5)?, 0)
+                last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
 
                 db: Arc::new(self.clone()),
@@ -230,17 +230,6 @@ impl Database {
         // Cascade delete will remove messages too.
         self.conn
             .execute("DELETE FROM chats WHERE jid = ?1", [jid])
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn update_chat_unread(&self, jid: &str, count: u32) -> Result<(), libsql::Error> {
-        self.conn
-            .execute(
-                "UPDATE chats SET unread_count = ?1 WHERE jid = ?2",
-                libsql::params![count, jid],
-            )
             .await?;
 
         Ok(())
@@ -435,33 +424,6 @@ impl Database {
         }
 
         Ok(messages)
-    }
-
-    pub async fn mark_message_read(&self, message_id: &str) -> Result<(), libsql::Error> {
-        self.conn
-            .execute("UPDATE messages SET unread = 0 WHERE id = ?1", [message_id])
-            .await?;
-
-        Ok(())
-    }
-
-    /// Mark all messages from a chat as read.
-    pub async fn mark_chat_read(&self, chat_jid: &str) -> Result<(), libsql::Error> {
-        self.conn
-            .execute(
-                "UPDATE messages SET unread = 0 WHERE chat_jid = ?1",
-                [chat_jid],
-            )
-            .await?;
-
-        self.conn
-            .execute(
-                "UPDATE chats SET unread_count = 0 WHERE jid = ?1",
-                [chat_jid],
-            )
-            .await?;
-
-        Ok(())
     }
 
     pub async fn delete_message(&self, message_id: &str) -> Result<(), libsql::Error> {

@@ -15,11 +15,14 @@ use wacore::types::message::MessageInfo;
 use waproto::whatsapp::Message;
 
 use crate::{
-    components::{ChatList, ChatListInput, ChatListOutput, Login, LoginInput, LoginOutput},
+    components::{
+        ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
+        LoginInput, LoginOutput,
+    },
     config::{APP_ID, PROFILE},
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
-    session::{Client, ClientInput, ClientOutput, RenderCache, RuntimeCache},
+    session::{Client, ClientInput, ClientOutput, RuntimeCache},
     state::{Chat, ChatMessage},
     store::Database,
     utils::format_lid_as_number,
@@ -36,12 +39,12 @@ pub struct Application {
     client: AsyncController<Client>,
     /// Toaster overlay.
     toaster: Toaster,
-    /// Chat list data to avoid recomputation on every render.
+    /// Chat list component.
     chat_list: AsyncController<ChatList>,
+    /// Chat view component.
+    chat_view: AsyncController<ChatView>,
     /// Page session view is displaying.
     session_page: AppSessionPage,
-    /// Currently selected chat JID.
-    selected_chat: Option<String>,
     /// Progress bar displayed when syncing data.
     sync_progress_bar: gtk::ProgressBar,
 
@@ -54,8 +57,6 @@ pub struct Application {
     db: Arc<Database>,
     /// Current chats data.
     chats: Vec<Chat>,
-    /// UI render cache.
-    render_cache: RenderCache,
     /// Runtime cache for `WhatsApp` data.
     runtime_cache: Arc<RuntimeCache>,
 }
@@ -129,6 +130,8 @@ pub enum AppMsg {
 
     /// Select a chat.
     ChatSelected(String),
+    /// Mark a chat as read.
+    MarkChatRead(String),
 
     /// Read receipts updated.
     ReadReceipts {
@@ -158,42 +161,35 @@ pub enum AppCmd {
 }
 
 impl Application {
-    /// Add a chat.
     async fn add_chat(&mut self, chat: Chat) {
-        // Add chat to the cache.
+        // Insert the chat into our cached list.
         self.chats.push(chat.clone());
 
-        // Sort: pinned first, then by last message time.
+        // Sort all our chats.
         self.chats.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
                 .then_with(|| a.last_message_time.cmp(&b.last_message_time))
         });
 
-        // Save to database.
+        // Save the chat in the database.
         if let Err(e) = chat.save().await {
             tracing::error!("Failed to save chat: {}", e);
         }
 
-        // Invalidate cache.
-        self.render_cache.invalidate_chat_list();
-
-        // Update chat list.
-        let cached_chats = self.get_cached_chat_list();
-        self.chat_list.emit(ChatListInput::Update {
-            chats: cached_chats.to_vec(),
+        // Add the chat in the chat list.
+        self.chat_list.emit(ChatListInput::AddChat {
+            chat: chat,
+            at_the_top: true,
         });
     }
 
-    /// Add a message to a chat.
     async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
-        // Check if the chat is a group.
+        // Check if the message's chat is a group.
         let is_group = chat_jid.ends_with("@g.us");
 
-        // Find or create chat.
-        let chat = if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
-            chat
-        } else {
+        // Create a new chat if it doesn't exists.
+        if !self.chats.iter().any(|c| c.jid == chat_jid) {
             let name = if is_group {
                 format!("{} {}", i18n!("Group"), &chat_jid[..8])
             } else if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
@@ -205,27 +201,25 @@ impl Application {
                     .unwrap_or_else(|| format_lid_as_number(chat_jid))
             };
 
-            // Create a new chat.
             self.add_chat(Chat {
                 jid: chat_jid.to_string(),
                 name,
                 muted: false,
                 pinned: false,
-                unread_count: 0,
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
-
                 db: Arc::clone(&self.db),
             })
             .await;
-            self.chats.last_mut().unwrap()
+        }
+
+        // Get the chat.
+        let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) else {
+            return;
         };
 
+        // Check if the message was sent by the connected user.
         if !message.outgoing {
-            // Increase unread count.
-            chat.unread_count += 1;
-
-            // Insert the sender in the chat's participants if they aren't there.
             if is_group && !chat.participants.contains_key(&message.sender_jid) {
                 chat.participants.insert(
                     message.sender_jid.clone(),
@@ -237,41 +231,37 @@ impl Application {
             }
         }
 
-        // Save to database.
+        // Save the chat in the database.
         if let Err(e) = chat.save().await {
             tracing::error!("Failed to update chat: {}", e);
         }
 
+        // Save the message in the database.
         if let Err(e) = message.save().await {
             tracing::error!("Failed to save message: {}", e);
         }
 
-        // Invalidate cache.
-        self.render_cache.invalidate_message_list(chat_jid);
-
-        // Update chat list.
-        let cached_chats = self.get_cached_chat_list();
-        self.chat_list.emit(ChatListInput::Update {
-            chats: cached_chats.to_vec(),
+        // Update the chat in the chat list.
+        self.chat_list.emit(ChatListInput::UpdateChat {
+            chat: chat.clone(),
+            move_to_top: true,
         });
     }
 
-    /// Update application state.
-    fn update_state(&mut self, state: AppState) {
-        self.state = state;
-    }
-
     /// Mark a chat as read.
-    fn mark_chat_read(&mut self, chat_jid: &str) {
+    async fn mark_chat_read(&mut self, chat_jid: &str) {
+        // Find the chat.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
-            chat.unread_count = 0;
-            self.render_cache.invalidate_chat_list();
-        }
-    }
+            if let Err(e) = chat.mark_read().await {
+                tracing::error!("Failed to mark a chat as read: {e}");
+            }
 
-    /// Get cached chat list for UI rendering.
-    fn get_cached_chat_list(&self) -> Arc<[Chat]> {
-        self.render_cache.get_chat_list(&self.chats)
+            // Update the chat in the chat list.
+            self.chat_list.emit(ChatListInput::UpdateChat {
+                chat: chat.clone(),
+                move_to_top: false,
+            });
+        }
     }
 }
 
@@ -335,7 +325,8 @@ impl AsyncComponent for Application {
                             }
                         },
 
-                        gtk::Box {
+                        #[wrap(Some)]
+                        set_content = &gtk::Box {
                             set_halign: gtk::Align::Center,
                             set_valign: gtk::Align::Center,
                             set_vexpand: true,
@@ -429,59 +420,23 @@ impl AsyncComponent for Application {
                             set_css_classes: &["view"],
 
                             #[wrap(Some)]
-                            set_child = &adw::ToolbarView {
-                                add_top_bar = &adw::HeaderBar {
-                                    set_css_classes: &["flat"],
-                                    #[watch]
-                                    set_show_back_button: model.selected_chat.is_some(),
+                            set_child = &gtk::Stack {
+                                set_transition_type: gtk::StackTransitionType::Crossfade,
 
-                                    #[name = "header_bar"]
-                                    #[wrap(Some)]
-                                    set_title_widget = &gtk::Button {
-                                        set_halign: gtk::Align::Center,
-                                        set_valign: gtk::Align::Center,
-                                        set_css_classes: &["flat"],
-
-                                        // connect_clicked => AppMsg::OpenChatProfile { ... },
-
-                                        gtk::Box {
-                                            set_halign: gtk::Align::Center,
-                                            set_valign: gtk::Align::Center,
-                                            set_orientation: gtk::Orientation::Vertical,
-
-                                            gtk::Label {
-                                                set_label: "", // TODO: show chat name
-                                                #[watch]
-                                                set_visible: model.selected_chat.is_some(),
-                                                set_css_classes: &["title"]
-                                            },
-
-                                            gtk::Label {
-                                                set_label: "A beautiful description", // TODO: show contact's status when chatting with a person and the chat's description when it's a group, channel or community
-                                                #[watch]
-                                                set_visible: model.selected_chat.is_some(),
-                                                set_css_classes: &["dimmed"]
-                                            }
-                                        }
-                                    }
+                                add_named[Some("empty")] = &adw::StatusPage {
+                                    set_title: &i18n!("No Chat Selected"),
+                                    set_hexpand: true,
+                                    set_vexpand: true,
+                                    set_can_focus: false,
+                                    set_icon_name: Some("chat-bubbles-empty-symbolic"),
+                                    set_description: Some(&i18n!("Select a chat to start chatting"))
                                 },
 
-                                #[wrap(Some)]
-                                set_content = &gtk::Stack {
-                                    set_transition_type: gtk::StackTransitionType::Crossfade,
+                                #[local_ref]
+                                add_named[Some("chat")] = chat_view_widget -> adw::ToolbarView {},
 
-                                    add_named[Some("empty")] = &adw::StatusPage {
-                                        set_title: &i18n!("No Chat Selected"),
-                                        set_hexpand: true,
-                                        set_vexpand: true,
-                                        set_can_focus: false,
-                                        set_icon_name: Some("chat-bubbles-empty-symbolic"),
-                                        set_description: Some(&i18n!("Select a chat to start chatting"))
-                                    },
-
-                                    #[watch]
-                                    set_visible_child_name: model.session_page.as_ref(),
-                                }
+                                #[watch]
+                                set_visible_child_name: model.session_page.as_ref(),
                             }
                         }
                     },
@@ -504,6 +459,7 @@ impl AsyncComponent for Application {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn init(
         _init: Self::Init,
         root: Self::Root,
@@ -566,6 +522,11 @@ impl AsyncComponent for Application {
             .forward(sender.input_sender(), |output| match output {
                 ChatListOutput::ChatSelected(jid) => AppMsg::ChatSelected(jid),
             });
+        let chat_view = ChatView::builder()
+            .launch(())
+            .forward(sender.input_sender(), |output| match output {
+                ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
+            });
 
         let sync_progress_bar = gtk::ProgressBar::new();
 
@@ -576,8 +537,8 @@ impl AsyncComponent for Application {
             client,
             toaster: Toaster::default(),
             chat_list,
+            chat_view,
             session_page: AppSessionPage::Empty,
-            selected_chat: None,
             sync_progress_bar,
 
             user_jid: None,
@@ -585,13 +546,13 @@ impl AsyncComponent for Application {
 
             db,
             chats: Vec::new(),
-            render_cache: RenderCache::new(),
             runtime_cache,
         };
 
         let login_widget = model.login.widget();
         let toast_overlay = model.toaster.overlay_widget();
         let chat_list_widget = model.chat_list.widget();
+        let chat_view_widget = model.chat_view.widget();
 
         let app = root.application().unwrap();
         let mut actions = RelmActionGroup::<WindowActionGroup>::new();
@@ -652,21 +613,20 @@ impl AsyncComponent for Application {
             }
             AppMsg::LoggedOut => {
                 self.page = AppPage::Loading;
-                self.update_state(AppState::Pairing);
+                self.state = AppState::Pairing;
 
                 sender.input(AppMsg::ResetSession);
 
-                // Clear database in background.
                 let db = self.db.clone();
-                let chats = self.chats.clone();
+                let chats = std::mem::take(&mut self.chats);
                 relm4::spawn(async move {
                     for chat in chats {
-                        let _ = db.delete_chat(&chat.jid).await; // Delete messages on cascade.
+                        let _ = db.delete_chat(&chat.jid).await;
                     }
                 });
             }
             AppMsg::Disconnected => {
-                self.update_state(AppState::Disconnected);
+                self.state = AppState::Disconnected;
             }
             AppMsg::ResetSession => {
                 self.client.emit(ClientInput::Restart);
@@ -692,7 +652,7 @@ impl AsyncComponent for Application {
                 time::sleep(Duration::from_secs(1)).await;
 
                 self.page = AppPage::Session;
-                self.update_state(AppState::Syncing);
+                self.state = AppState::Syncing;
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
                 self.client
@@ -700,7 +660,13 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::ChatSelected(jid) => {
-                self.selected_chat = Some(jid);
+                if let Ok(Some(chat)) = self.db.load_chat(&jid).await {
+                    self.chat_view.emit(ChatViewInput::Open(chat));
+                    self.session_page = AppSessionPage::Chat;
+                }
+            }
+            AppMsg::MarkChatRead(jid) => {
+                self.mark_chat_read(&jid).await;
             }
 
             AppMsg::ReadReceipts {
@@ -710,8 +676,6 @@ impl AsyncComponent for Application {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
                     for msg_id in message_ids {
                         if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
-                            chat.unread_count -= 1;
-
                             message.unread = false;
                             if let Err(e) = message.save().await {
                                 tracing::error!("Failed to update message: {}", e);
@@ -723,10 +687,9 @@ impl AsyncComponent for Application {
                         tracing::error!("Failed to update chat: {}", e);
                     }
 
-                    // Update chat list.
-                    let cached_chats = self.get_cached_chat_list();
-                    self.chat_list.emit(ChatListInput::Update {
-                        chats: cached_chats.to_vec(),
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: chat.clone(),
+                        move_to_top: true,
                     });
                 }
             }
@@ -790,7 +753,7 @@ impl AsyncComponent for Application {
 
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
-                self.update_state(AppState::Error(message.clone()));
+                self.state = AppState::Error(message.clone());
 
                 #[allow(clippy::match_same_arms)] // FIXME: remove when `Error` page is added
                 match self.page {
@@ -818,24 +781,34 @@ impl AsyncComponent for Application {
     ) {
         match command {
             AppCmd::Sync => {
-                self.update_state(AppState::Syncing);
+                self.state = AppState::Syncing;
 
-                // Load chats.
                 match self.db.load_chats().await {
                     Ok(chats) => {
                         tracing::info!("Loaded {} chats from own database", chats.len());
+
+                        // Insert all chats into our cached list.
                         self.chats.extend(chats);
 
-                        // Update chat list.
-                        let cached_chats = self.get_cached_chat_list();
-                        self.chat_list.emit(ChatListInput::Update {
-                            chats: cached_chats.to_vec(),
+                        // Sort all our chats.
+                        self.chats.sort_by(|a, b| {
+                            b.pinned
+                                .cmp(&a.pinned)
+                                .then_with(|| a.last_message_time.cmp(&b.last_message_time))
                         });
+
+                        for chat in &self.chats {
+                            // Add the chat in the chat list.
+                            self.chat_list.emit(ChatListInput::AddChat {
+                                chat: chat.clone(),
+                                at_the_top: false,
+                            });
+                        }
                     }
                     Err(e) => tracing::error!("Failed to load chats from own database: {}", e),
                 }
 
-                self.update_state(AppState::Ready);
+                self.state = AppState::Ready;
             }
         }
     }
