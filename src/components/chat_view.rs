@@ -1,5 +1,4 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use adw::prelude::*;
 use chrono::{Local, NaiveDate};
@@ -18,7 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub struct ChatView {
     /// Whether the scroll is at the bottom.
-    is_at_bottom: Rc<Cell<bool>>,
+    is_at_bottom: bool,
     /// `ListView` widget wrapper containing all chat rows.
     list_view_wrapper: TypedListView<ChatRow, gtk::NoSelection>,
 
@@ -37,6 +36,9 @@ pub enum ChatViewInput {
     MessageReceived(ChatMessage),
     /// Send a message.
     SendMessage,
+
+    /// Scroll to the bottom of the chat.
+    ScrollToBottom,
 }
 
 #[derive(Debug)]
@@ -45,11 +47,18 @@ pub enum ChatViewOutput {
     MarkChatRead(String),
 }
 
+#[derive(Debug)]
+pub enum ChatViewCommand {
+    /// The scroll position has changed.
+    ScrollPositionChanged(bool),
+}
+
 #[relm4::component(async, pub)]
-impl SimpleAsyncComponent for ChatView {
+impl AsyncComponent for ChatView {
     type Init = ();
     type Input = ChatViewInput;
     type Output = ChatViewOutput;
+    type CommandOutput = ChatViewCommand;
 
     view! {
         adw::ToolbarView {
@@ -64,7 +73,7 @@ impl SimpleAsyncComponent for ChatView {
                 set_title_widget = &gtk::Button {
                     set_halign: gtk::Align::Center,
                     set_valign: gtk::Align::Center,
-                    set_css_classes: &["chat-title", "flat"], // Add `with-subtitle` when it have a description.
+                    set_css_classes: &["chat-title", "flat"], // Add `with-subtitle` when it has a description.
 
                     gtk::Box {
                         set_halign: gtk::Align::Center,
@@ -90,23 +99,44 @@ impl SimpleAsyncComponent for ChatView {
                 },
             },
 
-            #[name = "scroll_window"]
             #[wrap(Some)]
-            set_content = &gtk::ScrolledWindow {
-                set_hscrollbar_policy: gtk::PolicyType::Never,
-                set_overlay_scrolling: true,
-                set_propagate_natural_width: true,
+            set_content = &gtk::Overlay {
+                #[name = "scroll_window"]
+                #[wrap(Some)]
+                set_child = &gtk::ScrolledWindow {
+                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                    set_overlay_scrolling: true,
+                    set_propagate_natural_width: true,
 
-                adw::ClampScrollable {
-                    set_maximum_size: 800,
-                    set_vscroll_policy: gtk::ScrollablePolicy::Natural,
-                    set_tightening_threshold: 600,
+                    adw::ClampScrollable {
+                        set_maximum_size: 800,
+                        set_vscroll_policy: gtk::ScrollablePolicy::Natural,
+                        set_tightening_threshold: 600,
 
-                    #[local_ref]
-                    list_view -> gtk::ListView {
-                        set_css_classes: &["chat-history"],
-                        set_single_click_activate: false,
-                    }
+                        #[local_ref]
+                        list_view -> gtk::ListView {
+                            set_css_classes: &["chat-history"],
+                            set_single_click_activate: false
+                        }
+                    },
+                },
+
+                // "Go to bottom" floating button with fade animation.
+                add_overlay = &gtk::Revealer {
+                    set_halign: gtk::Align::Center,
+                    set_valign: gtk::Align::End,
+                    #[watch]
+                    set_reveal_child: model.chat.is_some() && !model.is_at_bottom,
+                    set_transition_type: gtk::RevealerTransitionType::Crossfade,
+                    set_transition_duration: 350,
+
+                    gtk::Button {
+                        set_icon_name: "down-small-symbolic",
+                        set_css_classes: &["circular", "osd"],
+                        set_margin_bottom: 12,
+
+                        connect_clicked => ChatViewInput::ScrollToBottom
+                    },
                 },
             },
 
@@ -136,13 +166,12 @@ impl SimpleAsyncComponent for ChatView {
     async fn init(
         _init: Self::Init,
         root: Self::Root,
-        _sender: AsyncComponentSender<Self>,
+        sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let is_at_bottom = Rc::new(Cell::new(true));
         let list_view_wrapper = TypedListView::new();
 
         let model = Self {
-            is_at_bottom,
+            is_at_bottom: true,
             list_view_wrapper,
 
             chat: None,
@@ -152,11 +181,16 @@ impl SimpleAsyncComponent for ChatView {
         let list_view = &model.list_view_wrapper.view;
         let widgets = view_output!();
 
+        // Track scroll position and notify the model when it changes.
         let adj = widgets.scroll_window.vadjustment();
-        let flag = model.is_at_bottom.clone();
+        let command_sender = sender.command_sender().clone();
+        let was_at_bottom = Rc::new(Cell::new(true));
         adj.connect_value_changed(move |adj| {
-            let at_bottom = adj.value() + adj.page_size() >= adj.upper() - 50.0;
-            flag.set(at_bottom);
+            let at_bottom = adj.value() + adj.page_size() >= adj.upper() - 25.0;
+            if was_at_bottom.get() != at_bottom {
+                was_at_bottom.set(at_bottom);
+                command_sender.emit(ChatViewCommand::ScrollPositionChanged(at_bottom));
+            }
         });
 
         widgets.message_entry.grab_focus();
@@ -164,7 +198,12 @@ impl SimpleAsyncComponent for ChatView {
         AsyncComponentParts { model, widgets }
     }
 
-    async fn update(&mut self, input: Self::Input, sender: AsyncComponentSender<Self>) {
+    async fn update(
+        &mut self,
+        input: Self::Input,
+        sender: AsyncComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
         match input {
             ChatViewInput::Open(chat) => {
                 self.list_view_wrapper.clear();
@@ -198,6 +237,8 @@ impl SimpleAsyncComponent for ChatView {
                             gtk::ListScrollFlags::FOCUS,
                             Some(info),
                         );
+
+                        self.is_at_bottom = true;
                     }
                 }
 
@@ -207,6 +248,7 @@ impl SimpleAsyncComponent for ChatView {
                 }
 
                 self.chat = Some(chat);
+                self.is_at_bottom = true;
             }
 
             ChatViewInput::MessageReceived(message) => {
@@ -223,18 +265,43 @@ impl SimpleAsyncComponent for ChatView {
                 self.list_view_wrapper.append(ChatRow::Message(message));
 
                 // If the user is at the bottom, they're seeing this message — mark read.
-                if self.is_at_bottom.get() {
+                if self.is_at_bottom {
                     if let Some(ref chat) = self.chat {
-                        // Mark chat as read if it has unread messages.
-                        if chat.get_unread_count().await.is_ok_and(|count| count > 0) {
-                            let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
-                        }
+                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
                     }
                 }
             }
 
             ChatViewInput::SendMessage => {
                 // TODO: wire up actual message sending
+            }
+
+            ChatViewInput::ScrollToBottom => {
+                let count = self.list_view_wrapper.len();
+                if count > 0 {
+                    let info = gtk::ScrollInfo::new();
+                    info.set_enable_vertical(true);
+                    self.list_view_wrapper.view.scroll_to(
+                        (count - 1) as u32,
+                        gtk::ListScrollFlags::FOCUS,
+                        Some(info),
+                    );
+
+                    self.is_at_bottom = true;
+                }
+            }
+        }
+    }
+
+    async fn update_cmd(
+        &mut self,
+        command: Self::CommandOutput,
+        _sender: AsyncComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match command {
+            ChatViewCommand::ScrollPositionChanged(at_bottom) => {
+                self.is_at_bottom = at_bottom;
             }
         }
     }

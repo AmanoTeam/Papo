@@ -21,6 +21,7 @@ fn main() {
             "speaker-3",
             "speaker-4",
             "view-more",
+            "down-small",
             "image-round",
             "paper-plane",
             "info-outline",
