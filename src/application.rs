@@ -169,7 +169,7 @@ impl Application {
         self.chats.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
-                .then_with(|| a.last_message_time.cmp(&b.last_message_time))
+                .then_with(|| b.last_message_time.cmp(&a.last_message_time))
         });
 
         // Save the chat in the database.
@@ -180,7 +180,7 @@ impl Application {
         // Add the chat in the chat list.
         self.chat_list.emit(ChatListInput::AddChat {
             chat: chat,
-            at_the_top: true,
+            at_top: true,
         });
     }
 
@@ -814,18 +814,11 @@ impl AsyncComponent for Application {
                         // Insert all chats into our cached list.
                         self.chats.extend(chats);
 
-                        // Sort all our chats.
-                        self.chats.sort_by(|a, b| {
-                            b.pinned
-                                .cmp(&a.pinned)
-                                .then_with(|| a.last_message_time.cmp(&b.last_message_time))
-                        });
-
                         for chat in &self.chats {
                             // Add the chat in the chat list.
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
-                                at_the_top: false,
+                                at_top: false,
                             });
                         }
                     }

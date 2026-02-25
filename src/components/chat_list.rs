@@ -30,7 +30,7 @@ pub enum ChatListInput {
     AddChat {
         chat: Chat,
         /// Whether add the chat in the top of the list.
-        at_the_top: bool,
+        at_top: bool,
     },
     /// Select a chat.
     Select(String),
@@ -113,11 +113,11 @@ impl SimpleAsyncComponent for ChatList {
 
     async fn update(&mut self, input: Self::Input, sender: AsyncComponentSender<Self>) {
         match input {
-            ChatListInput::AddChat { chat, at_the_top } => {
+            ChatListInput::AddChat { chat, at_top } => {
                 let row = build_chat_row(&chat).await;
 
                 // Insert at the top if specified.
-                if at_the_top {
+                if at_top {
                     self.list_box.prepend(&row);
                 } else {
                     self.list_box.append(&row);

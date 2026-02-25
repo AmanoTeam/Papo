@@ -383,7 +383,50 @@ impl Database {
         Ok(messages)
     }
 
-    /// Load messages from before a specific time.
+    /// Load messages after a specific time (newer messages).
+    pub async fn load_messages_after(
+        &self,
+        chat_jid: &str,
+        after_timestamp: i64,
+        limit: u32,
+    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+        let mut rows = self
+            .conn
+            .query(
+                r"
+            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
+            FROM messages
+            WHERE chat_jid = ?1 AND timestamp > ?2
+            ORDER BY timestamp ASC
+            LIMIT ?3
+            ",
+                libsql::params![chat_jid, after_timestamp, limit],
+            )
+            .await?;
+
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next().await? {
+            messages.push(ChatMessage {
+                id: row.get(0)?,
+                chat_jid: row.get(1)?,
+                sender_jid: row.get(2)?,
+                sender_name: row.get(3).ok(),
+
+                media: None,
+                unread: row.get::<i32>(6)? != 0,
+                content: row.get(4)?,
+                outgoing: row.get::<i32>(5)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                reactions: IndexMap::new(),
+
+                db: Arc::new(self.clone()),
+            });
+        }
+
+        Ok(messages)
+    }
+
+    /// Load messages from before a specific time (older messages).
     pub async fn load_messages_before(
         &self,
         chat_jid: &str,
@@ -409,8 +452,8 @@ impl Database {
             messages.push(ChatMessage {
                 id: row.get(0)?,
                 chat_jid: row.get(1)?,
-                sender_jid: row.get(1)?,
-                sender_name: row.get(2).ok(),
+                sender_jid: row.get(2)?,
+                sender_name: row.get(3).ok(),
 
                 media: None,
                 unread: row.get::<i32>(6)? != 0,

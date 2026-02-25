@@ -68,6 +68,28 @@ impl Chat {
         self.db.load_messages(&self.jid, limit).await
     }
 
+    /// Load messages newer than a given timestamp.
+    pub async fn load_messages_after(
+        &self,
+        after_timestamp: i64,
+        limit: u32,
+    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+        self.db
+            .load_messages_after(&self.jid, after_timestamp, limit)
+            .await
+    }
+
+    /// Load messages older than a given timestamp.
+    pub async fn load_messages_before(
+        &self,
+        before_timestamp: i64,
+        limit: u32,
+    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+        self.db
+            .load_messages_before(&self.jid, before_timestamp, limit)
+            .await
+    }
+
     /// Find a message in this chat by its ID.
     pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, libsql::Error> {
         self.db.load_message(&self.jid, msg_id).await
