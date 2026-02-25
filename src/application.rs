@@ -252,6 +252,30 @@ impl Application {
     async fn mark_chat_read(&mut self, chat_jid: &str) {
         // Find the chat.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
+            // Collect unread messages before marking them as read locally.
+            let messages = chat.get_unread_messages().await.unwrap_or_default();
+
+            // Separate messages by sender.
+            let mut sender_messages: IndexMap<String, Vec<String>> = IndexMap::new();
+            for message in messages {
+                let sender_jid = message.sender_jid;
+
+                sender_messages
+                    .entry(sender_jid)
+                    .or_default()
+                    .push(message.id);
+            }
+
+            // Send read receipts to WhatsApp.
+            for (sender_jid, message_ids) in sender_messages {
+                self.client.emit(ClientInput::MarkRead {
+                    chat_jid: chat_jid.to_string(),
+                    sender_jid: Some(sender_jid),
+                    message_ids,
+                });
+            }
+
+            // Mark chat as read locally.
             if let Err(e) = chat.mark_read().await {
                 tracing::error!("Failed to mark a chat as read: {e}");
             }
@@ -355,7 +379,7 @@ impl AsyncComponent for Application {
 
                     #[name = "split_view"]
                     add_named[Some("session")] = &adw::NavigationSplitView {
-                        set_min_sidebar_width: 280.0,
+                        set_min_sidebar_width: 300.0,
                         set_max_sidebar_width: 350.0,
 
                         #[name = "sidebar"]

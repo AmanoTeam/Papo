@@ -3,12 +3,14 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use chrono::{Local, NaiveDate};
+use gtk::pango;
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
 };
 
 use crate::{
+    i18n,
     state::{Chat, ChatMessage},
     utils::format_date_label,
 };
@@ -91,7 +93,6 @@ impl SimpleAsyncComponent for ChatView {
             #[name = "scroll_window"]
             #[wrap(Some)]
             set_content = &gtk::ScrolledWindow {
-                set_css_classes: &["undershoot-bottom"],
                 set_hscrollbar_policy: gtk::PolicyType::Never,
                 set_overlay_scrolling: true,
                 set_propagate_natural_width: true,
@@ -117,7 +118,7 @@ impl SimpleAsyncComponent for ChatView {
                 #[name = "message_entry"]
                 gtk::Entry {
                     set_hexpand: true,
-                    set_placeholder_text: Some("Message"),
+                    set_placeholder_text: Some(&i18n!("Type a message...")),
 
                     connect_activate => ChatViewInput::SendMessage,
                 },
@@ -281,6 +282,7 @@ impl RelmListItem for ChatRow {
         // Date separator (e.g. "Today").
         let separator_label = gtk::Label::builder()
             .halign(gtk::Align::Center)
+            .focusable(false)
             .css_classes(["service-message", "dimmed", "caption"])
             .margin_top(12)
             .margin_bottom(4)
@@ -291,10 +293,11 @@ impl RelmListItem for ChatRow {
         // Service event (e.g. "someone added xxx").
         let service_label = gtk::Label::builder()
             .halign(gtk::Align::Center)
-            .visible(false)
+            .focusable(false)
             .css_classes(["service-message", "dimmed", "caption"])
             .margin_top(4)
             .margin_bottom(4)
+            .visible(false)
             .build();
         root.append(&service_label);
 
@@ -313,8 +316,8 @@ impl RelmListItem for ChatRow {
 
         let sender_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
-            .visible(false)
             .css_classes(["sender-name", "heading"])
+            .visible(false)
             .build();
         bubble_box.append(&sender_label);
 
@@ -327,10 +330,11 @@ impl RelmListItem for ChatRow {
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
             .xalign(0.0)
+            .hexpand(true)
             .selectable(true)
             .css_classes(["body"])
             .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .wrap_mode(pango::WrapMode::WordChar)
             .build();
         content_box.append(&content_label);
 

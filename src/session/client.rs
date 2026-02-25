@@ -11,7 +11,7 @@ use waproto::whatsapp::{
     Message,
     device_props::{AppVersion, PlatformType},
 };
-use whatsapp_rust::{bot::Bot, store::SqliteStore};
+use whatsapp_rust::{Jid, bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
@@ -96,6 +96,7 @@ pub enum ClientInput {
     /// Mark messages as read.
     MarkRead {
         chat_jid: String,
+        sender_jid: Option<String>,
         message_ids: Vec<String>,
     },
     /// Send a text message.
@@ -271,6 +272,37 @@ impl AsyncComponent for Client {
                         let _ = sender.output(ClientOutput::Error {
                             message: format!("Failed to pair with phone number: {e}"),
                         });
+                    }
+                }
+            }
+
+            ClientInput::MarkRead {
+                chat_jid,
+                sender_jid,
+                message_ids,
+            } => {
+                if !message_ids.is_empty() {
+                    let handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        let Ok(jid) = chat_jid.parse::<Jid>() else {
+                            tracing::error!("Failed to parse JID: {chat_jid}");
+                            return;
+                        };
+
+                        let mut s_jid = None;
+                        if let Some(sender_jid) = sender_jid {
+                            let Ok(jid) = sender_jid.parse::<Jid>() else {
+                                tracing::error!("Failed to parse JID: {sender_jid}");
+                                return;
+                            };
+
+                            s_jid = Some(jid);
+                        }
+
+                        if let Err(e) = client.mark_as_read(&jid, s_jid.as_ref(), message_ids).await
+                        {
+                            tracing::error!("Failed to mark messages as read: {e}");
+                        }
                     }
                 }
             }

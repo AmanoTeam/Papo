@@ -77,4 +77,9 @@ impl Chat {
     pub async fn get_unread_count(&self) -> Result<usize, libsql::Error> {
         self.db.get_unread_count(&self.jid).await
     }
+
+    /// Get all unread messages in this chat.
+    pub async fn get_unread_messages(&self) -> Result<Vec<ChatMessage>, libsql::Error> {
+        self.db.get_unread_messages(&self.jid).await
+    }
 }

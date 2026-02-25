@@ -62,7 +62,6 @@ impl SimpleAsyncComponent for ChatList {
         gtk::ScrolledWindow {
             set_vexpand: true,
             set_hexpand: true,
-            set_css_classes: &["undershoot-top", "undershoot-bottom"],
             set_hscrollbar_policy: gtk::PolicyType::Never,
             set_overlay_scrolling: true,
             set_propagate_natural_width: true,

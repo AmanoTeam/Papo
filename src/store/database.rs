@@ -449,6 +449,56 @@ impl Database {
             Ok(0)
         }
     }
+
+    pub async fn get_unread_messages(
+        &self,
+        chat_jid: &str,
+    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+        let mut rows = self.conn.query(
+            r"
+            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
+            FROM messages
+            WHERE chat_jid = ?1 AND unread = 1
+            ORDER BY timestamp DESC
+            LIMIT ?2
+            ",
+            libsql::params![chat_jid],
+        ).await?;
+
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let media = row.get::<String>(8).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(9).map_or(None, |data| {
+                    let media_type: MediaType = media_type.into();
+
+                    Some(Media {
+                        data: Arc::new(data),
+                        r#type: media_type,
+                        mime_type: media_type.guess_mime_type(),
+                        ..Default::default()
+                    })
+                })
+            });
+
+            messages.push(ChatMessage {
+                id: row.get(0)?,
+                chat_jid: row.get(1)?,
+                sender_jid: row.get(2)?,
+                sender_name: row.get(3).ok(),
+
+                media,
+                unread: row.get::<i32>(6)? != 0,
+                content: row.get(4)?,
+                outgoing: row.get::<i32>(5)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                reactions: IndexMap::new(),
+
+                db: Arc::new(self.clone()),
+            });
+        }
+
+        Ok(messages)
+    }
 }
 
 #[derive(Clone, Debug)]
