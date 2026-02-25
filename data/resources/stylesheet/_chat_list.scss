@@ -1,0 +1,17 @@
+// Chat list.
+
+.badge {
+  color: var(--accent-fg-color);
+  padding: 2px 5px;
+  min-width: 4px;
+  font-size: 0.7em;
+  min-height: 6px;
+  font-weight: bold;
+  border-radius: 999px;
+  background-color: var(--accent-bg-color);
+
+  &.muted {
+    color: var(--window-fg-color);
+    background-color: color-mix(in srgb, var(--shade-color) 15%, transparent);
+  }
+}

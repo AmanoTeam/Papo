@@ -1,4 +1,5 @@
 use adw::gtk;
+use chrono::{Datelike, Local, NaiveDate};
 use glib::Bytes;
 use glycin::Loader;
 use gtk::{gdk, glib};
@@ -6,7 +7,9 @@ use image::{ExtendedColorType, ImageEncoder, Luma, codecs::png::PngEncoder};
 use qrcode::QrCode;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
-/// Get only the first name from a full name.
+use crate::i18n;
+
+/// Gets only the first name from a full name.
 pub fn get_first_name(name: &str) -> String {
     if name.is_empty() {
         String::new()
@@ -19,7 +22,7 @@ pub fn get_first_name(name: &str) -> String {
     }
 }
 
-/// Generate a QR code texture.
+/// Generates a QR code texture.
 pub async fn generate_qr_code(data: &str) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
     let qr_code = QrCode::new(data.as_bytes())?;
     let image = qr_code.render::<Luma<u8>>().build();
@@ -43,7 +46,29 @@ pub async fn generate_qr_code(data: &str) -> Result<gdk::Texture, Box<dyn std::e
     Ok(texture)
 }
 
-/// Format a LID as international phone number.
+/// Formats a date into a human-readable label for date separators.
+pub fn format_date_label(date: NaiveDate) -> String {
+    let today = Local::now().date_naive();
+
+    if date == today {
+        return i18n!("Today");
+    }
+
+    if let Some(yesterday) = today.pred_opt() {
+        if date == yesterday {
+            return i18n!("Yesterday");
+        }
+    }
+
+    // Same year: "February 23", different year: "February 23, 2024".
+    if date.year() == today.year() {
+        date.format("%B %-e").to_string()
+    } else {
+        date.format("%B %-e, %Y").to_string()
+    }
+}
+
+/// Formats a LID as international phone number.
 pub fn format_lid_as_number(lid: &str) -> String {
     let phone = extract_phone_from_jid(lid);
 
@@ -54,7 +79,7 @@ pub fn format_lid_as_number(lid: &str) -> String {
     })
 }
 
-/// Extract phone number from JID/LID.
+/// Extracts phone number from JID/LID.
 pub fn extract_phone_from_jid(jid: &str) -> String {
     format!("+{}", jid.split('@').next().unwrap_or(jid))
 }

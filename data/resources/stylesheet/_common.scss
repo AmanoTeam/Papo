@@ -15,3 +15,23 @@ text {
   color: inherit;
   background: none;
 }
+
+.bold {
+  font-weight: bold;
+}
+
+button.pill.large {
+  padding: 12px 40px;
+}
+
+.emoji {
+  font-size: 2em;
+}
+
+scrolledwindow.card {
+  @include vendor.focus-ring($offset: -1px, $focus-state: ":focus-within");
+
+  > textview {
+    padding: 12px;
+  }
+}
