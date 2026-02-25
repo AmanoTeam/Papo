@@ -14,7 +14,7 @@ pub struct ChatView {
     /// Whether the scroll is at the bottom.
     is_at_bottom: Rc<Cell<bool>>,
     /// `ListView` widget wrapper containing all chat messages.
-    list_view_wrapper: TypedListView<ChatMessageListItem, gtk::NoSelection>,
+    list_view_wrapper: TypedListView<ChatMessage, gtk::NoSelection>,
 
     /// Currently open chat.
     chat: Option<Chat>,
@@ -22,14 +22,18 @@ pub struct ChatView {
 
 #[derive(Debug)]
 pub enum ChatViewInput {
+    /// Open a chat.
     Open(Chat),
+
+    /// New message received.
     MessageReceived(ChatMessage),
+    /// Send a message.
     SendMessage,
 }
 
 #[derive(Debug)]
 pub enum ChatViewOutput {
-    /// The user is viewing this chat — mark it as read.
+    /// Mark the open chat as read.
     MarkChatRead(String),
 }
 
@@ -149,18 +153,11 @@ impl SimpleAsyncComponent for ChatView {
                 self.list_view_wrapper.clear();
 
                 let jid = chat.jid.clone();
-                let is_group = chat.is_group();
 
                 // Load the last 100 messages.
                 if let Ok(messages) = chat.load_messages(100).await {
                     for msg in messages.iter().rev() {
-                        self.list_view_wrapper.append(ChatMessageListItem {
-                            content: msg.content.clone(),
-                            is_group,
-                            outgoing: msg.outgoing,
-                            timestamp: msg.timestamp.format("%H:%M").to_string(),
-                            sender_name: msg.sender_name.clone(),
-                        });
+                        self.list_view_wrapper.append(msg.clone());
                     }
 
                     // Scroll to the last message.
@@ -182,16 +179,7 @@ impl SimpleAsyncComponent for ChatView {
             }
 
             ChatViewInput::MessageReceived(message) => {
-                // Check if the message's chat is a group.
-                let is_group = self.chat.as_ref().map(|c| c.is_group()).unwrap_or(false);
-
-                self.list_view_wrapper.append(ChatMessageListItem {
-                    content: message.content.clone(),
-                    is_group,
-                    outgoing: message.outgoing,
-                    timestamp: message.timestamp.format("%H:%M").to_string(),
-                    sender_name: message.sender_name.clone(),
-                });
+                self.list_view_wrapper.append(message);
 
                 // If the user is at the bottom, they're seeing this message → mark read.
                 if self.is_at_bottom.get() {
@@ -211,16 +199,7 @@ impl SimpleAsyncComponent for ChatView {
     }
 }
 
-#[derive(Debug)]
-struct ChatMessageListItem {
-    content: String,
-    is_group: bool,
-    outgoing: bool,
-    timestamp: String,
-    sender_name: Option<String>,
-}
-
-struct ChatMessageListItemWidgets {
+pub struct MessageWidgets {
     outer_box: gtk::Box,
     bubble_box: gtk::Box,
     sender_label: gtk::Label,
@@ -228,9 +207,9 @@ struct ChatMessageListItemWidgets {
     timestamp_label: gtk::Label,
 }
 
-impl RelmListItem for ChatMessageListItem {
+impl RelmListItem for ChatMessage {
     type Root = gtk::Box;
-    type Widgets = ChatMessageListItemWidgets;
+    type Widgets = MessageWidgets;
 
     fn setup(_list_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         let outer_box = gtk::Box::builder()
@@ -243,13 +222,13 @@ impl RelmListItem for ChatMessageListItem {
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["message-bubble", "card"])
             .build();
-        bubble_box.append(&sender_label);
 
         let sender_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
             .visible(false)
             .css_classes(["sender-name", "heading"])
             .build();
+        bubble_box.append(&sender_label);
 
         let content_box = gtk::Box::builder()
             .spacing(12)
@@ -277,7 +256,7 @@ impl RelmListItem for ChatMessageListItem {
         bubble_box.append(&content_box);
         outer_box.append(&bubble_box);
 
-        let widgets = ChatMessageListItemWidgets {
+        let widgets = MessageWidgets {
             outer_box: outer_box.clone(),
             bubble_box,
             sender_label,
@@ -290,7 +269,9 @@ impl RelmListItem for ChatMessageListItem {
 
     fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
         widgets.content_label.set_label(&self.content);
-        widgets.timestamp_label.set_label(&self.timestamp);
+        widgets
+            .timestamp_label
+            .set_label(&self.timestamp.format("%H:%M").to_string());
 
         widgets.bubble_box.remove_css_class("incoming");
         widgets.bubble_box.remove_css_class("outgoing");
@@ -307,7 +288,8 @@ impl RelmListItem for ChatMessageListItem {
             widgets.bubble_box.set_margin_start(6);
             widgets.bubble_box.set_margin_end(60);
 
-            if self.is_group {
+            let is_group = self.chat_jid.ends_with("@g.us");
+            if is_group {
                 if let Some(ref name) = self.sender_name {
                     widgets.sender_label.set_label(name);
                     widgets.sender_label.set_visible(true);
