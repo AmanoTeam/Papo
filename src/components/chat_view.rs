@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use adw::{gdk, glib, prelude::*};
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use gtk::pango;
 use relm4::{
     prelude::*,
@@ -59,6 +59,8 @@ pub struct ChatViewState {
     /// Whether there might be more older messages to load.
     has_more_messages: bool,
 
+    /// User presence.
+    presence: Option<String>,
     /// Date of the first displayed message (top).
     first_message_date: Option<NaiveDate>,
     /// Date of the last appended message (bottom).
@@ -76,10 +78,17 @@ pub enum ChatViewInput {
     /// Close the open chat.
     Close,
 
-    /// New message received.
-    MessageReceived(ChatMessage),
     /// Send a message.
     SendMessage,
+    /// New message received.
+    MessageReceived(ChatMessage),
+
+    /// User presence updated.
+    PresenceUpdate {
+        jid: String,
+        available: bool,
+        last_seen: Option<DateTime<Utc>>,
+    },
 
     /// Scroll to the bottom of the chat.
     ScrollToBottom,
@@ -106,6 +115,49 @@ pub enum ChatViewCommand {
     ScrollPositionChanged { at_top: bool, at_bottom: bool },
 }
 
+impl ChatView {
+    /// Update the user presence.
+    fn update_presence(&mut self) {
+        if let Some(ref mut chat) = self.chat {
+            if chat.available.unwrap_or_default() {
+                self.state.presence = Some(i18n!("online"));
+            } else if let Some(last_seen) = chat.last_seen {
+                let today = Local::now().date_naive();
+                let last_date = last_seen.with_timezone(&Local).date_naive();
+
+                let presence = if last_date == today {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        i18n!("today"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                } else if let Some(yesterday) = today.pred_opt()
+                    && last_date == yesterday
+                {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        i18n!("yesterday"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                } else {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        last_date.format("%d/%m"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                };
+                self.state.presence = Some(presence);
+            }
+        }
+    }
+}
+
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
     type Init = ();
@@ -124,7 +176,8 @@ impl AsyncComponent for ChatView {
                 set_title_widget = &gtk::Button {
                     set_halign: gtk::Align::Center,
                     set_valign: gtk::Align::Center,
-                    set_css_classes: &["chat-title", "flat"], // Add `with-subtitle` when it has a description.
+                    #[watch]
+                    set_css_classes: &["chat-title", "flat", if model.state.presence.is_some() { "with-subtitle" } else { "" }],
 
                     gtk::Box {
                         set_halign: gtk::Align::Center,
@@ -141,8 +194,10 @@ impl AsyncComponent for ChatView {
                         },
 
                         gtk::Label {
-                            set_label: "A good description", // TODO: chat description or user status.
-                            set_visible: false,
+                            #[watch]
+                            set_label?: model.state.presence.as_ref(),
+                            #[watch]
+                            set_visible: model.state.presence.is_some(),
                             set_selectable: false,
                             set_css_classes: &["subtitle"],
                         },
@@ -255,6 +310,7 @@ impl AsyncComponent for ChatView {
                 bottom_trimmed: false,
                 has_more_messages: false,
 
+                presence: None,
                 first_message_date: None,
                 last_message_date: None,
                 oldest_loaded_timestamp: None,
@@ -350,6 +406,7 @@ impl AsyncComponent for ChatView {
                 self.list_view_wrapper.clear();
 
                 // Reset state.
+                self.state.presence = None;
                 self.state.is_loading = true;
                 self.state.top_trimmed = true;
                 self.state.bottom_trimmed = false;
@@ -417,6 +474,9 @@ impl AsyncComponent for ChatView {
                     let _ = sender.output(ChatViewOutput::MarkChatRead(jid));
                 }
 
+                // Update the user presence label.
+                self.update_presence();
+
                 // Grab message entry focus as convenience.
                 self.message_entry.grab_focus();
 
@@ -431,6 +491,7 @@ impl AsyncComponent for ChatView {
 
                 // Reset state.
                 self.chat = None;
+                self.state.presence = None;
                 self.state.is_loading = false;
                 self.state.top_trimmed = false;
                 self.state.is_at_bottom = false;
@@ -443,6 +504,9 @@ impl AsyncComponent for ChatView {
                 let _ = sender.output(ChatViewOutput::ChatClosed);
             }
 
+            ChatViewInput::SendMessage => {
+                // TODO: wire up actual message sending
+            }
             ChatViewInput::MessageReceived(message) => {
                 // If the bottom has been trimmed, skip appending — the message will
                 // appear when the user scrolls back to bottom and triggers a reload.
@@ -477,8 +541,22 @@ impl AsyncComponent for ChatView {
                 }
             }
 
-            ChatViewInput::SendMessage => {
-                // TODO: wire up actual message sending
+            ChatViewInput::PresenceUpdate {
+                jid,
+                available,
+                last_seen,
+            } => {
+                if let Some(ref mut chat) = self.chat {
+                    if jid == chat.jid {
+                        if !chat.is_group() {
+                            chat.available = Some(available);
+                        }
+                        chat.last_seen = last_seen;
+
+                        // Update the user presence label.
+                        self.update_presence();
+                    }
+                }
             }
 
             ChatViewInput::ScrollToBottom => {

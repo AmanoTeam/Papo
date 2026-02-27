@@ -15,6 +15,10 @@ pub struct Chat {
     pub muted: bool,
     /// Whether this chat is pinned.
     pub pinned: bool,
+    /// Whether the user is currently online.
+    pub available: Option<bool>,
+    /// Last time the user has been seen.
+    pub last_seen: Option<DateTime<Utc>>,
     /// Participants names in groups (JID -> name).
     pub participants: HashMap<String, String>,
     /// Time of the last sent message.

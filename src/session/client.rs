@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use adw::prelude::*;
+use chrono::{DateTime, Utc};
 use relm4::prelude::*;
 use tokio::sync::Mutex;
 use wacore::{
@@ -149,6 +150,12 @@ pub enum ClientOutput {
     ReadReceipts {
         chat_jid: String,
         message_ids: Vec<String>,
+    },
+    /// User presence updated.
+    PresenceUpdate {
+        jid: String,
+        available: bool,
+        last_seen: Option<DateTime<Utc>>,
     },
 
     /// Message was sent successfully.
@@ -410,6 +417,17 @@ impl AsyncComponent for Client {
                                         let _ = sender.output(ClientOutput::ReadReceipts {
                                             chat_jid,
                                             message_ids,
+                                        });
+                                    }
+                                    Event::Presence(presence) => {
+                                        let jid = presence.from.to_string();
+                                        let available = !presence.unavailable;
+                                        let last_seen = presence.last_seen;
+
+                                        let _ = sender.output(ClientOutput::PresenceUpdate {
+                                            jid,
+                                            available,
+                                            last_seen,
                                         });
                                     }
 

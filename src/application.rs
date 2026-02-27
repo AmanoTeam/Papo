@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use adw::prelude::*;
+use chrono::{DateTime, Utc};
 use gtk::{gio, glib, pango};
 use indexmap::IndexMap;
 use relm4::{
@@ -144,6 +145,12 @@ pub enum AppMsg {
         chat_jid: String,
         message_ids: Vec<String>,
     },
+    /// User presence updated.
+    PresenceUpdate {
+        jid: String,
+        available: bool,
+        last_seen: Option<DateTime<Utc>>,
+    },
 
     /// New message received.
     MessageReceived {
@@ -212,8 +219,11 @@ impl Application {
                 name,
                 muted: false,
                 pinned: false,
+                available: None,
+                last_seen: None,
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
+
                 db: Arc::clone(&self.db),
             })
             .await;
@@ -538,6 +548,15 @@ impl AsyncComponent for Application {
                     chat_jid,
                     message_ids,
                 },
+                ClientOutput::PresenceUpdate {
+                    jid,
+                    available,
+                    last_seen,
+                } => AppMsg::PresenceUpdate {
+                    jid,
+                    available,
+                    last_seen,
+                },
 
                 ClientOutput::MessageReceived { info, message } => {
                     AppMsg::MessageReceived { info, message }
@@ -703,7 +722,7 @@ impl AsyncComponent for Application {
                 self.session_page = AppSessionPage::Empty;
             }
             AppMsg::ChatSelected(jid) => {
-                if let Ok(Some(chat)) = self.db.load_chat(&jid).await {
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == jid).cloned() {
                     self.chat_view.emit(ChatViewInput::Open(chat));
                 }
             }
@@ -730,9 +749,28 @@ impl AsyncComponent for Application {
 
                     self.chat_list.emit(ChatListInput::UpdateChat {
                         chat: chat.clone(),
-                        move_to_top: true,
+                        move_to_top: false,
                     });
                 }
+            }
+            AppMsg::PresenceUpdate {
+                jid,
+                available,
+                last_seen,
+            } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    if !chat.is_group() {
+                        chat.available = Some(available);
+                    }
+
+                    chat.last_seen = last_seen;
+                }
+
+                self.chat_view.emit(ChatViewInput::PresenceUpdate {
+                    jid,
+                    available,
+                    last_seen,
+                });
             }
 
             AppMsg::MessageReceived { info, message } => {
