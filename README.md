@@ -34,19 +34,24 @@ meson install -C build
 ## Roadmap
 
 - [x] QR code login
-- [x] Chat list with unread counts
-- [x] Message history with date separators
+- [x] Chat list
+- [x] Message history
 - [x] Bidirectional infinite scroll pagination
-- [x] Go-to-bottom button with crossfade animation
+- [x] Go-to-bottom button
 - [x] Read receipts
-- [x] Group chat support (sender names)
 - [x] Local message storage (libSQL)
 - [ ] Send messages
 - [ ] Media messages (images, videos, documents)
 - [ ] Voice messages
+- [ ] Stickers and animated stickers
 - [ ] Contact/chat info panel
 - [ ] Notifications
+- [ ] History sync (after pairing)
 - [ ] Chat search
+- [ ] Chat filters (unread, favorites, groups, non-contact)
+- [ ] Chat functions (pin, mute, delete, archive)
+- [ ] Chat admin functions (ban, change info/settings)
+- [ ] Message search
 - [ ] Message reactions
 - [ ] Reply/quote messages
 - [ ] Database encryption
