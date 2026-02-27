@@ -65,7 +65,7 @@ The project uses gettext for internationalization. Brazilian Portuguese (pt_BR) 
 
 ## Contributing
 
-To contribute, please fork the repository, create a feature branch, and submit a pull request. Bug reports and feature requests are also welcome via the issue tracker.
+We accept pull requests from our [Forjego instance](https://git.amanoteam.com/AmanoTeam/Papo) and [GitHub](https://github.com/AmanoTeam/Papo). Fork either repository, create a feature branch, and submit a pull request. Bug reports and feature requests are also welcome via the issue tracker.
 
 ## License
 
