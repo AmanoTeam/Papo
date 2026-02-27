@@ -1,6 +1,6 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
-use adw::prelude::*;
+use adw::{gdk, glib, prelude::*};
 use chrono::{Local, NaiveDate};
 use gtk::pango;
 use relm4::{
@@ -30,6 +30,8 @@ pub struct ChatView {
     /// Metadata tracking for each row, mirrors list_view_wrapper order.
     /// Used to update pagination cursors when trimming rows.
     row_metadata: VecDeque<RowMetadata>,
+    /// Text input for sending messages.
+    message_entry: gtk::Entry,
     /// `ListView` widget wrapper containing all chat rows.
     list_view_wrapper: TypedListView<ChatRow, gtk::NoSelection>,
 }
@@ -71,6 +73,8 @@ pub struct ChatViewState {
 pub enum ChatViewInput {
     /// Open a chat.
     Open(Chat),
+    /// Close the open chat.
+    Close,
 
     /// New message received.
     MessageReceived(ChatMessage),
@@ -83,6 +87,10 @@ pub enum ChatViewInput {
 
 #[derive(Debug)]
 pub enum ChatViewOutput {
+    /// A chat was open.
+    ChatOpen,
+    /// The open chat was closed.
+    ChatClosed,
     /// Mark the open chat as read.
     MarkChatRead(String),
 }
@@ -111,8 +119,6 @@ impl AsyncComponent for ChatView {
 
             add_top_bar = &adw::HeaderBar {
                 set_css_classes: &["flat"],
-                #[watch]
-                set_show_back_button: model.chat.is_some(),
 
                 #[wrap(Some)]
                 set_title_widget = &gtk::Button {
@@ -146,9 +152,9 @@ impl AsyncComponent for ChatView {
 
             #[wrap(Some)]
             set_content = &gtk::Overlay {
-                #[name = "scroll_window"]
                 #[wrap(Some)]
-                set_child = &gtk::ScrolledWindow {
+                #[local_ref]
+                set_child = &scroll_window -> gtk::ScrolledWindow {
                     set_hscrollbar_policy: gtk::PolicyType::Never,
                     set_overlay_scrolling: true,
                     set_propagate_natural_width: true,
@@ -215,8 +221,8 @@ impl AsyncComponent for ChatView {
                 set_margin_all: 6,
                 set_orientation: gtk::Orientation::Horizontal,
 
-                #[name = "message_entry"]
-                gtk::Entry {
+                #[local_ref]
+                message_entry -> gtk::Entry {
                     set_hexpand: true,
                     set_placeholder_text: Some(&i18n!("Type a message...")),
 
@@ -241,6 +247,7 @@ impl AsyncComponent for ChatView {
         let list_view_wrapper = TypedListView::new();
 
         let model = Self {
+            chat: None,
             state: ChatViewState {
                 is_loading: true,
                 is_at_bottom: true,
@@ -253,14 +260,47 @@ impl AsyncComponent for ChatView {
                 oldest_loaded_timestamp: None,
                 newest_loaded_timestamp: None,
             },
-            list_view_wrapper,
             row_metadata: VecDeque::new(),
-
-            chat: None,
+            message_entry: gtk::Entry::new(),
+            list_view_wrapper,
         };
 
         let list_view = &model.list_view_wrapper.view;
+        let scroll_window = gtk::ScrolledWindow::new();
+        let message_entry = &model.message_entry;
         let widgets = view_output!();
+
+        // Focus the scroll window when clicked within.
+        let scroll = scroll_window.clone();
+        let click_gesture = gtk::GestureClick::new();
+        click_gesture.connect_pressed(move |_, _, _, _| {
+            scroll.grab_focus();
+        });
+        scroll_window.add_controller(click_gesture);
+
+        // Return focus to message entry when `Esc` is pressed and scroll window is focused.
+        let entry = message_entry.clone();
+        let key_event_controller = gtk::EventControllerKey::new();
+        key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
+            gdk::Key::Escape => {
+                entry.grab_focus();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        scroll_window.add_controller(key_event_controller);
+
+        // Close the chat when `Esc` is pressed and message entry is focused.
+        let input_sender = sender.input_sender().clone();
+        let key_event_controller = gtk::EventControllerKey::new();
+        key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
+            gdk::Key::Escape => {
+                input_sender.emit(ChatViewInput::Close);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        message_entry.add_controller(key_event_controller);
 
         // Track scroll position and notify the model when it changes.
         let adj = widgets.scroll_window.vadjustment();
@@ -294,8 +334,6 @@ impl AsyncComponent for ChatView {
                 }
             }
         });
-
-        widgets.message_entry.grab_focus();
 
         AsyncComponentParts { model, widgets }
     }
@@ -379,9 +417,30 @@ impl AsyncComponent for ChatView {
                     let _ = sender.output(ChatViewOutput::MarkChatRead(jid));
                 }
 
+                // Grab message entry focus as convenience.
+                self.message_entry.grab_focus();
+
                 self.chat = Some(chat);
                 self.state.is_loading = false;
-                self.state.is_at_bottom = true;
+
+                let _ = sender.output(ChatViewOutput::ChatOpen);
+            }
+            ChatViewInput::Close => {
+                self.row_metadata.clear();
+                self.list_view_wrapper.clear();
+
+                // Reset state.
+                self.chat = None;
+                self.state.is_loading = false;
+                self.state.top_trimmed = false;
+                self.state.is_at_bottom = false;
+                self.state.bottom_trimmed = false;
+                self.state.first_message_date = None;
+                self.state.last_message_date = None;
+                self.state.oldest_loaded_timestamp = None;
+                self.state.newest_loaded_timestamp = None;
+
+                let _ = sender.output(ChatViewOutput::ChatClosed);
             }
 
             ChatViewInput::MessageReceived(message) => {
@@ -766,7 +825,6 @@ impl RelmListItem for ChatRow {
         // Date separator (e.g. "Today").
         let separator_label = gtk::Label::builder()
             .halign(gtk::Align::Center)
-            .focusable(false)
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(12)
             .margin_bottom(4)
@@ -777,7 +835,6 @@ impl RelmListItem for ChatRow {
         // Service event (e.g. "someone added xxx").
         let service_label = gtk::Label::builder()
             .halign(gtk::Align::Center)
-            .focusable(false)
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(4)
             .margin_bottom(4)
@@ -856,13 +913,16 @@ impl RelmListItem for ChatRow {
             Self::DateSeparator(date) => {
                 widgets.separator_label.set_label(&format_date_label(*date));
                 widgets.separator_label.set_visible(true);
+                widgets.separator_label.set_focusable(false);
             }
             Self::ServiceEvent { text } => {
                 widgets.service_label.set_label(text);
                 widgets.service_label.set_visible(true);
+                widgets.service_label.set_focusable(false);
             }
             Self::Message(msg) => {
                 widgets.message_box.set_visible(true);
+                widgets.message_box.set_focusable(false);
                 widgets.content_label.set_label(&msg.content);
                 widgets
                     .timestamp_label

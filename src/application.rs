@@ -43,6 +43,8 @@ pub struct Application {
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
     chat_view: AsyncController<ChatView>,
+    /// The `SplitView` widget from the sesion page.
+    split_view: adw::NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
     /// Progress bar displayed when syncing data.
@@ -128,6 +130,10 @@ pub enum AppMsg {
         phone_number: String,
     },
 
+    /// A chat was open.
+    ChatOpen,
+    /// The open chat was closed.
+    ChatClosed,
     /// Select a chat.
     ChatSelected(String),
     /// Mark a chat as read.
@@ -377,10 +383,10 @@ impl AsyncComponent for Application {
                     #[local_ref]
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
 
-                    #[name = "split_view"]
-                    add_named[Some("session")] = &adw::NavigationSplitView {
-                        set_min_sidebar_width: 300.0,
-                        set_max_sidebar_width: 350.0,
+                    #[local_ref]
+                    add_named[Some("session")] = split_view -> adw::NavigationSplitView {
+                        set_min_sidebar_width: 280.0,
+                        set_max_sidebar_width: 340.0,
 
                         #[name = "sidebar"]
                         #[wrap(Some)]
@@ -478,7 +484,7 @@ impl AsyncComponent for Application {
                         adw::LengthUnit::Sp,
                     )
                 ),
-                &[(&split_view, "collapsed", true)]
+                &[(split_view, "collapsed", true)]
             ),
         }
     }
@@ -549,6 +555,8 @@ impl AsyncComponent for Application {
         let chat_view = ChatView::builder()
             .launch(())
             .forward(sender.input_sender(), |output| match output {
+                ChatViewOutput::ChatOpen => AppMsg::ChatOpen,
+                ChatViewOutput::ChatClosed => AppMsg::ChatClosed,
                 ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
             });
 
@@ -562,6 +570,7 @@ impl AsyncComponent for Application {
             toaster: Toaster::default(),
             chat_list,
             chat_view,
+            split_view: adw::NavigationSplitView::new(),
             session_page: AppSessionPage::Empty,
             sync_progress_bar,
 
@@ -573,6 +582,7 @@ impl AsyncComponent for Application {
             runtime_cache,
         };
 
+        let split_view = &model.split_view;
         let login_widget = model.login.widget();
         let toast_overlay = model.toaster.overlay_widget();
         let chat_list_widget = model.chat_list.widget();
@@ -683,10 +693,18 @@ impl AsyncComponent for Application {
                     .emit(ClientInput::PairWithPhoneNumber { phone_number });
             }
 
+            AppMsg::ChatOpen => {
+                self.split_view.set_show_content(true);
+                self.session_page = AppSessionPage::Chat;
+            }
+            AppMsg::ChatClosed => {
+                self.chat_list.emit(ChatListInput::ClearSelection);
+                self.split_view.set_show_content(false);
+                self.session_page = AppSessionPage::Empty;
+            }
             AppMsg::ChatSelected(jid) => {
                 if let Ok(Some(chat)) = self.db.load_chat(&jid).await {
                     self.chat_view.emit(ChatViewInput::Open(chat));
-                    self.session_page = AppSessionPage::Chat;
                 }
             }
             AppMsg::MarkChatRead(jid) => {
@@ -700,9 +718,8 @@ impl AsyncComponent for Application {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
                     for msg_id in message_ids {
                         if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
-                            message.unread = false;
-                            if let Err(e) = message.save().await {
-                                tracing::error!("Failed to update message: {}", e);
+                            if let Err(e) = message.mark_read().await {
+                                tracing::error!("Failed to mark message as read: {e}");
                             }
                         }
                     }
