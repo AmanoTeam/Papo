@@ -81,6 +81,7 @@ impl ChatList {
             let mut builder = adw::ActionRow::builder()
                 .title(&chat.name)
                 .title_lines(1)
+                .use_markup(false)
                 .activatable(true);
 
             if let Ok(Some(last_message)) = chat.get_last_message().await {
