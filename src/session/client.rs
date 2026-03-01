@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use adw::prelude::*;
 use chrono::{DateTime, Utc};
@@ -7,7 +10,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wacore::{
     pair_code::{PairCodeOptions, PlatformId},
-    types::{events::Event, message::MessageInfo},
+    types::{
+        events::{Event, LazyConversation},
+        message::MessageInfo,
+    },
 };
 use waproto::whatsapp::{
     Message,
@@ -164,8 +170,67 @@ pub enum ClientOutput {
         message: Box<Message>,
     },
 
+    /// Chat synced from history (`JoinedGroup` event).
+    ChatSynced {
+        /// Chat JID.
+        jid: String,
+        /// Display name.
+        name: Option<String>,
+        /// Whether chat is pinned.
+        pinned: bool,
+        /// Whether chat is archived.
+        archived: bool,
+        /// Unread message count.
+        unread_count: Option<u32>,
+        /// Group participants (for groups).
+        participants: Vec<(String, Option<String>)>,
+        /// Mute end time (if muted).
+        mute_end_time: Option<u64>,
+        /// Last message timestamp.
+        last_message_time: Option<u64>,
+    },
+    /// Messages synced from history for a chat.
+    MessagesSynced {
+        /// Chat JID.
+        chat_jid: String,
+        /// Synced messages.
+        messages: Vec<SyncedMessage>,
+    },
+
+    /// Contact updated (from sync or individual update).
+    ContactUpdated {
+        /// Contact JID.
+        jid: String,
+        /// Full name from address book.
+        name: Option<String>,
+        /// Push name (first name).
+        push_name: Option<String>,
+        /// Phone number (from JID user part).
+        phone_number: String,
+    },
+
     /// Error occurred.
     Error { message: String },
+}
+
+/// A message synced from history.
+#[derive(Debug, Clone)]
+pub struct SyncedMessage {
+    /// Message ID.
+    pub id: String,
+    /// Sender JID.
+    pub sender_jid: String,
+    /// Sender push name.
+    pub sender_name: Option<String>,
+
+    /// Whether message is unread.
+    pub unread: bool,
+    /// Message content (text).
+    pub content: Option<String>,
+    /// Whether message was sent by current user.
+    pub outgoing: bool,
+    /// Message timestamp.
+    pub timestamp: u64,
 }
 
 #[derive(Debug)]
@@ -191,6 +256,12 @@ pub enum ClientCommand {
     },
     /// Client has paired successfully.
     PairSuccess,
+
+    /// Process a `JoinedGroup` event (conversation sync) in background.
+    ProcessJoinedGroup {
+        /// Lazy conversation to parse.
+        lazy_conv: LazyConversation,
+    },
 }
 
 impl Client {
@@ -291,15 +362,16 @@ impl AsyncComponent for Client {
                             return;
                         };
 
-                        let mut s_jid = None;
-                        if let Some(sender_jid) = sender_jid {
+                        let s_jid = if let Some(sender_jid) = sender_jid {
                             let Ok(jid) = sender_jid.parse::<Jid>() else {
                                 tracing::error!("Failed to parse JID: {sender_jid}");
                                 return;
                             };
 
-                            s_jid = Some(jid);
-                        }
+                            Some(jid)
+                        } else {
+                            None
+                        };
 
                         if let Err(e) = client.mark_as_read(&jid, s_jid.as_ref(), message_ids).await
                         {
@@ -467,6 +539,40 @@ impl AsyncComponent for Client {
                                         });
                                     }
 
+                                    Event::JoinedGroup(lazy_conv) => {
+                                        // Offload conversation parsing to background task
+                                        // to avoid blocking the UI thread
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::ProcessJoinedGroup { lazy_conv }
+                                        });
+                                    }
+
+                                    Event::HistorySync(_)
+                                    | Event::OfflineSyncPreview(_)
+                                    | Event::OfflineSyncCompleted(_) => {
+                                        // History sync events - already handled via JoinedGroup
+                                        tracing::debug!("History sync event received");
+                                    }
+
+                                    Event::DeviceListUpdate(_) => {
+                                        // Device list updates - not critical for chat sync
+                                        tracing::debug!("Device list update received");
+                                    }
+
+                                    Event::ContactUpdate(contact_update) => {
+                                        let jid = contact_update.jid.to_string();
+                                        let name = contact_update.action.full_name.clone();
+                                        let phone_number = contact_update.jid.user.clone();
+                                        let push_name = contact_update.action.first_name.clone();
+
+                                        let _ = sender.output(ClientOutput::ContactUpdated {
+                                            jid,
+                                            name,
+                                            phone_number,
+                                            push_name,
+                                        });
+                                    }
+
                                     e => tracing::warn!("Unhandled event type: {e:#?}"),
                                 }
                             }
@@ -580,6 +686,86 @@ impl AsyncComponent for Client {
 
                 self.update_state(ClientState::Syncing);
                 let _ = sender.output(ClientOutput::PairSuccess);
+            }
+
+            ClientCommand::ProcessJoinedGroup { lazy_conv } => {
+                // Offload CPU-intensive protobuf parsing to blocking thread.
+                let sender_clone = sender.clone();
+
+                relm4::spawn_blocking(move || {
+                    // Parse the lazy conversation (this does protobuf decoding - CPU intensive).
+                    if let Some(conv) = lazy_conv.get() {
+                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
+                        let is_group = chat_jid.ends_with("@g.us");
+
+                        // Extract participants for groups.
+                        let mut participants = Vec::new();
+                        if is_group {
+                            for p in &conv.participant {
+                                participants.push((p.user_jid.clone(), None::<String>));
+                            }
+                        }
+
+                        // Emit chat synced event.
+                        let _ = sender_clone.output(ClientOutput::ChatSynced {
+                            jid: chat_jid.clone(),
+                            name: conv.name.clone(),
+                            pinned: conv.pinned.is_some_and(|p| p > 0),
+                            archived: conv.archived.unwrap_or(false),
+                            unread_count: conv.unread_count,
+                            participants,
+                            mute_end_time: conv.mute_end_time,
+                            last_message_time: conv.last_msg_timestamp,
+                        });
+
+                        // Process messages from the conversation.
+                        let mut synced_messages = Vec::new();
+                        for hist_msg in &conv.messages {
+                            if let Some(web_msg) = &hist_msg.message
+                                && let Some(msg) = &web_msg.message
+                            {
+                                let msg_id = web_msg.key.id.clone().unwrap_or_default();
+                                let sender_jid = web_msg
+                                    .key
+                                    .participant
+                                    .clone()
+                                    .unwrap_or_else(|| chat_jid.clone());
+                                let outgoing = web_msg.key.from_me.unwrap_or(false);
+                                let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
+                                    SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                });
+
+                                // Extract message content.
+                                let content = msg.conversation.clone().filter(|c| !c.is_empty());
+
+                                synced_messages.push(SyncedMessage {
+                                    id: msg_id,
+                                    sender_jid,
+                                    sender_name: web_msg
+                                        .push_name
+                                        .clone()
+                                        .filter(|n| !n.is_empty()),
+
+                                    unread: false,
+                                    content,
+                                    outgoing,
+                                    timestamp,
+                                });
+                            }
+                        }
+
+                        // Emit messages synced event if we have messages.
+                        if !synced_messages.is_empty() {
+                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
+                                chat_jid,
+                                messages: synced_messages,
+                            });
+                        }
+                    }
+                });
             }
         }
     }
