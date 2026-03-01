@@ -3,7 +3,7 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 use adw::prelude::*;
 use futures_util::FutureExt;
 use gtk::{gdk, pango};
-use relm4::{component::Connector, prelude::*};
+use relm4::{RelmRemoveAllExt, component::Connector, prelude::*};
 use relm4_components::alert::{Alert, AlertMsg, AlertResponse, AlertSettings};
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 use strum::{AsRefStr, EnumString};
@@ -287,23 +287,43 @@ impl AsyncComponent for Login {
                         }
                     },
 
-                    gtk::Separator {
-                        set_halign: gtk::Align::Center,
-                        set_margin_top: 10,
-                        set_css_classes: &["dimmed"],
-                        set_width_request: 300
+                    gtk::Box {
+                        set_spacing: 10,
+                        set_orientation: gtk::Orientation::Horizontal,
+
+                        gtk::Separator {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_width_request: 150
+                        },
+
+                        gtk::Label {
+                            set_label: &i18n!("OR"),
+                            set_halign: gtk::Align::Center,
+                            set_justify: gtk::Justification::Center,
+                        },
+
+                        gtk::Separator {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_width_request: 150
+                        }
                     },
 
                     gtk::Stack {
                         set_transition_type: gtk::StackTransitionType::Crossfade,
 
-                        add_child = &gtk::Box {
+                        add_named[Some("enter-phone-number")] = &gtk::Box {
                             set_halign: gtk::Align::Center,
                             set_spacing: 10,
                             set_orientation: gtk::Orientation::Vertical,
 
                             gtk::Label {
-                                set_label: &i18n!("or use your phone number:"),
+                                set_label: &i18n!("Use your phone number:"),
                                 set_justify: gtk::Justification::Center,
                                 set_css_classes: &["body"]
                             },
@@ -315,8 +335,8 @@ impl AsyncComponent for Login {
                                 gtk::Button {
                                     #[watch]
                                     set_label: model.state.phone_number_country_emoji.as_deref().unwrap_or("🇺🇳"),
-                                    set_can_focus: false,
-                                    set_width_request: 2,
+                                    set_focusable: false,
+                                    set_css_classes: &["raised"]
                                 },
 
                                 #[local_ref]
@@ -336,11 +356,7 @@ impl AsyncComponent for Login {
 
                                 gtk::Button {
                                     #[watch]
-                                    set_css_classes: if model.state.valid_phone_number.get() {
-                                        &["suggested-action"]
-                                    } else {
-                                        &[]
-                                    },
+                                    set_css_classes: if model.state.valid_phone_number.get() { &["suggested-action"] } else { &[] },
 
                                     #[wrap(Some)]
                                     set_child = &gtk::Box {
@@ -362,11 +378,9 @@ impl AsyncComponent for Login {
                                     }
                                 },
                             }
-                        } -> {
-                            set_name: "enter-phone-number"
                         },
 
-                        add_child = &gtk::Box {
+                        add_named[Some("confirm-code")] = &gtk::Box {
                             set_halign: gtk::Align::Center,
                             set_spacing: 10,
                             set_orientation: gtk::Orientation::Vertical,
@@ -383,8 +397,6 @@ impl AsyncComponent for Login {
                                 set_hexpand: true,
                                 set_homogeneous: true,
                             }
-                        } -> {
-                            set_name: "confirm-code"
                         },
 
                         #[watch]
@@ -450,6 +462,9 @@ impl AsyncComponent for Login {
 
         let widgets = view_output!();
 
+        // Focus the phone number entry
+        model.phone_number_entry.grab_focus();
+
         AsyncComponentParts { model, widgets }
     }
 
@@ -470,6 +485,9 @@ impl AsyncComponent for Login {
                 timeout,
             } => {
                 if let Some(code) = code {
+                    // Empty the pairing box, removing all cells
+                    self.pairing_box.remove_all();
+
                     let mut cells = Vec::with_capacity(8);
                     let mut split_code = [' '; 8];
 
@@ -613,13 +631,17 @@ impl AsyncComponent for Login {
                 let entry = &self.phone_number_entry;
 
                 let text = entry.text();
-                let sanitazed = text
+                let mut sanitazed = text
                     .trim()
                     .chars()
                     .filter(|char| char.is_ascii_digit() || "+- ".contains(*char))
                     .collect::<String>();
 
                 if text == sanitazed {
+                    if !sanitazed.starts_with('+') {
+                        sanitazed = format!("+{sanitazed}");
+                    }
+
                     if let Ok(number) = sanitazed.parse::<PhoneNumber>() {
                         if number.is_valid() {
                             if !self.state.valid_phone_number.get() {
@@ -634,12 +656,23 @@ impl AsyncComponent for Login {
                                 entry.set_position(-1);
                             }
                         } else {
+                            if self.state.valid_phone_number.get() {
+                                let only_digits = sanitazed
+                                    .chars()
+                                    .filter(|char| char.is_ascii_digit())
+                                    .collect::<String>();
+                                entry.set_text(&only_digits);
+                                entry.set_position(-1);
+
+                                self.state.valid_phone_number.set(false);
+                                self.state.phone_number_country_emoji = None;
+                            }
+                        }
+                    } else {
+                        if self.state.valid_phone_number.get() {
                             self.state.valid_phone_number.set(false);
                             self.state.phone_number_country_emoji = None;
                         }
-                    } else {
-                        self.state.valid_phone_number.set(false);
-                        self.state.phone_number_country_emoji = None;
                     }
                 } else {
                     entry.set_text(&sanitazed);

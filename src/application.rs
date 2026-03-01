@@ -339,7 +339,7 @@ impl AsyncComponent for Application {
             set_title: Some("Papo"),
             set_visible: true,
             set_width_request: 400,
-            set_height_request: 360,
+            set_height_request: 380,
             set_default_width: 900,
             set_default_height: 850,
 
