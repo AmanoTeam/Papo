@@ -975,7 +975,7 @@ impl AsyncComponent for Application {
                     is_registered: true,
                 };
 
-                tokio::task::spawn(async move {
+                relm4::spawn(async move {
                     if let Err(e) = db.save_contact(&contact).await {
                         tracing::error!("Failed to save contact {}: {}", jid_for_contact, e);
                     } else {
@@ -1003,7 +1003,7 @@ impl AsyncComponent for Application {
                         // Save updated chat in background
                         let chat_for_save = chat.clone();
                         let jid_for_save = jid.clone();
-                        tokio::task::spawn(async move {
+                        relm4::spawn(async move {
                             if let Err(e) = chat_for_save.save().await {
                                 tracing::error!(
                                     "Failed to update chat name for {}: {}",
@@ -1143,7 +1143,7 @@ impl AsyncComponent for Application {
 
                 // Save the chat to database in blocking thread (fire and forget)
                 let chat_for_db = chat;
-                tokio::task::spawn(async move {
+                relm4::spawn(async move {
                     if let Err(e) = chat_for_db.save().await {
                         tracing::error!("Failed to save synced chat {}: {}", chat_for_db.jid, e);
                     } else {
@@ -1195,7 +1195,7 @@ impl AsyncComponent for Application {
                 }
 
                 // Spawn database operations in background task
-                tokio::task::spawn(async move {
+                relm4::spawn(async move {
                     let mut saved_count = 0;
                     for synced_msg in messages {
                         // Skip messages without content for now

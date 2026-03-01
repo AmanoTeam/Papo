@@ -655,7 +655,7 @@ impl AsyncComponent for Client {
             ClientCommand::ProcessJoinedGroup { lazy_conv } => {
                 // Offload CPU-intensive protobuf parsing to blocking thread
                 let sender_clone = sender.clone();
-                tokio::task::spawn_blocking(move || {
+                relm4::spawn_blocking(move || {
                     // Parse the lazy conversation (this does protobuf decoding - CPU intensive)
                     if let Some(conv) = lazy_conv.get() {
                         let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
