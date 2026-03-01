@@ -185,6 +185,7 @@ impl Database {
                 pinned: row.get::<i32>(3)? != 0,
                 available: None,
                 last_seen: None,
+                avatar_path: None,
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
@@ -221,6 +222,7 @@ impl Database {
                 pinned: row.get::<i32>(3)? != 0,
                 available: None,
                 last_seen: None,
+                avatar_path: None,
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
