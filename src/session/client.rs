@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use relm4::prelude::*;
 use tokio::sync::Mutex;
 use wacore::{
+    net::HttpRequest,
     pair_code::{PairCodeOptions, PlatformId},
     types::{events::Event, message::MessageInfo},
 };
@@ -16,7 +17,10 @@ use whatsapp_rust::{Jid, bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
-use crate::{DATA_DIR, i18n, session::RuntimeCache};
+use crate::{
+    DATA_DIR, i18n,
+    session::{AvatarCache, RuntimeCache},
+};
 
 /// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -32,6 +36,8 @@ pub struct Client {
     /// System OS type.
     os_type: String,
 
+    /// Avatar cache for downloading and storing profile pictures.
+    avatar_cache: Arc<tokio::sync::Mutex<Option<AvatarCache>>>,
     /// Runtime cache shared with Application.
     runtime_cache: Arc<RuntimeCache>,
 }
@@ -106,6 +112,11 @@ pub enum ClientInput {
         jid: String,
         /// The content of the message.
         text: String,
+    },
+    /// Fetch avatar for a chat.
+    FetchAvatar {
+        /// Chat JID.
+        jid: String,
     },
 }
 
@@ -207,6 +218,14 @@ pub enum ClientOutput {
         push_name: Option<String>,
     },
 
+    /// Avatar updated for a chat.
+    AvatarUpdated {
+        /// Chat JID.
+        jid: String,
+        /// Path to the cached avatar image.
+        path: String,
+    },
+
     /// Error occurred.
     Error { message: String },
 }
@@ -259,6 +278,11 @@ pub enum ClientCommand {
         /// Lazy conversation to parse.
         lazy_conv: wacore::types::events::LazyConversation,
     },
+    /// Fetch avatar for a JID in background.
+    FetchAvatar {
+        /// Chat JID.
+        jid: String,
+    },
 }
 
 impl Client {
@@ -289,11 +313,24 @@ impl AsyncComponent for Client {
     ) -> AsyncComponentParts<Self> {
         let os_type = os_info::get().os_type().to_string();
 
+        // Initialize avatar cache
+        let avatar_cache = match AvatarCache::new() {
+            Ok(cache) => {
+                tracing::info!("Avatar cache initialized");
+                Some(cache)
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize avatar cache: {e}");
+                None
+            }
+        };
+
         let model = Self {
             state: ClientState::Loading,
             handle: Arc::new(Mutex::new(None)),
             os_type,
             runtime_cache: init,
+            avatar_cache: Arc::new(tokio::sync::Mutex::new(avatar_cache)),
         };
 
         let widgets = view_output!();
@@ -379,7 +416,32 @@ impl AsyncComponent for Client {
                 }
             }
 
-            _ => {}
+            ClientInput::FetchAvatar { jid } => {
+                sender.oneshot_command(async move { ClientCommand::FetchAvatar { jid } });
+            }
+
+            // TODO: Implement these call and typing features
+            ClientInput::StartCall {
+                jid: _,
+                is_video: _,
+            } => {
+                tracing::warn!("StartCall not yet implemented");
+            }
+            ClientInput::AcceptCall { call_id: _ } => {
+                tracing::warn!("AcceptCall not yet implemented");
+            }
+            ClientInput::DeclineCall { call_id: _ } => {
+                tracing::warn!("DeclineCall not yet implemented");
+            }
+            ClientInput::SendTyping { jid: _ } => {
+                tracing::warn!("SendTyping not yet implemented");
+            }
+            ClientInput::StopTyping { jid: _ } => {
+                tracing::warn!("StopTyping not yet implemented");
+            }
+            ClientInput::SendMessage { jid: _, text: _ } => {
+                tracing::warn!("SendMessage not yet implemented");
+            }
         }
     }
 
@@ -727,6 +789,105 @@ impl AsyncComponent for Client {
                             });
                         }
                     }
+                });
+            }
+            ClientCommand::FetchAvatar { jid } => {
+                // Spawn avatar fetching as a separate task to avoid blocking command queue
+                let avatar_cache = Arc::clone(&self.avatar_cache);
+                let client_handle = Arc::clone(&self.handle);
+                let sender_clone = sender.clone();
+
+                relm4::spawn(async move {
+                    // Check if already cached (release lock immediately after)
+                    let cached_path = {
+                        let cache_guard = avatar_cache.lock().await;
+                        if let Some(cache) = cache_guard.as_ref() {
+                            cache.get_cached_path(&jid)
+                        } else {
+                            tracing::warn!("Avatar cache not available");
+                            return;
+                        }
+                    };
+
+                    if let Some(path) = cached_path {
+                        tracing::debug!("Avatar already cached for {jid}");
+                        let _ = sender_clone.output(ClientOutput::AvatarUpdated { jid, path });
+                        return;
+                    }
+
+                    // Get the client handle (clone Arc to release lock)
+                    let client = {
+                        let handle = client_handle.lock().await;
+                        if let Some(c) = handle.as_ref() {
+                            Arc::clone(c)
+                        } else {
+                            tracing::warn!("Client not available for fetching avatar");
+                            return;
+                        }
+                    };
+
+                    // Parse the JID
+                    let Ok(jid_parsed) = jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID for avatar fetch: {jid}");
+                        return;
+                    };
+
+                    // Fetch the profile picture using the contacts feature
+                    let picture = match client
+                        .contacts()
+                        .get_profile_picture(&jid_parsed, false)
+                        .await
+                    {
+                        Ok(Some(pic)) => pic,
+                        Ok(None) => {
+                            tracing::debug!("No profile picture available for {jid}");
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to get profile picture for {jid}: {e}");
+                            return;
+                        }
+                    };
+
+                    tracing::info!("Got profile picture URL for {jid}");
+
+                    // Download the avatar using the client's HTTP client
+                    let request = HttpRequest::get(&picture.url);
+                    let response = match client.http_client.execute(request).await {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::error!("Failed to download avatar for {jid}: {e}");
+                            return;
+                        }
+                    };
+
+                    if response.status_code < 200 || response.status_code >= 300 {
+                        tracing::error!(
+                            "Failed to download avatar for {jid}: HTTP {}",
+                            response.status_code
+                        );
+                        return;
+                    }
+
+                    // Save to cache (acquire lock only for saving)
+                    let path = {
+                        let cache_guard = avatar_cache.lock().await;
+                        if let Some(cache) = cache_guard.as_ref() {
+                            match cache.save_avatar(&jid, &response.body) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    tracing::error!("Failed to save avatar for {jid}: {e}");
+                                    return;
+                                }
+                            }
+                        } else {
+                            tracing::warn!("Avatar cache not available for saving");
+                            return;
+                        }
+                    };
+
+                    tracing::info!("Avatar downloaded and cached for {jid}");
+                    let _ = sender_clone.output(ClientOutput::AvatarUpdated { jid, path });
                 });
             }
         }

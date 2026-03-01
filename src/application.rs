@@ -16,6 +16,7 @@ use wacore::types::message::MessageInfo;
 use waproto::whatsapp::Message;
 
 use crate::{
+    DATA_DIR,
     components::{
         ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
         LoginInput, LoginOutput,
@@ -183,6 +184,18 @@ pub enum AppMsg {
         push_name: Option<String>,
     },
 
+    /// Avatar updated for a chat.
+    AvatarUpdated {
+        jid: String,
+        path: String,
+    },
+
+    /// Sync completed, fetch avatars for chats.
+    SyncCompleted {
+        /// List of JIDs that need avatar fetching.
+        chats_needing_avatars: Vec<String>,
+    },
+
     Unknown,
     /// Error occurred.
     Error {
@@ -261,10 +274,18 @@ impl Application {
                 last_seen: None,
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
+                avatar_path: None,
 
                 db: Arc::clone(&self.db),
             })
             .await;
+
+            // Fetch avatar for new individual chats
+            if !is_group {
+                self.client.emit(ClientInput::FetchAvatar {
+                    jid: chat_jid.to_string(),
+                });
+            }
         }
 
         // Get the chat.
@@ -634,6 +655,8 @@ impl AsyncComponent for Application {
                     push_name,
                 },
 
+                ClientOutput::AvatarUpdated { jid, path } => AppMsg::AvatarUpdated { jid, path },
+
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
             });
@@ -734,6 +757,15 @@ impl AsyncComponent for Application {
 
                 if self.page != AppPage::Session {
                     self.page = AppPage::Session;
+                }
+            }
+
+            AppMsg::SyncCompleted {
+                chats_needing_avatars,
+            } => {
+                // Fetch avatars for chats that don't have them
+                for jid in chats_needing_avatars {
+                    self.client.emit(ClientInput::FetchAvatar { jid });
                 }
             }
             AppMsg::LoggedOut => {
@@ -917,6 +949,9 @@ impl AsyncComponent for Application {
                     return;
                 }
 
+                // Fetch avatar after chat is processed (store JID for later)
+                let jid_for_avatar = jid.clone();
+
                 // Offload heavy processing to background command
                 sender.oneshot_command(async move {
                     AppCmd::ProcessChatSync {
@@ -928,6 +963,13 @@ impl AsyncComponent for Application {
                         participants,
                     }
                 });
+
+                // Fetch avatar for the chat (not for groups yet)
+                if !jid_for_avatar.ends_with("@g.us") {
+                    self.client.emit(ClientInput::FetchAvatar {
+                        jid: jid_for_avatar,
+                    });
+                }
             }
 
             AppMsg::MessagesSynced { chat_jid, messages } => {
@@ -1024,6 +1066,21 @@ impl AsyncComponent for Application {
                 }
             }
 
+            AppMsg::AvatarUpdated { jid, path } => {
+                // Update the chat's avatar path
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    chat.avatar_path = Some(path);
+
+                    // Update in chat list
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: chat.clone(),
+                        move_to_top: false,
+                    });
+
+                    tracing::info!("Updated avatar for chat: {}", jid);
+                }
+            }
+
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
                 self.state = AppState::Error(message.clone());
@@ -1050,19 +1107,40 @@ impl AsyncComponent for Application {
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
-        _sender: AsyncComponentSender<Self>,
+        sender: AsyncComponentSender<Self>,
         _root: &Self::Root,
     ) {
         match command {
             AppCmd::Sync => {
                 self.state = AppState::Syncing;
+                let mut chats_needing_avatars = Vec::new();
 
                 match self.db.load_chats().await {
-                    Ok(chats) => {
+                    Ok(mut chats) => {
                         tracing::info!("Loaded {} chats from own database", chats.len());
 
+                        // Check for existing cached avatars
+                        for chat in &mut chats {
+                            if !chat.is_group() {
+                                // Check if avatar exists in cache
+                                let avatar_path = DATA_DIR.join("avatars").join(format!(
+                                    "{}.jpg",
+                                    chat.jid.replace(
+                                        ['/', '\\', ':', '*', '?', '"', '<', '>', '|'],
+                                        "_"
+                                    )
+                                ));
+                                if avatar_path.exists() {
+                                    chat.avatar_path =
+                                        Some(avatar_path.to_string_lossy().into_owned());
+                                } else {
+                                    chats_needing_avatars.push(chat.jid.clone());
+                                }
+                            }
+                        }
+
                         // Insert all chats into our cached list.
-                        self.chats.extend(chats);
+                        self.chats.extend(chats.clone());
 
                         for chat in &self.chats {
                             // Add the chat in the chat list.
@@ -1076,6 +1154,13 @@ impl AsyncComponent for Application {
                 }
 
                 self.state = AppState::Ready;
+
+                // Emit SyncCompleted to fetch avatars in the regular update cycle
+                if !chats_needing_avatars.is_empty() {
+                    sender.input(AppMsg::SyncCompleted {
+                        chats_needing_avatars,
+                    });
+                }
             }
 
             AppCmd::ProcessChatSync {
@@ -1122,6 +1207,7 @@ impl AsyncComponent for Application {
                     last_seen: None,
                     participants: participants_map,
                     last_message_time: last_msg_time,
+                    avatar_path: None,
                     db: Arc::clone(&self.db),
                 };
 

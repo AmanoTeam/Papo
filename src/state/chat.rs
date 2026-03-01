@@ -19,6 +19,8 @@ pub struct Chat {
     pub available: Option<bool>,
     /// Last time the user has been seen.
     pub last_seen: Option<DateTime<Utc>>,
+    /// Path to the cached avatar image.
+    pub avatar_path: Option<String>,
     /// Participants names in groups (JID -> name).
     pub participants: HashMap<String, String>,
     /// Time of the last sent message.

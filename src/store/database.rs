@@ -186,6 +186,7 @@ impl Database {
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
+                avatar_path: None,
 
                 db: Arc::new(self.clone()),
             }))
@@ -222,6 +223,7 @@ impl Database {
                 participants: HashMap::new(),
                 last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
                     .expect("Invalid timestamp"),
+                avatar_path: None,
 
                 db: Arc::new(self.clone()),
             });
