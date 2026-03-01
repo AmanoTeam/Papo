@@ -151,7 +151,7 @@ impl AsyncComponent for Login {
                     set_orientation: gtk::Orientation::Vertical,
 
                     gtk::Box {
-                        set_spacing: 20,
+                        set_spacing: 10,
                         set_orientation: gtk::Orientation::Vertical,
 
                         gtk::Overlay {
@@ -227,16 +227,20 @@ impl AsyncComponent for Login {
                                     }
                                 }
                             },
+                        },
 
-                            add_overlay = &gtk::ProgressBar {
+                        gtk::Revealer {
+                            #[watch]
+                            set_reveal_child: model.qr_code.is_some(),
+                            set_transition_type: gtk::RevealerTransitionType::SwingDown,
+                            set_transition_duration: 350,
+
+                            gtk::ProgressBar {
                                 set_halign: gtk::Align::Center,
                                 set_valign: gtk::Align::End,
                                 #[watch]
-                                set_visible: model.qr_code.is_some(),
-                                #[watch]
                                 set_fraction: model.state.progress_fraction,
-                                set_margin_bottom: 1,
-                                set_width_request: 180
+                                set_width_request: 200
                             }
                         },
 
@@ -563,7 +567,7 @@ impl AsyncComponent for Login {
                 self.qr_code = None;
                 self.state.code = None;
                 self.state.scan_attempts = 0;
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
                 self.state.session_scan_expired.set(true);
 
                 let _ = sender.output(LoginOutput::ResetSession);
@@ -571,7 +575,7 @@ impl AsyncComponent for Login {
 
             LoginCommand::UpdateQrCode { data, timeout } => {
                 // Reset the QR code and progress bar.
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
 
                 if self.state.scan_attempts >= 5 {
                     self.state.session_scan_expired.set(true);
@@ -586,7 +590,7 @@ impl AsyncComponent for Login {
                 self.qr_code = Some(texture.into());
 
                 // Make sure to not reset the qr code after it refreshes.
-                let timeout = timeout.checked_sub(Duration::from_secs(2)).unwrap();
+                let timeout = timeout.saturating_sub(Duration::from_secs(2));
 
                 let start = Instant::now();
                 sender.command(move |output, shutdown| {
@@ -594,14 +598,15 @@ impl AsyncComponent for Login {
                         .register(async move {
                             let mut elapsed = start.elapsed();
                             let mut interval = time::interval(Duration::from_millis(100));
-                            let mut fraction = elapsed.as_secs_f32() / timeout.as_secs_f32();
+                            let mut fraction =
+                                1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                             interval.tick().await;
 
                             while elapsed < timeout {
                                 let _ = output.send(LoginCommand::UpdateExpirationBar(fraction));
 
                                 elapsed = start.elapsed();
-                                fraction = elapsed.as_secs_f32() / timeout.as_secs_f32();
+                                fraction = 1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                                 interval.tick().await;
                             }
 
@@ -614,7 +619,7 @@ impl AsyncComponent for Login {
             LoginCommand::QrCodeExpired => {
                 // Reset the QR code and progress bar.
                 self.qr_code = None;
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
             }
             LoginCommand::UpdateExpirationBar(progress) => {
                 self.state.progress_fraction = f64::from(progress);
