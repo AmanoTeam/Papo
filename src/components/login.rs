@@ -9,16 +9,25 @@ use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 use strum::{AsRefStr, EnumString};
 use tokio::time::{self, Instant};
 
-use crate::{i18n, utils::generate_qr_code};
+use crate::{i18n, utils::generate_qr_code, widgets::PairingCell};
 
 #[derive(Debug)]
 pub struct Login {
+    /// Current login state.
     state: LoginState,
+    /// Current QR code texture.
     qr_code: Option<gdk::Paintable>,
+    /// Current bottom page.
     bottom_page: LoginBottomPage,
+    /// Pairing box containing all pair cells.
+    pairing_box: gtk::Box,
+    /// Pair code character.
+    pairing_cells: Option<[PairingCell; 8]>,
+    /// Input entry containing the user phone number.
+    phone_number_entry: gtk::Entry,
+
     error_dialog: Connector<Alert>,  // TODO: use a custom alert dialog
     reset_dialog: Controller<Alert>, // TODO: use a custom alert dialog
-    phone_number_entry: gtk::Entry,
 }
 
 #[derive(AsRefStr, Clone, Copy, Debug, EnumString)]
@@ -174,7 +183,6 @@ impl AsyncComponent for Login {
                                 set_valign: gtk::Align::Center,
                                 set_hexpand: true,
                                 set_vexpand: true,
-                                set_opacity: 0.96,
                                 #[watch]
                                 set_visible: model.qr_code.is_none(),
                                 set_css_classes: &["card", "view"],
@@ -283,7 +291,6 @@ impl AsyncComponent for Login {
                                 },
 
                                 gtk::Button {
-                                    set_icon_name: "go-next-symbolic",
                                     #[watch]
                                     set_css_classes: if model.state.valid_phone_number.get() {
                                         &["suggested-action"]
@@ -292,16 +299,22 @@ impl AsyncComponent for Login {
                                     },
 
                                     #[wrap(Some)]
-                                    set_child = &adw::Spinner {
-                                        #[watch]
-                                        set_visible: model.state.pair_state == PairState::PairingWithPhoneNumber,
+                                    set_child = &gtk::Box {
+                                        gtk::Image {
+                                            #[watch]
+                                            set_visible: model.state.pair_state != PairState::PairingWithPhoneNumber,
+                                            set_icon_name: Some("go-next-symbolic")
+                                        },
+
+                                        adw::Spinner {
+                                            #[watch]
+                                            set_visible: model.state.pair_state == PairState::PairingWithPhoneNumber,
+                                        }
                                     },
 
-                                    connect_clicked[sender, phone_number_entry, valid_phone_number = model.state.valid_phone_number.clone()] => move |_| {
-                                        if valid_phone_number.get() {
-                                            let phone_number = phone_number_entry.text().to_string();
-                                            sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
-                                        }
+                                    connect_clicked[sender, phone_number_entry] => move |_| {
+                                        let phone_number = phone_number_entry.text().to_string();
+                                        sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
                                     }
                                 },
                             }
@@ -320,107 +333,11 @@ impl AsyncComponent for Login {
                                 set_css_classes: &["body"]
                             },
 
-                            gtk::Box {
+                            #[local_ref]
+                            pairing_box -> gtk::Box {
                                 set_halign: gtk::Align::Center,
                                 set_hexpand: true,
-                                set_spacing: 4,
-                                set_orientation: gtk::Orientation::Horizontal,
                                 set_homogeneous: true,
-
-                                // TODO: use custom component
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[0].to_string()),
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[1].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[2].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[3].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    set_label: "-",
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    set_css_classes: &["title-2"]
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[4].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[5].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[6].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[7].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
                             }
                         } -> {
                             set_name: "confirm-code"
@@ -439,7 +356,6 @@ impl AsyncComponent for Login {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let state = LoginState::default();
         let error_dialog = Alert::builder().transient_for(&root).launch(AlertSettings {
             text: Some(i18n!("An error occurred")),
             secondary_text: None,
@@ -471,16 +387,22 @@ impl AsyncComponent for Login {
                 _ => LoginCommand::Ignore,
             });
 
+        let pairing_box = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         let phone_number_entry = gtk::Entry::new();
 
         let model = Self {
-            state,
+            state: LoginState::default(),
             qr_code: None,
             bottom_page: LoginBottomPage::EnterPhoneNumber,
+            pairing_box,
+            pairing_cells: None,
+            phone_number_entry: phone_number_entry.clone(),
+
             error_dialog,
             reset_dialog,
-            phone_number_entry: phone_number_entry.clone(),
         };
+
+        let pairing_box = &model.pairing_box;
 
         let widgets = view_output!();
 
@@ -504,13 +426,30 @@ impl AsyncComponent for Login {
                 timeout,
             } => {
                 if let Some(code) = code {
+                    let mut cells = Vec::new();
                     let mut split_code = [' '; 8];
+
                     for (i, c) in code.chars().enumerate() {
                         split_code[i] = c;
+
+                        let cell = PairingCell::init(c);
+                        self.pairing_box.append(cell.widget_ref());
+                        cells.push(cell);
+
+                        if (i + 1) == 4 {
+                            let separator = gtk::Label::builder()
+                                .label("—")
+                                .halign(gtk::Align::Center)
+                                .valign(gtk::Align::Center)
+                                .css_classes(["title-2"])
+                                .build();
+                            self.pairing_box.append(&separator);
+                        }
                     }
 
                     self.state.code = Some(split_code);
                     self.bottom_page = LoginBottomPage::ConfirmCode;
+                    self.pairing_cells = cells.as_array().map(|c| c.to_owned());
                 } else if let Some(qr_code) = qr_code {
                     sender.oneshot_command(async move {
                         LoginCommand::UpdateQrCode {
@@ -522,13 +461,30 @@ impl AsyncComponent for Login {
             }
             LoginInput::PairSuccess => {
                 self.state.pair_state = PairState::Paired;
+
+                if let Some(cells) = self.pairing_cells.as_ref() {
+                    for cell in cells {
+                        cell.remove_css_class("accent");
+                        cell.add_css_class("success");
+                    }
+                }
             }
 
             LoginInput::Error { message } => {
-                self.state.pair_state = PairState::Pairing;
+                if self.state.pair_state == PairState::PairingWithPhoneNumber {
+                    // Reset session and start pair with phone number
+                    sender.oneshot_command(async { LoginCommand::ResetSession });
 
-                self.error_dialog.widgets().gtk_label_2.set_text(&message);
-                self.error_dialog.emit(AlertMsg::Show);
+                    let phone_number = self.phone_number_entry.text().to_string();
+                    sender.oneshot_command(async {
+                        LoginCommand::PairWithPhoneNumber { phone_number }
+                    });
+                } else {
+                    self.state.pair_state = PairState::Pairing;
+
+                    self.error_dialog.widgets().gtk_label_2.set_text(&message);
+                    self.error_dialog.emit(AlertMsg::Show);
+                }
             }
         }
     }
@@ -602,9 +558,11 @@ impl AsyncComponent for Login {
                 self.state.progress_fraction = f64::from(progress);
             }
             LoginCommand::PairWithPhoneNumber { phone_number } => {
-                self.state.pair_state = PairState::PairingWithPhoneNumber;
+                if self.state.valid_phone_number.get() {
+                    self.state.pair_state = PairState::PairingWithPhoneNumber;
 
-                let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
+                    let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
+                }
             }
 
             LoginCommand::ValidatePhoneNumber => {
