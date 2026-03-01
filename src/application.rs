@@ -702,7 +702,7 @@ impl AsyncComponent for Application {
             }
             AppMsg::DevicePaired => {
                 self.login.emit(LoginInput::PairSuccess);
-                time::sleep(Duration::from_secs(1)).await;
+                time::sleep(Duration::from_secs(2)).await;
 
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;
