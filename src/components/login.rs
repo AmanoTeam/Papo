@@ -9,7 +9,11 @@ use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 use strum::{AsRefStr, EnumString};
 use tokio::time::{self, Instant};
 
-use crate::{i18n, utils::generate_qr_code, widgets::PairingCell};
+use crate::{
+    i18n,
+    utils::generate_qr_code,
+    widgets::{PairStep, PairingCell},
+};
 
 #[derive(Debug)]
 pub struct Login {
@@ -147,14 +151,8 @@ impl AsyncComponent for Login {
                     set_orientation: gtk::Orientation::Vertical,
 
                     gtk::Box {
-                        set_spacing: 15,
+                        set_spacing: 20,
                         set_orientation: gtk::Orientation::Vertical,
-
-                        gtk::Label {
-                            set_label: &i18n!("Open WhatsApp on your phone and scan the QR code."),
-                            set_justify: gtk::Justification::Center,
-                            set_css_classes: &["body"]
-                        },
 
                         gtk::Overlay {
                             #[wrap(Some)]
@@ -239,6 +237,52 @@ impl AsyncComponent for Login {
                                 set_fraction: model.state.progress_fraction,
                                 set_margin_bottom: 1,
                                 set_width_request: 180
+                            }
+                        },
+
+                        gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_spacing: 10,
+                            set_orientation: gtk::Orientation::Vertical,
+
+                            #[template]
+                            PairStep {
+                                #[template_child]
+                                number {
+                                    set_label: "1"
+                                },
+
+                                #[template_child]
+                                step {
+                                    set_label: &i18n!("Open WhatsApp on your phone.")
+                                }
+                            },
+
+                            #[template]
+                            PairStep {
+                                #[template_child]
+                                number {
+                                    set_label: "2"
+                                },
+
+                                #[template_child]
+                                step {
+                                    set_label: &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")
+                                }
+                            },
+
+                            #[template]
+                            PairStep {
+                                #[template_child]
+                                number {
+                                    set_label: "3"
+                                },
+
+                                #[template_child]
+                                step {
+                                    set_label: &i18n!("Scan this QR code.")
+                                }
                             }
                         }
                     },
@@ -387,7 +431,7 @@ impl AsyncComponent for Login {
                 _ => LoginCommand::Ignore,
             });
 
-        let pairing_box = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        let pairing_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let phone_number_entry = gtk::Entry::new();
 
         let model = Self {
@@ -426,7 +470,7 @@ impl AsyncComponent for Login {
                 timeout,
             } => {
                 if let Some(code) = code {
-                    let mut cells = Vec::new();
+                    let mut cells = Vec::with_capacity(8);
                     let mut split_code = [' '; 8];
 
                     for (i, c) in code.chars().enumerate() {
