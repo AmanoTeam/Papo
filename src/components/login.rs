@@ -1,4 +1,10 @@
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use adw::prelude::*;
 use futures_util::FutureExt;
@@ -41,9 +47,9 @@ struct LoginState {
     /// QR code expiration bar's progress.
     progress_fraction: f64,
     /// Whether the phone number is valid.
-    valid_phone_number: Rc<Cell<bool>>,
+    valid_phone_number: Arc<AtomicBool>,
     /// Whether all QR codes from session has been expired.
-    session_scan_expired: Rc<Cell<bool>>,
+    session_scan_expired: Arc<AtomicBool>,
     /// Phone number country emoji.
     phone_number_country_emoji: Option<String>,
 }
@@ -191,7 +197,7 @@ impl AsyncComponent for Login {
 
                                     gtk::Label {
                                         #[watch]
-                                        set_label: &if model.state.session_scan_expired.get() {
+                                        set_label: &if model.state.session_scan_expired.load(Ordering::Acquire) {
                                             i18n!("All QR codes for this session were expired.")
                                         } else {
                                             i18n!("Waiting QR code...")
@@ -206,7 +212,7 @@ impl AsyncComponent for Login {
 
                                     adw::Spinner {
                                         #[watch]
-                                        set_visible: !model.state.session_scan_expired.get(),
+                                        set_visible: !model.state.session_scan_expired.load(Ordering::Acquire),
                                         set_width_request: 32,
                                         set_height_request: 32
                                     },
@@ -214,7 +220,7 @@ impl AsyncComponent for Login {
                                     gtk::Button {
                                         set_label: &i18n!("Reset Session"),
                                         #[watch]
-                                        set_visible: model.state.session_scan_expired.get(),
+                                        set_visible: model.state.session_scan_expired.load(Ordering::Acquire),
                                         set_css_classes: &["pill", "suggested-action"],
 
                                         connect_clicked => LoginInput::ResetRequest,
@@ -285,7 +291,7 @@ impl AsyncComponent for Login {
                                 gtk::Button {
                                     set_icon_name: "go-next-symbolic",
                                     #[watch]
-                                    set_css_classes: if model.state.valid_phone_number.get() {
+                                    set_css_classes: if model.state.valid_phone_number.load(Ordering::Acquire) {
                                         &["suggested-action"]
                                     } else {
                                         &[]
@@ -298,7 +304,7 @@ impl AsyncComponent for Login {
                                     },
 
                                     connect_clicked[sender, phone_number_entry, valid_phone_number = model.state.valid_phone_number.clone()] => move |_| {
-                                        if valid_phone_number.get() {
+                                        if valid_phone_number.load(Ordering::Acquire) {
                                             let phone_number = phone_number_entry.text().to_string();
                                             sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
                                         }
@@ -546,7 +552,9 @@ impl AsyncComponent for Login {
                 self.state.code = None;
                 self.state.scan_attempts = 0;
                 self.state.progress_fraction = 0.0;
-                self.state.session_scan_expired.set(true);
+                self.state
+                    .session_scan_expired
+                    .store(true, Ordering::Release);
 
                 let _ = sender.output(LoginOutput::ResetSession);
             }
@@ -556,7 +564,9 @@ impl AsyncComponent for Login {
                 self.state.progress_fraction = 0.0;
 
                 if self.state.scan_attempts >= 5 {
-                    self.state.session_scan_expired.set(true);
+                    self.state
+                        .session_scan_expired
+                        .store(true, Ordering::Release);
                     return;
                 }
                 self.state.scan_attempts += 1;
@@ -620,11 +630,11 @@ impl AsyncComponent for Login {
                 if text == sanitazed {
                     if let Ok(number) = sanitazed.parse::<PhoneNumber>() {
                         if number.is_valid() {
-                            if !self.state.valid_phone_number.get() {
+                            if !self.state.valid_phone_number.load(Ordering::Acquire) {
                                 let region_code = number.get_region_code().unwrap();
                                 let country_emoji = country_emoji::flag(region_code);
 
-                                self.state.valid_phone_number.set(true);
+                                self.state.valid_phone_number.store(true, Ordering::Release);
                                 self.state.phone_number_country_emoji = country_emoji;
 
                                 let formatted = number.format_as(PhoneNumberFormat::International);
@@ -632,11 +642,15 @@ impl AsyncComponent for Login {
                                 entry.set_position(-1);
                             }
                         } else {
-                            self.state.valid_phone_number.set(false);
+                            self.state
+                                .valid_phone_number
+                                .store(false, Ordering::Release);
                             self.state.phone_number_country_emoji = None;
                         }
                     } else {
-                        self.state.valid_phone_number.set(false);
+                        self.state
+                            .valid_phone_number
+                            .store(false, Ordering::Release);
                         self.state.phone_number_country_emoji = None;
                     }
                 } else {

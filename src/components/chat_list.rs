@@ -1,4 +1,7 @@
-use std::{cell::Cell, rc::Rc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use adw::prelude::*;
 use chrono::Local;
@@ -18,7 +21,7 @@ pub struct ChatList {
     /// Chat rows indexed by JID.
     chat_rows: IndexMap<String, adw::ActionRow>,
     /// Guard flag to suppress selection signals during list mutations.
-    suppress_selection: Rc<Cell<bool>>,
+    suppress_selection: Arc<AtomicBool>,
 
     /// Currently selected chat JID.
     chat_jid: Option<String>,
@@ -72,7 +75,7 @@ impl SimpleAsyncComponent for ChatList {
                 set_selection_mode: gtk::SelectionMode::Single,
 
                 connect_row_selected[sender, suppress = model.suppress_selection.clone()] => move |_, row| {
-                    if suppress.get() {
+                    if suppress.load(Ordering::Acquire) {
                         return;
                     }
 
@@ -93,7 +96,7 @@ impl SimpleAsyncComponent for ChatList {
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let list_box = gtk::ListBox::new();
-        let suppress_selection = Rc::new(Cell::new(false));
+        let suppress_selection = Arc::new(AtomicBool::new(false));
 
         let model = Self {
             list_box,
@@ -134,7 +137,7 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
-                self.suppress_selection.set(true);
+                self.suppress_selection.store(true, Ordering::Release);
 
                 // Replace the row widget in place.
                 if let Some(old_row) = self.chat_rows.shift_remove(&chat.jid) {
@@ -166,7 +169,7 @@ impl SimpleAsyncComponent for ChatList {
                     self.chat_rows.insert(chat.jid.clone(), row);
                 }
 
-                self.suppress_selection.set(false);
+                self.suppress_selection.store(false, Ordering::Release);
             }
             ChatListInput::SelectIndex(index) => {
                 if let Some((key, _)) = self.chat_rows.get_index(index) {
