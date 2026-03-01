@@ -54,10 +54,10 @@ pub fn format_date_label(date: NaiveDate) -> String {
         return i18n!("Today");
     }
 
-    if let Some(yesterday) = today.pred_opt() {
-        if date == yesterday {
-            return i18n!("Yesterday");
-        }
+    if let Some(yesterday) = today.pred_opt()
+        && date == yesterday
+    {
+        return i18n!("Yesterday");
     }
 
     // Same year: "February 23", different year: "February 23, 2024".
