@@ -8,6 +8,7 @@ use crate::{state::ChatMessage, store::Database, utils::format_lid_as_number};
 /// Represents a chat/conversation.
 #[derive(Clone, Debug)]
 pub struct Chat {
+    pub db: Arc<Database>,
     /// JID (Jabbed ID) - unique chat identifier.
     pub jid: String,
     /// Display name.
@@ -26,8 +27,6 @@ pub struct Chat {
     pub participants: HashMap<String, String>,
     /// Time of the last sent message.
     pub last_message_time: DateTime<Utc>,
-
-    pub db: Arc<Database>,
 }
 
 impl Chat {

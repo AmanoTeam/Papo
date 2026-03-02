@@ -609,8 +609,8 @@ impl AsyncComponent for Client {
                                         let _ = sender.output(ClientOutput::ContactUpdated {
                                             jid,
                                             name,
-                                            phone_number,
                                             push_name,
+                                            phone_number,
                                         });
                                     }
 

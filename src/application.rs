@@ -233,8 +233,8 @@ pub enum AppCmd {
     /// Process messages sync from history (background task).
     ProcessMessagesSync {
         chat_jid: String,
-        messages: Vec<SyncedMessage>,
         is_group: bool,
+        messages: Vec<SyncedMessage>,
     },
 }
 
@@ -278,6 +278,7 @@ impl Application {
             };
 
             self.add_chat(Chat {
+                db: Arc::clone(&self.db),
                 jid: chat_jid.to_string(),
                 name,
                 muted: false,
@@ -668,13 +669,12 @@ impl AsyncComponent for Application {
                 ClientOutput::ContactUpdated {
                     jid,
                     name,
-                    phone_number,
                     push_name,
                 } => AppMsg::ContactUpdate {
                     jid,
                     name,
-                    phone_number,
                     push_name,
+                    phone_number,
                 },
 
                 ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
@@ -1158,8 +1158,8 @@ impl AsyncComponent for Application {
                 sender.oneshot_command(async move {
                     AppCmd::ProcessMessagesSync {
                         chat_jid,
-                        messages,
                         is_group,
+                        messages,
                     }
                 });
             }
@@ -1223,7 +1223,7 @@ impl AsyncComponent for Application {
                         }
 
                         // Insert all chats into our cached list.
-                        self.chats.extend(chats.clone());
+                        self.chats.extend(chats);
 
                         for chat in &self.chats {
                             // Add the chat in the chat list.
@@ -1282,6 +1282,7 @@ impl AsyncComponent for Application {
                 }
 
                 let chat = Chat {
+                    db: Arc::clone(&self.db),
                     jid,
                     name: chat_name,
                     muted: false, // TODO: handle mute_end_time
