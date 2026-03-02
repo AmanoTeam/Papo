@@ -850,7 +850,7 @@ impl ChatView {
         self.state.newest_loaded_timestamp = None;
 
         // Walk backward through metadata to find the newest message and last date.
-        for meta in &self.row_metadata {
+        for meta in self.row_metadata.iter().rev() {
             match meta {
                 RowMetadata::Message(ts) => {
                     if self.state.newest_loaded_timestamp.is_none() {
