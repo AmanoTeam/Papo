@@ -30,6 +30,12 @@
     },
     "modules": [
         {
+            "name": "grass",
+            "buildsystem": "simple",
+            "build-commands": ["cargo install --locked --root=/app grass"],
+            "sources": []
+        },
+        {
             "name": "papo",
             "buildsystem": "meson",
             "run-tests": true,
