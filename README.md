@@ -18,7 +18,7 @@ nix run github:AmanoTeam/Papo
 ### Flatpak
 
 ```sh
-flatpak-builder --install --user build build-aux/com.amanoteam.Papo.json
+flatpak-builder --install --user --install-deps-from=flathub build build-aux/com.amanoteam.Papo.json
 ```
 
 ### Build from source
