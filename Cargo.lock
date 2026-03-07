@@ -666,17 +666,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "country-emoji"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88f41dcf7008e5669247a47e0e704390241718e347fecfd2e6865ede17a3e798"
-dependencies = [
- "once_cell",
- "regex",
- "unidecode",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3100,7 +3089,6 @@ name = "papo"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "country-emoji",
  "futures-util",
  "gettext-rs",
  "glycin",
@@ -4901,12 +4889,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unidecode"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "402bb19d8e03f1d1a7450e2bd613980869438e0666331be3e073089124aa1adc"
 
 [[package]]
 name = "universal-hash"

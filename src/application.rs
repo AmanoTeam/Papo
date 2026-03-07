@@ -45,7 +45,7 @@ pub struct Application {
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
     chat_view: AsyncController<ChatView>,
-    /// The `SplitView` widget from the sesion page.
+    /// The `SplitView` widget from the session page.
     split_view: adw::NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
@@ -65,7 +65,7 @@ pub struct Application {
     runtime_cache: Arc<RuntimeCache>,
 }
 
-#[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
 #[strum(serialize_all = "lowercase")]
 enum AppPage {
     /// Loading page.
@@ -354,7 +354,7 @@ impl AsyncComponent for Application {
             set_title: Some("Papo"),
             set_visible: true,
             set_width_request: 400,
-            set_height_request: 380,
+            set_height_request: 360,
             set_default_width: 900,
             set_default_height: 850,
 

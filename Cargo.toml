@@ -32,8 +32,6 @@ chrono = { version = "0.4", default-features = false, features = [
 ] }
 os_info = "3.14"
 indexmap = "2.13"
-# humantime = "2.3"
-country-emoji = "0.3"
 rlibphonenumber = "0.3"
 
 # Logging

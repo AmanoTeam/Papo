@@ -4,6 +4,7 @@ use relm4::prelude::*;
 #[relm4::widget_template(pub)]
 impl WidgetTemplate for PairStep {
     view! {
+        #[name = "main_box"]
         gtk::Box {
             set_halign: gtk::Align::Start,
             set_hexpand: true,
@@ -35,5 +36,15 @@ impl WidgetTemplate for PairStep {
                 set_css_classes: &["body"]
             }
         }
+    }
+}
+
+impl PairStep {
+    pub fn new(number: u32, step: &str) -> Self {
+        let this = Self::init(());
+        this.number.set_label(number.to_string().as_str());
+        this.step.set_label(step);
+
+        this
     }
 }
