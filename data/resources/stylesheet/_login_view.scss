@@ -1,0 +1,7 @@
+// Login view.
+
+@use "vendor";
+
+.qr-code {
+  border-radius: vendor.$menu_radius;
+}

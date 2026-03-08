@@ -1,6 +1,4 @@
 use std::{
-    cell::Cell,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -58,14 +56,14 @@ struct LoginState {
     pair_state: PairState,
     /// QR code scan attempts.
     scan_attempts: u8,
-    /// Whether the session has been reset.
-    session_reset: Arc<AtomicBool>,
     /// QR code expiration bar's progress.
     progress_fraction: f64,
     /// Whether the phone number is valid.
     valid_phone_number: Arc<AtomicBool>,
     /// Whether all QR codes from session has been expired.
     session_scan_expired: Arc<AtomicBool>,
+    /// Phone number country emoji.
+    phone_number_country_emoji: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -168,84 +166,76 @@ impl AsyncComponent for Login {
                     add_named[Some("qr-code")] = &gtk::Box {
                         set_halign: gtk::Align::Center,
                         set_valign: gtk::Align::Center,
-                        set_spacing: 10,
+                        set_spacing: 5,
                         set_orientation: gtk::Orientation::Vertical,
 
-                        gtk::Overlay {
-                            #[wrap(Some)]
-                            set_child = &gtk::Box {
+                        gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_spacing: 10,
+                            #[watch]
+                            set_css_classes: if model.qr_code.is_none() { &["card", "view"] } else { &[] },
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_width_request: 200,
+                            set_height_request: 200,
+
+                            gtk::Picture {
                                 set_halign: gtk::Align::Center,
                                 set_valign: gtk::Align::Center,
                                 set_hexpand: true,
                                 set_vexpand: true,
-                                set_css_classes: &["card"],
-                                set_width_request: 200,
-                                set_height_request: 200,
-
-                                gtk::Image {
-                                    set_halign: gtk::Align::Center,
-                                    set_valign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_vexpand: true,
-                                    #[watch]
-                                    set_paintable: model.qr_code.as_ref(),
-                                    set_pixel_size: 180,
-                                }
+                                #[watch]
+                                set_visible: model.qr_code.is_some(),
+                                #[watch]
+                                set_paintable: model.qr_code.as_ref(),
+                                set_css_classes: &["qr-code"]
                             },
 
-                            add_overlay = &gtk::Box {
+                            gtk::Box {
                                 set_halign: gtk::Align::Center,
                                 set_valign: gtk::Align::Center,
                                 set_hexpand: true,
                                 set_vexpand: true,
                                 #[watch]
                                 set_visible: model.qr_code.is_none(),
-                                set_css_classes: &["card", "view"],
-                                set_width_request: 200,
-                                set_height_request: 200,
+                                set_spacing: 20,
+                                set_orientation: gtk::Orientation::Vertical,
 
-                                gtk::Box {
-                                    set_halign: gtk::Align::Center,
-                                    set_valign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_vexpand: true,
-                                    set_spacing: 20,
-                                    set_orientation: gtk::Orientation::Vertical,
-
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: &if model.state.session_scan_expired.load(Ordering::Acquire) {
-                                            i18n!("All QR codes for this session were expired.")
-                                        } else {
-                                            i18n!("Waiting QR code...")
-                                        },
-                                        set_justify: gtk::Justification::Center,
-                                        set_css_classes: &["title-4"],
-                                        set_max_width_chars: 14,
-
-                                        set_wrap: true,
-                                        set_wrap_mode: pango::WrapMode::WordChar,
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &if model.state.session_scan_expired.load(Ordering::Acquire) {
+                                        i18n!("All QR codes for this session were expired.")
+                                    } else {
+                                        i18n!("Waiting QR code...")
                                     },
+                                    set_justify: gtk::Justification::Center,
+                                    set_css_classes: &["title-4"],
+                                    set_max_width_chars: 14,
 
-                                    adw::Spinner {
-                                        #[watch]
-                                        set_visible: !model.state.session_scan_expired.load(Ordering::Acquire),
-                                        set_width_request: 32,
-                                        set_height_request: 32
-                                    },
+                                    set_wrap: true,
+                                    set_wrap_mode: pango::WrapMode::WordChar,
+                                },
 
-                                    gtk::Button {
-                                        set_label: &i18n!("Reset Session"),
-                                        #[watch]
-                                        set_visible: model.state.session_scan_expired.load(Ordering::Acquire),
-                                        set_css_classes: &["pill", "suggested-action"],
+                                adw::Spinner {
+                                    #[watch]
+                                    set_visible: !model.state.session_scan_expired.load(Ordering::Acquire),
+                                    set_width_request: 32,
+                                    set_height_request: 32
+                                },
 
-                                        connect_clicked[sender] => move |_| {
-                                            sender.oneshot_command(async { LoginCommand::ResetSession });
-                                        },
+                                gtk::Button {
+                                    set_label: &i18n!("Reset Session"),
+                                    #[watch]
+                                    set_visible: model.state.session_scan_expired.load(Ordering::Acquire),
+                                    set_css_classes: &["pill", "suggested-action"],
+
+                                    connect_clicked[sender] => move |_| {
+                                        sender.oneshot_command(async { LoginCommand::ResetSession });
                                     }
                                 }
-                            },
+                            }
                         },
 
                         gtk::Revealer {
@@ -253,8 +243,9 @@ impl AsyncComponent for Login {
                             set_visible: model.page == LoginPage::QrCode,
                             #[watch]
                             set_reveal_child: model.qr_code.is_some(),
+                            set_margin_bottom: 20,
                             set_transition_type: gtk::RevealerTransitionType::SwingDown,
-                            set_transition_duration: 350,
+                            set_transition_duration: 300,
 
                             gtk::ProgressBar {
                                 set_halign: gtk::Align::Center,
@@ -270,6 +261,7 @@ impl AsyncComponent for Login {
                             set_hexpand: true,
                             set_spacing: 10,
                             set_orientation: gtk::Orientation::Vertical,
+                            set_margin_bottom: 15,
 
                             PairStep::new(1, &i18n!("Open WhatsApp on your phone.")).main_box {},
                             PairStep::new(2, &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")) .main_box {},
@@ -289,7 +281,7 @@ impl AsyncComponent for Login {
 
                                 glib::Propagation::Stop
                             }
-                        },
+                        }
                     },
 
                     add_named[Some("phone-number")] = &gtk::Stack {
@@ -359,11 +351,7 @@ impl AsyncComponent for Login {
                                     add = &adw::ButtonRow{
                                         set_title: &i18n!("Next"),
                                         #[watch]
-                                        set_css_classes: if model.state.valid_phone_number.load(Ordering::Acquire) {
-                                            &["suggested-action"]
-                                        } else {
-                                            &[]
-                                        },
+                                        set_css_classes: if model.state.valid_phone_number.load(Ordering::Acquire) { &["suggested-action"] } else { &[] },
                                         set_end_icon_name: Some("go-next-symbolic"),
                                         set_height_request: 40,
 
@@ -571,6 +559,7 @@ impl AsyncComponent for Login {
                 }
 
                 self.page = LoginPage::PhoneNumber;
+                self.phone_number_entry.grab_focus();
             }
 
             LoginInput::Error { message } => {
@@ -608,10 +597,9 @@ impl AsyncComponent for Login {
                 self.phone_number_view = LoginPhoneNumberView::EnterPhoneNumber;
                 self.state.scan_attempts = 0;
                 self.state.progress_fraction = 1.0;
-                self.state.session_reset.store(true, Ordering::Release);
                 self.state
                     .session_scan_expired
-                    .store(true, Ordering::Release);
+                    .store(false, Ordering::Release);
 
                 let _ = sender.output(LoginOutput::ResetSession);
             }
@@ -629,17 +617,16 @@ impl AsyncComponent for Login {
                 self.state.scan_attempts += 1;
 
                 // Generate the QR code.
-                let texture = generate_qr_code(&data)
+                let texture = Box::pin(generate_qr_code(&data, 200))
                     .await
                     .expect("Failed to generate QR code");
-                self.qr_code = Some(texture.into());
+                self.qr_code = Some(texture.current_image());
 
                 // Make sure to not reset the qr code after it refreshes.
                 let timeout = timeout.saturating_sub(Duration::from_secs(2));
 
                 let start = Instant::now();
-                let session_reset = Arc::clone(&self.state.session_reset);
-                sender.command(move |output, shutdown| {
+                sender.command(move |command_sender, shutdown| {
                     shutdown
                         .register(async move {
                             let mut elapsed = start.elapsed();
@@ -649,19 +636,14 @@ impl AsyncComponent for Login {
                             interval.tick().await;
 
                             while elapsed < timeout {
-                                if session_reset.load(Ordering::Acquire) {
-                                    session_reset.store(false, Ordering::Release);
-                                    return;
-                                }
-
-                                let _ = output.send(LoginCommand::UpdateExpirationBar(fraction));
+                                command_sender.emit(LoginCommand::UpdateExpirationBar(fraction));
 
                                 elapsed = start.elapsed();
                                 fraction = 1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                                 interval.tick().await;
                             }
 
-                            let _ = output.send(LoginCommand::QrCodeExpired);
+                            command_sender.emit(LoginCommand::QrCodeExpired);
                         })
                         .drop_on_shutdown()
                         .boxed()
@@ -713,10 +695,14 @@ impl AsyncComponent for Login {
                             entry.set_text(&only_digits);
                             entry.set_position(-1);
 
-                            self.state.valid_phone_number.store(false, Ordering::Release);
+                            self.state
+                                .valid_phone_number
+                                .store(false, Ordering::Release);
                         }
                     } else if self.state.valid_phone_number.load(Ordering::Acquire) {
-                        self.state.valid_phone_number.store(false, Ordering::Release);
+                        self.state
+                            .valid_phone_number
+                            .store(false, Ordering::Release);
                     }
                 } else {
                     entry.set_text(&sanitazed);
