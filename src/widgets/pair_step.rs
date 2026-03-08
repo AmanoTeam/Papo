@@ -12,10 +12,7 @@ impl WidgetTemplate for PairStep {
             set_orientation: gtk::Orientation::Horizontal,
 
             gtk::Box {
-                inline_css: r"
-                    border-radius: 50%;
-                    background-color: var(--accent-bg-color);
-                ",
+                set_css_classes: &["pair-step-number"],
                 set_width_request: 30,
                 set_height_request: 30,
 

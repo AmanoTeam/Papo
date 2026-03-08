@@ -16,6 +16,7 @@ endif
 scss_deps = files(
     'stylesheet/_common.scss',
     'stylesheet/_vendor.scss',
+    'stylesheet/_widgets.scss',
 )
 
 stylesheet = custom_target(
