@@ -25,7 +25,10 @@ pub fn get_first_name(name: &str) -> String {
 }
 
 /// Generates a QR code texture.
-pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
+pub async fn generate_qr_code(
+    data: &str,
+    size: u32,
+) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
     let qr = QRBuilder::new(data)
         .ecl(ECL::H)
         .build()
