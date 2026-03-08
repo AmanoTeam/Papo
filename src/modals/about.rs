@@ -25,7 +25,7 @@ impl SimpleComponent for AboutDialog {
             .version(VERSION)
             .copyright("© 2026 Andriel Ferreira")
             .developers(["Andriel Ferreira"])
-            .designers(["Andriel Ferreira"])
+            .designers(["Andriel Ferreira", "Eduardo Fonseca"])
             .translator_credits(i18n!("translator-credits"))
             .build()
     }
