@@ -19,7 +19,7 @@ use crate::{
     utils::format_date_label,
 };
 
-/// Number of messages to load when scrolling to the top.
+/// Number of messages to load when scrolling.
 const LOAD_MORE_COUNT: u32 = 70;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
@@ -41,16 +41,6 @@ pub struct ChatView {
     list_view_wrapper: TypedListView<ChatRow, gtk::NoSelection>,
 }
 
-/// Metadata for a single row in the chat list, used for cursor tracking
-/// when trimming rows during bidirectional pagination.
-#[derive(Clone, Debug)]
-enum RowMetadata {
-    /// A message row, with its Unix timestamp.
-    Message(i64),
-    /// A date separator row.
-    Separator(NaiveDate),
-}
-
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChatViewState {
@@ -62,7 +52,7 @@ pub struct ChatViewState {
     top_trimmed: bool,
     /// Whether messages at the bottom have been trimmed due to exceeding `MAX_LOADED_ROWS`.
     bottom_trimmed: bool,
-    /// Whether there might be more older messages to load.
+    /// Whether there might be more messages to load.
     has_more_messages: bool,
 
     /// User presence.
@@ -135,49 +125,6 @@ pub enum ChatViewCommand {
     ScrollPositionChanged { at_top: bool, at_bottom: bool },
 }
 
-impl ChatView {
-    /// Update the user presence.
-    fn update_presence(&mut self) {
-        if let Some(ref mut chat) = self.chat {
-            if chat.available.unwrap_or_default() {
-                self.state.presence = Some(i18n!("online"));
-            } else if let Some(last_seen) = chat.last_seen {
-                let today = Local::now().date_naive();
-                let last_date = last_seen.with_timezone(&Local).date_naive();
-
-                let presence = if last_date == today {
-                    format!(
-                        "{} {} {} {}",
-                        i18n!("Last seen"),
-                        i18n!("today"),
-                        i18n!("at"),
-                        last_date.format("%H:%M")
-                    )
-                } else if let Some(yesterday) = today.pred_opt()
-                    && last_date == yesterday
-                {
-                    format!(
-                        "{} {} {} {}",
-                        i18n!("Last seen"),
-                        i18n!("yesterday"),
-                        i18n!("at"),
-                        last_date.format("%H:%M")
-                    )
-                } else {
-                    format!(
-                        "{} {} {} {}",
-                        i18n!("Last seen"),
-                        last_date.format("%d/%m"),
-                        i18n!("at"),
-                        last_date.format("%H:%M")
-                    )
-                };
-                self.state.presence = Some(presence);
-            }
-        }
-    }
-}
-
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
     type Init = ();
@@ -241,8 +188,7 @@ impl AsyncComponent for ChatView {
 
                         #[local_ref]
                         list_view -> gtk::ListView {
-                            set_css_classes: &["chat-history"],
-                            set_single_click_activate: false
+                            set_css_classes: &["chat-history"]
                         }
                     },
                 },
@@ -843,6 +789,47 @@ impl AsyncComponent for ChatView {
 }
 
 impl ChatView {
+    /// Update the user presence.
+    fn update_presence(&mut self) {
+        if let Some(ref mut chat) = self.chat {
+            if chat.available.unwrap_or_default() {
+                self.state.presence = Some(i18n!("online"));
+            } else if let Some(last_seen) = chat.last_seen {
+                let today = Local::now().date_naive();
+                let last_date = last_seen.with_timezone(&Local).date_naive();
+
+                let presence = if last_date == today {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        i18n!("today"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                } else if let Some(yesterday) = today.pred_opt()
+                    && last_date == yesterday
+                {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        i18n!("yesterday"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                } else {
+                    format!(
+                        "{} {} {} {}",
+                        i18n!("Last seen"),
+                        last_date.format("%d/%m"),
+                        i18n!("at"),
+                        last_date.format("%H:%M")
+                    )
+                };
+                self.state.presence = Some(presence);
+            }
+        }
+    }
+
     /// Update bottom cursors (`newest_loaded_timestamp`, `last_message_date`)
     /// from the `row_metadata` after trimming rows from the bottom.
     fn update_bottom_cursors(&mut self) {
@@ -905,6 +892,16 @@ impl ChatView {
         // We trimmed from top, so there are definitely older messages to load.
         self.state.has_more_messages = true;
     }
+}
+
+/// Metadata for a single row in the message list, used for cursor tracking
+/// when trimming rows during bidirectional pagination.
+#[derive(Clone, Debug)]
+enum RowMetadata {
+    /// A message row, with its Unix timestamp.
+    Message(i64),
+    /// A date separator row.
+    Separator(NaiveDate),
 }
 
 /// A single row in the chat history list.

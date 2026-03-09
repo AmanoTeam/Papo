@@ -18,7 +18,7 @@ pub fn get_first_name(name: &str) -> String {
     } else if name.contains(' ') {
         let (first, _) = name.split_once(' ').unwrap();
 
-        first.chars().next().unwrap().to_string()
+        first.to_string()
     } else {
         name.to_string()
     }

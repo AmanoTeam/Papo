@@ -493,14 +493,8 @@ impl AsyncComponent for Application {
                                         set_icon_name: "menu-symbolic",
                                         set_menu_model: Some(&primary_menu),
                                         set_tooltip_text: Some(&i18n!("Menu")),
-                                    }
+                                    },
                                 },
-                                /* add_top_bar = &gtk::SearchEntry {
-                                    set_margin_start: 8,
-                                    set_margin_end: 8,
-                                    set_margin_top: 4,
-                                    set_margin_bottom: 12,
-                                }, */
 
                                 #[name = "view_stack"]
                                 #[wrap(Some)]
