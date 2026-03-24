@@ -1,4 +1,9 @@
-use std::{cell::Cell, collections::VecDeque, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 
 use adw::{gdk, glib, prelude::*};
 use chrono::{DateTime, Local, NaiveDate, Utc};
@@ -10,7 +15,7 @@ use relm4::{
 
 use crate::{
     i18n,
-    state::{Chat, ChatMessage},
+    state::{Chat, ChatMessage, MessageStatus},
     utils::format_date_label,
 };
 
@@ -89,6 +94,11 @@ pub enum ChatViewInput {
         available: bool,
         last_seen: Option<DateTime<Utc>>,
     },
+    /// Message status updated.
+    MessageStatusUpdate {
+        msg_id: String,
+        status: MessageStatus,
+    },
 
     /// Scroll to the bottom of the chat.
     ScrollToBottom,
@@ -102,6 +112,14 @@ pub enum ChatViewOutput {
     ChatClosed,
     /// Mark the open chat as read.
     MarkChatRead(String),
+
+    /// Send a text message.
+    SendTextMessage {
+        /// The content of the message.
+        text: String,
+        /// Message recipient.
+        recipient: String,
+    },
 }
 
 #[derive(Debug)]
@@ -505,7 +523,24 @@ impl AsyncComponent for ChatView {
             }
 
             ChatViewInput::SendMessage => {
-                // TODO: wire up actual message sending
+                if let Some(ref chat) = self.chat
+                    && self.message_entry.text_length() > 0
+                {
+                    let text = self.message_entry.text().to_string();
+                    self.message_entry.set_text("");
+
+                    // Send a plain text message.
+                    let _ = sender.output(ChatViewOutput::SendTextMessage {
+                        text,
+                        recipient: chat.jid.clone(),
+                    });
+
+                    // TODO: implements media sending
+
+                    // Scroll the chat to bottom and mark it as read.
+                    sender.input(ChatViewInput::ScrollToBottom);
+                    let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                }
             }
             ChatViewInput::MessageReceived(message) => {
                 // If the bottom has been trimmed, skip appending — the message will
@@ -557,6 +592,36 @@ impl AsyncComponent for ChatView {
                         self.update_presence();
                     }
                 }
+            }
+            ChatViewInput::MessageStatusUpdate { msg_id, status } => {
+                if let Some(item) = self.list_view_wrapper.iter().find(
+                    |item| matches!(item.borrow().deref(), ChatRow::Message(message) if message.server_id == msg_id),
+                    ) {
+                        let mut row = item.borrow_mut();
+                        if let ChatRow::Message(message) = row.deref_mut() {
+                            message.status = status;
+                        }
+                    }
+
+                /* if let Some((index, row)) =
+                    self.list_view_wrapper
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, item)| {
+                            let mut row = item.borrow_mut();
+                            let is_message = matches!(row.deref(), ChatRow::Message(message) if message.id == msg_id);
+
+                            if is_message { Some((index, row.deref_mut())) } else { None }
+                        })
+                {
+                    // Update the message in-place.
+                    // message.status = status;
+
+                    // Replace the row widget in place.
+                    /* self.list_view_wrapper.remove(index as u32);
+                    self.list_view_wrapper
+                        .insert(index as u32, ChatRow::Message(message)); */
+                } */
             }
 
             ChatViewInput::ScrollToBottom => {
@@ -883,6 +948,8 @@ pub struct ChatRowWidgets {
     content_label: gtk::Label,
     /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
+    /// Message status icon (e.g. "Sending", "Sent").
+    status_icon: gtk::Image,
 
     /// Date separator label (e.g. "Today", "Yesterday").
     separator_label: gtk::Label,
@@ -906,7 +973,7 @@ impl RelmListItem for ChatRow {
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(12)
             .margin_bottom(4)
-            .visible(false)
+            // .visible(false)
             .build();
         root.append(&separator_label);
 
@@ -916,13 +983,13 @@ impl RelmListItem for ChatRow {
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(4)
             .margin_bottom(4)
-            .visible(false)
+            // .visible(false)
             .build();
         root.append(&service_label);
 
         // Message bubble container.
         let message_box = gtk::Box::builder()
-            .visible(false)
+            // .visible(false)
             .spacing(0)
             .orientation(gtk::Orientation::Horizontal)
             .build();
@@ -957,13 +1024,23 @@ impl RelmListItem for ChatRow {
             .build();
         content_box.append(&content_label);
 
-        let timestamp_label = gtk::Label::builder()
+        // Time and status container.
+        let time_status_box = gtk::Box::builder()
             .halign(gtk::Align::End)
             .valign(gtk::Align::End)
-            .css_classes(["caption", "dimmed", "numeric"])
+            .spacing(4)
+            .orientation(gtk::Orientation::Horizontal)
             .build();
-        content_box.append(&timestamp_label);
 
+        let timestamp_label = gtk::Label::builder()
+            .css_classes(["dimmed", "caption", "numeric"])
+            .build();
+        time_status_box.append(&timestamp_label);
+
+        let status_icon = gtk::Image::builder().pixel_size(12).build();
+        time_status_box.append(&status_icon);
+
+        content_box.append(&time_status_box);
         bubble_box.append(&content_box);
         message_box.append(&bubble_box);
         root.append(&message_box);
@@ -974,6 +1051,7 @@ impl RelmListItem for ChatRow {
             sender_label,
             content_label,
             timestamp_label,
+            status_icon,
             separator_label,
             service_label,
         };
@@ -1015,6 +1093,17 @@ impl RelmListItem for ChatRow {
                     widgets.bubble_box.set_margin_start(60);
                     widgets.bubble_box.set_margin_end(6);
                     widgets.sender_label.set_visible(false);
+
+                    widgets.status_icon.set_visible(true);
+                    let status_icon = match msg.status {
+                        MessageStatus::Sent => "check-round-outline-symbolic",
+                        MessageStatus::Failed => "exclamation-mark-symbolic",
+                        MessageStatus::Sending => "clock-alt-symbolic",
+                        MessageStatus::Delivered | MessageStatus::Read => {
+                            "check-round-outline2-symbolic"
+                        }
+                    };
+                    widgets.status_icon.set_icon_name(Some(status_icon));
                 } else {
                     widgets.message_box.set_halign(gtk::Align::Start);
                     widgets.bubble_box.add_css_class("incoming");
@@ -1031,6 +1120,8 @@ impl RelmListItem for ChatRow {
                     } else {
                         widgets.sender_label.set_visible(false);
                     }
+
+                    widgets.status_icon.set_visible(false);
                 }
 
                 widgets.bubble_box.set_margin_top(2);

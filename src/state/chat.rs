@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{state::ChatMessage, store::Database, utils::format_lid_as_number};
 
-/// A chat/conversation.
+/// Represents a chat/conversation.
 #[derive(Clone, Debug)]
 pub struct Chat {
     /// JID (Jabbed ID) - unique chat identifier.
@@ -43,7 +43,7 @@ impl Chat {
         if self.get_unread_count().await.is_ok_and(|count| count > 0) {
             self.db
                 .execute(
-                    "UPDATE messages SET unread = 0 WHERE chat_jid = ?1",
+                    "UPDATE messages SET status = 1 WHERE chat_jid = ?1 AND (status == 0 OR status == 4)",
                     [self.jid.as_str()],
                 )
                 .await

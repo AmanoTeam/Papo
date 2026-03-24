@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use uuid::Uuid;
+use waproto::whatsapp as wa;
 
 use crate::{
     state::{Chat, Media},
@@ -11,11 +13,13 @@ use crate::{
 /// Maximum number of unique emoji reactions per message to prevent spam.
 const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 
-/// A chat message.
+/// Represents a chat message.
 #[derive(Clone, Debug)]
 pub struct Message {
-    /// Unique message identifier.
-    pub id: String,
+    /// Local unique message identifier.
+    pub local_id: Uuid,
+    /// Server unique message identifier.
+    pub server_id: String,
     /// JID (Jabbed ID) - unique chat identifier.
     pub chat_jid: String,
     /// Sender identifier.
@@ -25,8 +29,8 @@ pub struct Message {
 
     /// Media attached to this message.
     pub media: Option<Media>,
-    /// Whether the message hasn't been read.
-    pub unread: bool,
+    /// Actual state of the message.
+    pub status: Status,
     /// Message text.
     pub content: String,
     /// Whether the message was sent by the current user.
@@ -55,11 +59,62 @@ impl Message {
 
     /// Mark this message as read.
     pub async fn mark_read(&mut self) -> Result<(), libsql::Error> {
-        if self.unread {
-            self.unread = false;
+        if self.status != Status::Read {
+            self.status = Status::Read;
             self.save().await
         } else {
             Ok(())
+        }
+    }
+}
+
+impl From<Message> for wa::Message {
+    fn from(value: Message) -> Self {
+        let conversation = if value.content.is_empty() {
+            None
+        } else {
+            Some(value.content)
+        };
+
+        Self {
+            conversation,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<&Message> for wa::Message {
+    fn from(value: &Message) -> Self {
+        value.to_owned().into()
+    }
+}
+
+/// Represents a message status.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[repr(u8)]
+pub enum Status {
+    /// The message was sent, but no one has received it yet.
+    #[default]
+    Sent,
+    /// The message was read by all.
+    Read,
+    /// The message has failed to send.
+    Failed,
+    /// The message is being sent.
+    Sending,
+    /// The recipient(s) has received the message.
+    Delivered,
+}
+
+impl From<i32> for Status {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => Self::Sent,
+            1 => Self::Read,
+            2 => Self::Failed,
+            3 => Self::Sending,
+            4 => Self::Delivered,
+            _ => Self::default(),
         }
     }
 }
