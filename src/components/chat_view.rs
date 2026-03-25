@@ -179,12 +179,11 @@ impl AsyncComponent for ChatView {
                 set_child = &scroll_window -> gtk::ScrolledWindow {
                     set_hscrollbar_policy: gtk::PolicyType::Never,
                     set_overlay_scrolling: true,
-                    set_propagate_natural_width: true,
 
                     adw::ClampScrollable {
-                        set_maximum_size: 800,
+                        set_maximum_size: 960,
                         set_vscroll_policy: gtk::ScrollablePolicy::Natural,
-                        set_tightening_threshold: 600,
+                        set_tightening_threshold: 400,
 
                         #[local_ref]
                         list_view -> gtk::ListView {

@@ -78,7 +78,6 @@ impl SimpleAsyncComponent for ChatList {
             set_vexpand: true,
             set_hscrollbar_policy: gtk::PolicyType::Never,
             set_overlay_scrolling: true,
-            set_propagate_natural_width: true,
 
             #[local_ref]
             list_view -> gtk::ListView {
@@ -316,25 +315,31 @@ impl RelmListItem for ChatRow {
 
         // Middle text box (title and subtitle).
         let text_box = gtk::Box::builder()
+            .halign(gtk::Align::Fill)
             .valign(gtk::Align::Center)
             .hexpand(true)
             .spacing(2)
             .orientation(gtk::Orientation::Vertical)
+            .width_request(0)
             .build();
         root.append(&text_box);
 
         let title_label = gtk::Label::builder()
             .lines(1)
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
             .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(1)
             .build();
         text_box.append(&title_label);
 
         let subtitle_label = gtk::Label::builder()
             .lines(1)
-            .halign(gtk::Align::Start)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
             .ellipsize(pango::EllipsizeMode::End)
             .css_classes(["dimmed"])
+            .width_chars(1)
             .build();
         text_box.append(&subtitle_label);
 

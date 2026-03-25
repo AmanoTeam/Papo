@@ -408,7 +408,7 @@ impl AsyncComponent for Application {
             set_title: Some("Papo"),
             set_visible: true,
             set_width_request: 360,
-            set_height_request: 290,
+            set_height_request: 440,
             set_default_width: 900,
             set_default_height: 850,
 
@@ -462,103 +462,106 @@ impl AsyncComponent for Application {
                     #[local_ref]
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
 
-                    #[local_ref]
-                    add_named[Some("session")] = split_view -> adw::NavigationSplitView {
-                        set_min_sidebar_width: 280.0,
-                        set_max_sidebar_width: 320.0,
-
-                        #[name = "sidebar"]
+                    add_named[Some("session")] = &adw::BreakpointBin {
+                        #[local_ref]
                         #[wrap(Some)]
-                        set_sidebar = &adw::NavigationPage {
-                            set_title: "Papo",
-                            set_css_classes: &["background"],
+                        set_child = split_view -> adw::NavigationSplitView {
+                            set_min_sidebar_width: 280.0,
+                            set_max_sidebar_width: 360.0,
 
+                            #[name = "sidebar"]
                             #[wrap(Some)]
-                            set_child = &adw::ToolbarView {
-                                add_top_bar = &adw::HeaderBar {
-                                    set_show_title: false,
+                            set_sidebar = &adw::NavigationPage {
+                                set_title: "Papo",
+                                set_css_classes: &["background"],
 
-                                    pack_start = &gtk::ToggleButton {
-                                        set_css_classes: &["flat", "circular"],
-                                        set_tooltip_text: Some(&i18n!("Your profile")),
-
-                                        adw::Avatar {
-                                            #[watch]
-                                            set_text: Some(&model.user_push_name.clone().unwrap_or_else(|| i18n!("You"))),
-                                            set_size: 30,
-                                            set_show_initials: true,
-                                        }
-                                    },
-                                    pack_end = &gtk::MenuButton {
-                                        set_icon_name: "menu-symbolic",
-                                        set_menu_model: Some(&primary_menu),
-                                        set_tooltip_text: Some(&i18n!("Menu")),
-                                    },
-                                },
-
-                                #[name = "view_stack"]
                                 #[wrap(Some)]
-                                set_content = &adw::ViewStack {
-                                    #[local_ref]
-                                    add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::ScrolledWindow {} -> {
-                                        set_icon_name: Some("chat-bubbles-text-symbolic")
+                                set_child = &adw::ToolbarView {
+                                    add_top_bar = &adw::HeaderBar {
+                                        set_show_title: false,
+
+                                        pack_start = &gtk::ToggleButton {
+                                            set_css_classes: &["flat", "circular"],
+                                            set_tooltip_text: Some(&i18n!("Your profile")),
+
+                                            adw::Avatar {
+                                                #[watch]
+                                                set_text: Some(&model.user_push_name.clone().unwrap_or_else(|| i18n!("You"))),
+                                                set_size: 30,
+                                                set_show_initials: true,
+                                            }
+                                        },
+                                        pack_end = &gtk::MenuButton {
+                                            set_icon_name: "menu-symbolic",
+                                            set_menu_model: Some(&primary_menu),
+                                            set_tooltip_text: Some(&i18n!("Menu")),
+                                        },
                                     },
 
-                                    /* add_titled[Some("status"), &i18n!("Status")] = &gtk::ScrolledWindow {} -> {
-                                        set_icon_name: Some("image-round-symbolic")
-                                    } */
-                                },
+                                    #[name = "view_stack"]
+                                    #[wrap(Some)]
+                                    set_content = &adw::ViewStack {
+                                        #[local_ref]
+                                        add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::ScrolledWindow {} -> {
+                                            set_icon_name: Some("chat-bubbles-text-symbolic")
+                                        },
 
-                                add_bottom_bar = &adw::ViewSwitcherBar {
-                                    set_stack: Some(&view_stack),
-                                    set_reveal: true
+                                        /* add_titled[Some("status"), &i18n!("Status")] = &gtk::ScrolledWindow {} -> {
+                                            set_icon_name: Some("image-round-symbolic")
+                                        } */
+                                    },
+
+                                    add_bottom_bar = &adw::ViewSwitcherBar {
+                                        set_stack: Some(&view_stack),
+                                        set_reveal: true
+                                    },
                                 },
                             },
+
+                            #[name = "content"]
+                            #[wrap(Some)]
+                            set_content = &adw::NavigationPage {
+                                set_title: "Chat",
+                                set_css_classes: &["view"],
+
+                                #[wrap(Some)]
+                                set_child = &gtk::Stack {
+                                    set_transition_type: gtk::StackTransitionType::Crossfade,
+
+                                    add_named[Some("empty")] = &adw::StatusPage {
+                                        set_title: &i18n!("No Chat Selected"),
+                                        set_hexpand: true,
+                                        set_vexpand: true,
+                                        set_can_focus: false,
+                                        set_icon_name: Some("chat-bubbles-empty-symbolic"),
+                                        set_description: Some(&i18n!("Select a chat to start chatting"))
+                                    },
+
+                                    #[local_ref]
+                                    add_named[Some("chat")] = chat_view_widget -> adw::ToolbarView {},
+
+                                    #[watch]
+                                    set_visible_child_name: model.session_page.as_ref(),
+                                }
+                            }
                         },
 
-                        #[name = "content"]
-                        #[wrap(Some)]
-                        set_content = &adw::NavigationPage {
-                            set_title: "Chat",
-                            set_css_classes: &["view"],
-
-                            #[wrap(Some)]
-                            set_child = &gtk::Stack {
-                                set_transition_type: gtk::StackTransitionType::Crossfade,
-
-                                add_named[Some("empty")] = &adw::StatusPage {
-                                    set_title: &i18n!("No Chat Selected"),
-                                    set_hexpand: true,
-                                    set_vexpand: true,
-                                    set_can_focus: false,
-                                    set_icon_name: Some("chat-bubbles-empty-symbolic"),
-                                    set_description: Some(&i18n!("Select a chat to start chatting"))
-                                },
-
-                                #[local_ref]
-                                add_named[Some("chat")] = chat_view_widget -> adw::ToolbarView {},
-
-                                #[watch]
-                                set_visible_child_name: model.session_page.as_ref(),
-                            }
-                        }
+                        add_breakpoint = bp_with_setters(
+                            adw::Breakpoint::new(
+                                adw::BreakpointCondition::new_length(
+                                    adw::BreakpointConditionLengthType::MaxWidth,
+                                    600.0,
+                                    adw::LengthUnit::Sp,
+                                )
+                            ),
+                            &[(split_view, "collapsed", true)]
+                        ),
                     },
 
                     #[watch]
                     set_visible_child_name: model.page.as_ref(),
                 },
             },
-
-            add_breakpoint = bp_with_setters(
-                adw::Breakpoint::new(
-                    adw::BreakpointCondition::new_length(
-                        adw::BreakpointConditionLengthType::MaxWidth,
-                        600.0,
-                        adw::LengthUnit::Sp,
-                    )
-                ),
-                &[(split_view, "collapsed", true)]
-            ),
         }
     }
 
