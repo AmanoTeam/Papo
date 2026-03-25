@@ -173,9 +173,7 @@ impl SimpleAsyncComponent for ChatList {
                         avatar_texture,
                     };
 
-                    // Replace the chat row in place.
-                    self.list_view_wrapper.remove(index);
-
+                    // Insert the updated row.
                     let new_index = if move_to_top { 0 } else { index };
                     self.list_view_wrapper.insert(new_index, updated_row);
 
@@ -193,6 +191,10 @@ impl SimpleAsyncComponent for ChatList {
                             }
                         }
                     }
+
+                    // Remove the old row.
+                    let old_index = if new_index <= index { index + 1 } else { index };
+                    self.list_view_wrapper.remove(old_index);
                 }
             }
 
