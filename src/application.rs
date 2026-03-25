@@ -407,8 +407,8 @@ impl AsyncComponent for Application {
         main_window = adw::ApplicationWindow::new(&main_application()) {
             set_title: Some("Papo"),
             set_visible: true,
-            set_width_request: 400,
-            set_height_request: 360,
+            set_width_request: 360,
+            set_height_request: 290,
             set_default_width: 900,
             set_default_height: 850,
 
@@ -465,7 +465,7 @@ impl AsyncComponent for Application {
                     #[local_ref]
                     add_named[Some("session")] = split_view -> adw::NavigationSplitView {
                         set_min_sidebar_width: 280.0,
-                        set_max_sidebar_width: 340.0,
+                        set_max_sidebar_width: 320.0,
 
                         #[name = "sidebar"]
                         #[wrap(Some)]

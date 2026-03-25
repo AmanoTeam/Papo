@@ -8,7 +8,7 @@ use std::{
 
 use adw::prelude::*;
 use chrono::Local;
-use gtk::{gdk::Texture, gio, glib};
+use gtk::{gdk::Texture, gio, glib, pango};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
@@ -278,6 +278,10 @@ pub struct ChatRow {
 pub struct ChatRowWidgets {
     /// Chat avatar.
     avatar: adw::Avatar,
+    /// Chat title.
+    title_label: gtk::Label,
+    /// Chat last message's content.
+    subtitle_label: gtk::Label,
     /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
     /// Muted icon.
@@ -289,29 +293,58 @@ pub struct ChatRowWidgets {
 }
 
 impl RelmListItem for ChatRow {
-    type Root = adw::ActionRow;
+    type Root = gtk::Box;
     type Widgets = ChatRowWidgets;
 
     fn setup(_list_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
-        let row = adw::ActionRow::builder()
-            .title_lines(1)
-            .subtitle_lines(1)
-            .use_markup(false)
-            .activatable(true);
+        let root = gtk::Box::builder()
+            .spacing(12)
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_start(4)
+            .margin_end(4)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
 
         // Avatar overlay.
         let avatar_overlay = gtk::Overlay::new();
-
         let avatar = adw::Avatar::builder().size(36).show_initials(true).build();
         avatar_overlay.set_child(Some(&avatar));
+        root.append(&avatar_overlay);
 
         // TODO: online dot
 
+        // Middle text box (title and subtitle).
+        let text_box = gtk::Box::builder()
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .spacing(2)
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        root.append(&text_box);
+
+        let title_label = gtk::Label::builder()
+            .lines(1)
+            .halign(gtk::Align::Start)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+        text_box.append(&title_label);
+
+        let subtitle_label = gtk::Label::builder()
+            .lines(1)
+            .halign(gtk::Align::Start)
+            .ellipsize(pango::EllipsizeMode::End)
+            .css_classes(["dimmed"])
+            .build();
+        text_box.append(&subtitle_label);
+
+        // End box.
         let suffix_box = gtk::Box::builder()
             .valign(gtk::Align::Center)
             .spacing(2)
             .orientation(gtk::Orientation::Vertical)
             .build();
+        root.append(&suffix_box);
 
         let suffix_top_box = gtk::Box::builder()
             .halign(gtk::Align::End)
@@ -354,13 +387,10 @@ impl RelmListItem for ChatRow {
             .build();
         suffix_bottom_box.append(&unread_count_badge);
 
-        // Root container.
-        let root = row.build();
-        root.add_prefix(&avatar_overlay);
-        root.add_suffix(&suffix_box);
-
         let widgets = ChatRowWidgets {
             avatar,
+            title_label,
+            subtitle_label,
             timestamp_label,
             muted_icon,
             pinned_icon,
@@ -376,7 +406,7 @@ impl RelmListItem for ChatRow {
         } else {
             self.chat.name.trim().to_string()
         };
-        root.set_title(&name);
+        widgets.title_label.set_label(&name);
         root.set_widget_name(&self.chat.jid);
 
         widgets.avatar.set_text(Some(&self.chat.name));
@@ -435,7 +465,7 @@ impl RelmListItem for ChatRow {
                 }
             }
 
-            root.set_subtitle(&first_line);
+            widgets.subtitle_label.set_label(&first_line);
             root.set_tooltip_text(Some(&content));
 
             // Get last message's timestamp.
@@ -450,10 +480,9 @@ impl RelmListItem for ChatRow {
             };
             widgets.timestamp_label.set_label(&time);
         } else {
-            root.set_subtitle("");
-            root.set_tooltip_text(None);
-
+            widgets.subtitle_label.set_label("");
             widgets.timestamp_label.set_label("");
+            root.set_tooltip_text(None);
         }
     }
 }
