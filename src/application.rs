@@ -463,6 +463,9 @@ impl AsyncComponent for Application {
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
 
                     add_named[Some("session")] = &adw::BreakpointBin {
+                        set_width_request: main_window.width_request(),
+                        set_height_request: main_window.height_request(),
+
                         #[local_ref]
                         #[wrap(Some)]
                         set_child = split_view -> adw::NavigationSplitView {
