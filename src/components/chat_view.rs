@@ -1082,25 +1082,21 @@ impl RelmListItem for ChatRow {
                     widgets.sender_label.set_visible(false);
 
                     widgets.status_icon.set_visible(true);
-                    let status_icon = match msg.status {
+                    widgets
+                        .status_icon
+                        .set_icon_name(Some(msg.status.icon_name()));
+                    match msg.status {
                         MessageStatus::Read => {
                             widgets.status_icon.add_css_class("success");
-
-                            "check-round-outline2-symbolic"
                         }
-                        MessageStatus::Sent => "check-round-outline-symbolic",
                         MessageStatus::Failed => {
                             widgets
                                 .status_icon
                                 .set_tooltip(&i18n!("The message could not be sent."));
                             widgets.status_icon.add_css_class("warning");
-
-                            "exclamation-mark-symbolic"
                         }
-                        MessageStatus::Sending => "clock-alt-symbolic",
-                        MessageStatus::Delivered => "check-round-outline2-symbolic",
+                        _ => {}
                     };
-                    widgets.status_icon.set_icon_name(Some(status_icon));
                 } else {
                     widgets.message_box.set_halign(gtk::Align::Start);
                     widgets.bubble_box.add_css_class("incoming");

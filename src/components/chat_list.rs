@@ -16,7 +16,7 @@ use relm4::{
 
 use crate::{
     i18n,
-    state::{Chat, ChatMessage},
+    state::{Chat, ChatMessage, MessageStatus},
     utils::{format_lid_as_number, get_first_name},
 };
 
@@ -281,6 +281,8 @@ pub struct ChatRowWidgets {
     title_label: gtk::Label,
     /// Chat last message's content.
     subtitle_label: gtk::Label,
+    /// Message status icon (e.g. "Sending", "Sent").
+    status_icon: gtk::Image,
     /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
     /// Muted icon.
@@ -358,6 +360,12 @@ impl RelmListItem for ChatRow {
             .build();
         suffix_box.append(&suffix_top_box);
 
+        let status_icon = gtk::Image::builder()
+            .pixel_size(12)
+            .css_classes(["dimmed"])
+            .build();
+        suffix_top_box.append(&status_icon);
+
         let timestamp_label = gtk::Label::builder()
             .css_classes(["dimmed", "caption", "numeric"])
             .build();
@@ -396,6 +404,7 @@ impl RelmListItem for ChatRow {
             avatar,
             title_label,
             subtitle_label,
+            status_icon,
             timestamp_label,
             muted_icon,
             pinned_icon,
@@ -442,6 +451,10 @@ impl RelmListItem for ChatRow {
             widgets.unread_count_badge.add_css_class("dimmed");
         }
 
+        widgets.status_icon.set_has_tooltip(false);
+        widgets.status_icon.remove_css_class("warning");
+        widgets.status_icon.remove_css_class("success");
+
         if let Some(msg) = &self.last_message {
             // Get last message's content.
             let mut content = msg.content.clone();
@@ -460,18 +473,39 @@ impl RelmListItem for ChatRow {
                 content.clone()
             };
 
-            if let Some(ref name) = msg.sender_name {
-                if self.chat.is_group() && !msg.outgoing {
-                    content = format!("{name}: {content}");
-                    first_line = format!("{}: {first_line}", get_first_name(name));
-                } else if msg.outgoing {
+            if let Some(ref name) = msg.sender_name
+                && self.chat.is_group()
+            {
+                if msg.outgoing {
                     content = format!("{}: {content}", i18n!("You"));
                     first_line = format!("{}: {first_line}", i18n!("You"));
+                } else {
+                    content = format!("{name}: {content}");
+                    first_line = format!("{}: {first_line}", get_first_name(name));
                 }
             }
 
             widgets.subtitle_label.set_label(&first_line);
             root.set_tooltip_text(Some(&content));
+
+            // Get last message's status.
+            if msg.outgoing {
+                widgets.status_icon.set_visible(true);
+                widgets
+                    .status_icon
+                    .set_icon_name(Some(msg.status.icon_name()));
+                match msg.status {
+                    MessageStatus::Read => {
+                        widgets.status_icon.add_css_class("success");
+                    }
+                    MessageStatus::Failed => {
+                        widgets.status_icon.add_css_class("warning");
+                    }
+                    _ => {}
+                };
+            } else {
+                widgets.status_icon.set_visible(false);
+            }
 
             // Get last message's timestamp.
             let now = Local::now();
