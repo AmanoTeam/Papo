@@ -1017,7 +1017,7 @@ impl RelmListItem for ChatRow {
 
         let status_icon = gtk::Image::builder()
             .pixel_size(12)
-            .css_classes(["dimmed"])
+            .css_classes(["dimmed", "status-icon"])
             .build();
         time_status_box.append(&status_icon);
 
@@ -1071,8 +1071,8 @@ impl RelmListItem for ChatRow {
                 widgets.bubble_box.remove_css_class("outgoing");
 
                 widgets.status_icon.set_has_tooltip(false);
+                widgets.status_icon.remove_css_class("white");
                 widgets.status_icon.remove_css_class("warning");
-                widgets.status_icon.remove_css_class("success");
 
                 if msg.outgoing {
                     widgets.message_box.set_halign(gtk::Align::End);
@@ -1087,7 +1087,7 @@ impl RelmListItem for ChatRow {
                         .set_icon_name(Some(msg.status.icon_name()));
                     match msg.status {
                         MessageStatus::Read => {
-                            widgets.status_icon.add_css_class("success");
+                            widgets.status_icon.add_css_class("white");
                         }
                         MessageStatus::Failed => {
                             widgets

@@ -90,6 +90,7 @@ impl SimpleAsyncComponent for ChatList {
                 set_margin_start: 8,
                 set_margin_end: 8,
                 set_margin_top: 4,
+                set_css_classes: &["undershoot-start", "undershoot-end"],
                 set_hscrollbar_policy: gtk::PolicyType::External,
                 set_vscrollbar_policy: gtk::PolicyType::Never,
                 set_propagate_natural_height: true,
@@ -451,7 +452,7 @@ impl RelmListItem for ChatRow {
 
         let status_icon = gtk::Image::builder()
             .pixel_size(12)
-            .css_classes(["dimmed"])
+            .css_classes(["dimmed", "status-icon"])
             .build();
         suffix_top_box.append(&status_icon);
 
@@ -541,8 +542,8 @@ impl RelmListItem for ChatRow {
         }
 
         widgets.status_icon.set_has_tooltip(false);
+        widgets.status_icon.remove_css_class("white");
         widgets.status_icon.remove_css_class("warning");
-        widgets.status_icon.remove_css_class("success");
 
         if let Some(msg) = &self.last_message {
             // Get last message's content.
@@ -585,7 +586,7 @@ impl RelmListItem for ChatRow {
                     .set_icon_name(Some(msg.status.icon_name()));
                 match msg.status {
                     MessageStatus::Read => {
-                        widgets.status_icon.add_css_class("success");
+                        widgets.status_icon.add_css_class("white");
                     }
                     MessageStatus::Failed => {
                         widgets.status_icon.add_css_class("warning");
