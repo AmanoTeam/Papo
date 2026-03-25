@@ -179,7 +179,6 @@ impl Database {
             let jid: String = row.get(0)?;
 
             Ok(Some(Chat {
-                db: Arc::new(self.clone()),
                 jid,
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
@@ -217,7 +216,6 @@ impl Database {
             let jid: String = row.get(0)?;
 
             chats.push(Chat {
-                db: Arc::new(self.clone()),
                 jid,
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,

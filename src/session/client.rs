@@ -209,8 +209,15 @@ pub enum ClientOutput {
         messages: Vec<SyncedMessage>,
     },
 
+    /// Avatar updated for a chat.
+    AvatarUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Path to the cached avatar image.
+        path: String,
+    },
     /// Contact updated (from sync or individual update).
-    ContactUpdated {
+    ContactUpdate {
         /// Contact JID.
         jid: String,
         /// Full name from address book.
@@ -219,14 +226,6 @@ pub enum ClientOutput {
         push_name: Option<String>,
         /// Phone number (from JID user part).
         phone_number: String,
-    },
-
-    /// Avatar updated for a chat.
-    AvatarUpdate {
-        /// Chat JID.
-        jid: String,
-        /// Path to the cached avatar image.
-        path: String,
     },
 
     /// Error occurred.
@@ -606,7 +605,7 @@ impl AsyncComponent for Client {
                                         let phone_number = contact_update.jid.user.clone();
                                         let push_name = contact_update.action.first_name.clone();
 
-                                        let _ = sender.output(ClientOutput::ContactUpdated {
+                                        let _ = sender.output(ClientOutput::ContactUpdate {
                                             jid,
                                             name,
                                             push_name,

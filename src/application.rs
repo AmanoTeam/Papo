@@ -278,7 +278,6 @@ impl Application {
             };
 
             self.add_chat(Chat {
-                db: Arc::clone(&self.db),
                 jid: chat_jid.to_string(),
                 name,
                 muted: false,
@@ -666,10 +665,11 @@ impl AsyncComponent for Application {
                     AppMsg::MessagesSynced { chat_jid, messages }
                 }
 
-                ClientOutput::ContactUpdated {
+                ClientOutput::ContactUpdate {
                     jid,
                     name,
                     push_name,
+                    phone_number,
                 } => AppMsg::ContactUpdate {
                     jid,
                     name,
@@ -1282,7 +1282,6 @@ impl AsyncComponent for Application {
                 }
 
                 let chat = Chat {
-                    db: Arc::clone(&self.db),
                     jid,
                     name: chat_name,
                     muted: false, // TODO: handle mute_end_time
