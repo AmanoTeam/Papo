@@ -291,7 +291,58 @@ impl Database {
         Ok(())
     }
 
-    pub async fn load_message(
+    pub async fn load_message_by_local_id(
+        &self,
+        chat_jid: &str,
+        msg_id: &Uuid,
+    ) -> Result<Option<ChatMessage>, libsql::Error> {
+        let mut rows = self.conn.query(
+            r"
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
+            FROM messages
+            WHERE chat_jid = ?1 AND local_id = ?2
+            ORDER BY timestamp DESC
+            LIMIT 1
+            ",
+            libsql::params![chat_jid, msg_id.to_string()],
+        ).await?;
+
+        if let Some(row) = rows.next().await? {
+            let media = row.get::<String>(9).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(10).map_or(None, |data| {
+                    let media_type: MediaType = media_type.into();
+
+                    Some(Media {
+                        data: Arc::new(data),
+                        r#type: media_type,
+                        mime_type: media_type.guess_mime_type(),
+                        ..Default::default()
+                    })
+                })
+            });
+
+            Ok(Some(ChatMessage {
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
+
+                media,
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                reactions: IndexMap::new(),
+
+                db: Arc::new(self.clone()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn load_message_by_server_id(
         &self,
         chat_jid: &str,
         msg_id: &str,
@@ -494,7 +545,7 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                "SELECT COUNT(*) FROM messages WHERE chat_jid = ?1 AND status != 1",
+                "SELECT COUNT(*) FROM messages WHERE chat_jid = ?1 AND status != 1 AND outgoing == 0",
                 [chat_jid],
             )
             .await?;
@@ -514,7 +565,7 @@ impl Database {
             r"
             SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
             FROM messages
-            WHERE chat_jid = ?1 AND status != 1
+            WHERE chat_jid = ?1 AND status != 1 AND outgoing == 0
             ORDER BY timestamp DESC
             LIMIT ?2
             ",

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::{state::ChatMessage, store::Database, utils::format_lid_as_number};
 
@@ -94,9 +95,17 @@ impl Chat {
             .await
     }
 
-    /// Find a message in this chat by its ID.
+    /// Find a message in this chat by its server ID.
     pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, libsql::Error> {
-        self.db.load_message(&self.jid, msg_id).await
+        self.db.load_message_by_server_id(&self.jid, msg_id).await
+    }
+
+    /// Find a message in this chat by its local ID.
+    pub async fn find_message_by_local_id(
+        &self,
+        msg_id: &Uuid,
+    ) -> Result<Option<ChatMessage>, libsql::Error> {
+        self.db.load_message_by_local_id(&self.jid, msg_id).await
     }
 
     /// Get the count of unread messages in this chat.

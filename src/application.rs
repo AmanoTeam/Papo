@@ -152,16 +152,17 @@ pub enum AppMsg {
         available: bool,
         last_seen: Option<DateTime<Utc>>,
     },
+    /// Message status updated.
+    MessageStatusUpdate {
+        chat_jid: String,
+        msg_id: Uuid,
+        status: MessageStatus,
+    },
 
     /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
-    },
-    /// Mark a message as sent.
-    MarkMessageSent {
-        chat_jid: String,
-        msg_id: String,
     },
 
     /// Send a text message.
@@ -575,9 +576,16 @@ impl AsyncComponent for Application {
                 ClientOutput::MessageReceived { info, message } => {
                     AppMsg::MessageReceived { info, message }
                 }
-                ClientOutput::MessageSent { chat_jid, msg_id } => {
-                    AppMsg::MarkMessageSent { chat_jid, msg_id }
-                }
+                ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
+                    chat_jid,
+                    msg_id,
+                    status: MessageStatus::Sent,
+                },
+                ClientOutput::MessageFailed { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
+                    chat_jid,
+                    msg_id,
+                    status: MessageStatus::Failed,
+                },
 
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
@@ -755,13 +763,9 @@ impl AsyncComponent for Application {
                 chat_jid,
                 message_ids,
             } => {
-                tracing::error!("{chat_jid} - {message_ids:?}");
-
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
-                    tracing::error!("chat found");
                     for msg_id in message_ids {
-                        if let Some(mut message) = chat.find_message(&msg_id).await.unwrap() {
-                            tracing::error!("message found!");
+                        if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
                             if let Err(e) = message.mark_read().await {
                                 tracing::error!("Failed to mark message as read: {e}");
                             }
@@ -792,6 +796,29 @@ impl AsyncComponent for Application {
                     available,
                     last_seen,
                 });
+            }
+            AppMsg::MessageStatusUpdate {
+                chat_jid,
+                msg_id,
+                status,
+            } => {
+                // Get the chat and message altogether.
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
+                    && let Ok(Some(mut message)) = chat.find_message_by_local_id(&msg_id).await
+                {
+                    // Update the message status in-place.
+                    message.status = status;
+
+                    // Update the message in the database.
+                    if let Err(e) = message.save().await {
+                        tracing::error!("Failed to update message: {}", e);
+                    }
+
+                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                        msg_id: message.server_id,
+                        status: message.status,
+                    });
+                }
             }
 
             AppMsg::MessageReceived { info, message } => {
@@ -854,25 +881,6 @@ impl AsyncComponent for Application {
                         info,
                         message
                     );
-                }
-            }
-            AppMsg::MarkMessageSent { chat_jid, msg_id } => {
-                // Get the chat and message altogether.
-                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
-                    && let Ok(Some(mut message)) = chat.find_message(&msg_id).await
-                {
-                    // Update the message status in-place.
-                    message.status = MessageStatus::Sent;
-
-                    // Update the message in the database.
-                    if let Err(e) = message.save().await {
-                        tracing::error!("Failed to update message: {}", e);
-                    }
-
-                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
-                        msg_id,
-                        status: message.status,
-                    });
                 }
             }
 

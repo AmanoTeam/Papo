@@ -602,26 +602,6 @@ impl AsyncComponent for ChatView {
                             message.status = status;
                         }
                     }
-
-                /* if let Some((index, row)) =
-                    self.list_view_wrapper
-                        .iter()
-                        .enumerate()
-                        .find_map(|(index, item)| {
-                            let mut row = item.borrow_mut();
-                            let is_message = matches!(row.deref(), ChatRow::Message(message) if message.id == msg_id);
-
-                            if is_message { Some((index, row.deref_mut())) } else { None }
-                        })
-                {
-                    // Update the message in-place.
-                    // message.status = status;
-
-                    // Replace the row widget in place.
-                    /* self.list_view_wrapper.remove(index as u32);
-                    self.list_view_wrapper
-                        .insert(index as u32, ChatRow::Message(message)); */
-                } */
             }
 
             ChatViewInput::ScrollToBottom => {
@@ -1037,7 +1017,10 @@ impl RelmListItem for ChatRow {
             .build();
         time_status_box.append(&timestamp_label);
 
-        let status_icon = gtk::Image::builder().pixel_size(12).build();
+        let status_icon = gtk::Image::builder()
+            .pixel_size(12)
+            .css_classes(["dimmed"])
+            .build();
         time_status_box.append(&status_icon);
 
         content_box.append(&time_status_box);
@@ -1087,6 +1070,10 @@ impl RelmListItem for ChatRow {
                 widgets.bubble_box.remove_css_class("incoming");
                 widgets.bubble_box.remove_css_class("outgoing");
 
+                widgets.status_icon.set_has_tooltip(false);
+                widgets.status_icon.remove_css_class("warning");
+                widgets.status_icon.remove_css_class("success");
+
                 if msg.outgoing {
                     widgets.message_box.set_halign(gtk::Align::End);
                     widgets.bubble_box.add_css_class("outgoing");
@@ -1096,12 +1083,22 @@ impl RelmListItem for ChatRow {
 
                     widgets.status_icon.set_visible(true);
                     let status_icon = match msg.status {
-                        MessageStatus::Sent => "check-round-outline-symbolic",
-                        MessageStatus::Failed => "exclamation-mark-symbolic",
-                        MessageStatus::Sending => "clock-alt-symbolic",
-                        MessageStatus::Delivered | MessageStatus::Read => {
+                        MessageStatus::Read => {
+                            widgets.status_icon.add_css_class("success");
+
                             "check-round-outline2-symbolic"
                         }
+                        MessageStatus::Sent => "check-round-outline-symbolic",
+                        MessageStatus::Failed => {
+                            widgets
+                                .status_icon
+                                .set_tooltip(&i18n!("The message could not be sent."));
+                            widgets.status_icon.add_css_class("warning");
+
+                            "exclamation-mark-symbolic"
+                        }
+                        MessageStatus::Sending => "clock-alt-symbolic",
+                        MessageStatus::Delivered => "check-round-outline2-symbolic",
                     };
                     widgets.status_icon.set_icon_name(Some(status_icon));
                 } else {

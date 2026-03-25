@@ -4,6 +4,7 @@ use adw::prelude::*;
 use chrono::{DateTime, Utc};
 use relm4::prelude::*;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 use wacore::{
     pair_code::{PairCodeOptions, PlatformId},
     types::{events::Event, message::MessageInfo},
@@ -154,9 +155,9 @@ pub enum ClientOutput {
     },
 
     /// Message was sent successfully.
-    MessageSent { chat_jid: String, msg_id: String },
+    MessageSent { chat_jid: String, msg_id: Uuid },
     /// Message failed to send.
-    MessageFailed { id: String, error: String },
+    MessageFailed { chat_jid: String, msg_id: Uuid },
     /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
@@ -316,21 +317,29 @@ impl AsyncComponent for Client {
                         return;
                     };
 
-                    if let Ok(msg_id) =
-                        Box::pin(client.send_message(jid, message.clone().into())).await
-                    {
-                        // Update the message server id in-place.
-                        message.server_id = msg_id.clone();
+                    match Box::pin(client.send_message(jid, message.clone().into())).await {
+                        Ok(msg_id) => {
+                            // Update the message server id in-place.
+                            message.server_id = msg_id;
 
-                        // Update the message in the database.
-                        if let Err(e) = message.save().await {
-                            tracing::error!("Failed to update message: {}", e);
+                            // Update the message in the database.
+                            if let Err(e) = message.save().await {
+                                tracing::error!("Failed to update message: {}", e);
+                            }
+
+                            let _ = sender.output(ClientOutput::MessageSent {
+                                chat_jid: message.chat_jid,
+                                msg_id: message.local_id,
+                            });
                         }
+                        Err(e) => {
+                            tracing::error!("Failed to send message: {e}");
 
-                        let _ = sender.output(ClientOutput::MessageSent {
-                            chat_jid: message.chat_jid,
-                            msg_id,
-                        });
+                            let _ = sender.output(ClientOutput::MessageFailed {
+                                chat_jid: message.chat_jid,
+                                msg_id: message.local_id,
+                            });
+                        }
                     }
                 }
             }
