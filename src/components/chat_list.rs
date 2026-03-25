@@ -121,8 +121,8 @@ impl SimpleAsyncComponent for ChatList {
 
                         set_active_name: Some("all"),
                         connect_active_name_notify[sender] => move |group| {
-                            let filter = group.active_name().map_or("all".to_string(), |tag| tag.to_string());
-                            sender.input(ChatListInput::ApplyFilter(filter.as_str().into()));
+                            let filter = group.active_name().map_or(Default::default(), |tag| tag.as_str().into());
+                            sender.input(ChatListInput::ApplyFilter(filter));
                         }
                     },
 
