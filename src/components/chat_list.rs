@@ -1,9 +1,6 @@
 use std::{
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use adw::prelude::*;
@@ -34,8 +31,6 @@ pub struct ChatList {
 pub struct ChatListState {
     /// Whether the user is searching chats.
     searching_chats: Arc<AtomicBool>,
-    /// Guard flag to suppress selection signals during list mutations.
-    suppress_selection: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -99,23 +94,18 @@ impl SimpleAsyncComponent for ChatList {
 
         let selection_model = &model.list_view_wrapper.selection_model;
 
-        // Enable chat row unselect.
-        selection_model.set_can_unselect(true);
-
-        // Disable chat row auto-select.
+        // Disabe chat row autoselecet and enable unselect.
         selection_model.set_autoselect(false);
+        selection_model.set_can_unselect(true);
 
         let list_view = &model.list_view_wrapper.view;
 
         let widgets = view_output!();
 
         let input_sender = sender.input_sender().clone();
-        let suppress_selection_clone = model.state.suppress_selection.clone();
         selection_model.connect_selected_item_notify(move |model| {
-            if !suppress_selection_clone.load(Ordering::Acquire) {
-                let position = model.selected();
-                input_sender.emit(ChatListInput::SelectPosition(position));
-            }
+            let position = model.selected();
+            input_sender.emit(ChatListInput::SelectPosition(position));
         });
 
         AsyncComponentParts { model, widgets }
@@ -130,8 +120,6 @@ impl SimpleAsyncComponent for ChatList {
                         move_to_top: at_top,
                     });
                 } else {
-                    self.state.suppress_selection.store(true, Ordering::Release);
-
                     let last_message = chat
                         .get_last_message()
                         .await
@@ -159,15 +147,9 @@ impl SimpleAsyncComponent for ChatList {
                     } else {
                         self.list_view_wrapper.append(row);
                     }
-
-                    self.state
-                        .suppress_selection
-                        .store(false, Ordering::Release);
                 }
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
-                self.state.suppress_selection.store(true, Ordering::Release);
-
                 if let Some(index) = self.get_index_by_jid(&chat.jid) {
                     let last_message = chat
                         .get_last_message()
@@ -197,13 +179,13 @@ impl SimpleAsyncComponent for ChatList {
                     let new_index = if move_to_top { 0 } else { index };
                     self.list_view_wrapper.insert(new_index, updated_row);
 
-                    // Re-select the row and scroll to top if the selected chat is there.
+                    // Re-select the row and scroll to the top if it's the selected chat.
                     if self.chat_jid.as_deref() == Some(&chat.jid) {
                         self.list_view_wrapper
                             .selection_model
                             .select_item(new_index, true);
 
-                        if move_to_top {
+                        if new_index == 0 {
                             if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
                                 // Waits for GTK to finish updating the ListView dimensions, and then
                                 // snaps the viewport to the top.
@@ -212,10 +194,6 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     }
                 }
-
-                self.state
-                    .suppress_selection
-                    .store(false, Ordering::Release);
             }
 
             ChatListInput::Select(jid) => {
