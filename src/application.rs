@@ -1062,8 +1062,8 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::SendTextMessage { text, recipient } => {
-                // Check if the chat exists and is loaded.
-                if self.chats.iter().find(|c| c.jid == recipient).is_some() {
+                // Get the chat if it exists and is loaded.
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == recipient).cloned() {
                     let timestamp = Utc::now();
                     let message = ChatMessage {
                         local_id: Uuid::new_v4(),
@@ -1091,6 +1091,10 @@ impl AsyncComponent for Application {
                         message: message.clone(),
                     });
                     self.chat_view.emit(ChatViewInput::MessageReceived(message));
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat,
+                        move_to_top: true,
+                    });
                 }
             }
 

@@ -8,7 +8,7 @@ use std::{
 
 use adw::prelude::*;
 use chrono::Local;
-use gtk::{gdk::Texture, gio};
+use gtk::{gdk::Texture, gio, glib};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
@@ -30,7 +30,7 @@ pub struct ChatList {
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ChatListState {
     /// Whether the user is searching chats.
     searching_chats: Arc<AtomicBool>,
@@ -93,10 +93,7 @@ impl SimpleAsyncComponent for ChatList {
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let model = Self {
-            state: ChatListState {
-                searching_chats: Arc::new(AtomicBool::new(false)),
-                suppress_selection: Arc::new(AtomicBool::new(false)),
-            },
+            state: ChatListState::default(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
@@ -201,11 +198,19 @@ impl SimpleAsyncComponent for ChatList {
                     let new_index = if move_to_top { 0 } else { index };
                     self.list_view_wrapper.insert(new_index, updated_row);
 
-                    // Re-select the row.
+                    // Re-select the row and scroll to top if the selected chat is there.
                     if self.chat_jid.as_deref() == Some(&chat.jid) {
                         self.list_view_wrapper
                             .selection_model
                             .select_item(new_index, true);
+
+                        if move_to_top {
+                            if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
+                                // Waits for GTK to finish updating the ListView dimensions, and then
+                                // snaps the viewport to the top.
+                                glib::idle_add_local_once(move || adj.set_value(adj.lower()));
+                            }
+                        }
                     }
                 }
 
