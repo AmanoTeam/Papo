@@ -264,7 +264,6 @@ impl AsyncComponent for Client {
 
                     if let Err(e) = client
                         .pair_with_code(PairCodeOptions {
-                            custom_code: None,
                             platform_id: PlatformId::OtherWebClient,
                             phone_number,
                             show_push_notification: true,

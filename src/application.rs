@@ -45,7 +45,7 @@ pub struct Application {
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
     chat_view: AsyncController<ChatView>,
-    /// The `SplitView` widget from the sesion page.
+    /// The `SplitView` widget from the session page.
     split_view: adw::NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
@@ -65,7 +65,7 @@ pub struct Application {
     runtime_cache: Arc<RuntimeCache>,
 }
 
-#[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
 #[strum(serialize_all = "lowercase")]
 enum AppPage {
     /// Loading page.
@@ -731,7 +731,7 @@ impl AsyncComponent for Application {
             }
             AppMsg::DevicePaired => {
                 self.login.emit(LoginInput::PairSuccess);
-                time::sleep(Duration::from_secs(1)).await;
+                time::sleep(Duration::from_secs(2)).await;
 
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;

@@ -1,10 +1,12 @@
 use adw::gtk;
 use chrono::{Datelike, Local, NaiveDate};
+use fast_qr::{
+    ECL, QRBuilder,
+    convert::{Builder, Shape, image::ImageBuilder},
+};
 use glib::Bytes;
 use glycin::Loader;
 use gtk::{gdk, glib};
-use image::{ExtendedColorType, ImageEncoder, Luma, codecs::png::PngEncoder};
-use qrcode::QrCode;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
 use crate::i18n;
@@ -23,24 +25,25 @@ pub fn get_first_name(name: &str) -> String {
 }
 
 /// Generates a QR code texture.
-pub async fn generate_qr_code(data: &str) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
-    let qr_code = QrCode::new(data.as_bytes())?;
-    let image = qr_code.render::<Luma<u8>>().build();
-
-    // Encode the QR code as a PNG.
-    let mut bytes = Vec::new();
-    let encoder = PngEncoder::new(&mut bytes);
-    encoder.write_image(
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        ExtendedColorType::L8,
-    )?;
+pub async fn generate_qr_code(
+    data: &str,
+    size: u32,
+) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
+    let qr = QRBuilder::new(data)
+        .ecl(ECL::H)
+        .build()
+        .expect("Failed to generate QR code");
+    let bytes = ImageBuilder::default()
+        .shape(Shape::Circle)
+        .fit_width(size)
+        .fit_height(size)
+        .to_bytes(&qr)
+        .expect("Failed to build QR code image");
 
     // Load the image through glycin.
     let loader = Loader::new_bytes(Bytes::from_owned(bytes));
-    let image = loader.load().await?;
-    let frame = image.next_frame().await?;
+    let image_doc = loader.load().await?;
+    let frame = image_doc.next_frame().await?;
     let texture = frame.texture();
 
     Ok(texture)

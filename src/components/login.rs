@@ -6,34 +6,46 @@ use std::{
     time::Duration,
 };
 
-use adw::prelude::*;
+use adw::{glib, prelude::*};
 use futures_util::FutureExt;
 use gtk::{gdk, pango};
-use relm4::{component::Connector, prelude::*};
-use relm4_components::alert::{Alert, AlertMsg, AlertResponse, AlertSettings};
+use relm4::{RelmRemoveAllExt, component::Connector, prelude::*};
+use relm4_components::alert::{Alert, AlertMsg, AlertSettings};
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 use strum::{AsRefStr, EnumString};
 use tokio::time::{self, Instant};
 
-use crate::{i18n, utils::generate_qr_code};
+use crate::{
+    i18n,
+    utils::generate_qr_code,
+    widgets::{PairStep, PairingCell},
+};
 
 #[derive(Debug)]
 pub struct Login {
+    /// Page main stack is displaying.
+    page: LoginPage,
+    /// Current login state.
     state: LoginState,
+    /// Current QR code texture.
     qr_code: Option<gdk::Paintable>,
-    bottom_page: LoginBottomPage,
-    error_dialog: Connector<Alert>,  // TODO: use a custom alert dialog
-    reset_dialog: Controller<Alert>, // TODO: use a custom alert dialog
-    phone_number_entry: gtk::Entry,
+    /// Pairing box containing all pair cells.
+    pairing_box: gtk::Box,
+    /// Pair code character.
+    pairing_cells: Option<[PairingCell; 8]>,
+    /// Current pair phone number view.
+    phone_number_view: LoginPhoneNumberView,
+    /// Input entry containing the user phone number.
+    phone_number_entry: adw::EntryRow,
+
+    error_dialog: Connector<Alert>, // TODO: use a custom alert dialog
 }
 
-#[derive(AsRefStr, Clone, Copy, Debug, EnumString)]
+#[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
 #[strum(serialize_all = "kebab-case")]
-enum LoginBottomPage {
-    /// Confirm code view.
-    ConfirmCode,
-    /// Enter phone number view.
-    EnterPhoneNumber,
+enum LoginPage {
+    QrCode,
+    PhoneNumber,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,15 +73,19 @@ pub enum PairState {
     /// The client is still pairing.
     #[default]
     Pairing,
-    /// The client is pairing with phone number.
-    PairingWithPhoneNumber,
+}
+
+#[derive(Clone, Copy, Debug, AsRefStr, EnumString)]
+#[strum(serialize_all = "kebab-case")]
+enum LoginPhoneNumberView {
+    /// Confirm code view.
+    ConfirmCode,
+    /// Enter phone number view.
+    EnterPhoneNumber,
 }
 
 #[derive(Debug)]
 pub enum LoginInput {
-    /// Request to reset the session.
-    ResetRequest,
-
     /// 8-character pairing code received.
     PairCode {
         code: Option<String>,
@@ -78,6 +94,13 @@ pub enum LoginInput {
     },
     /// Client has paired successfully.
     PairSuccess,
+    /// Request the login to change the page to `QrCode`.
+    PairWithQrCode,
+    /// Request the login to change the page to `PhoneNumber`.
+    PairWithPhoneNumber {
+        /// Change the view to `EnterPhoneNumber`.
+        edit: bool,
+    },
 
     /// Error occurred.
     Error { message: String },
@@ -85,7 +108,7 @@ pub enum LoginInput {
 
 #[derive(Debug)]
 pub enum LoginOutput {
-    /// Reset the session to able to receive new qr codes.
+    /// Reset the session to be able to receive new qr codes.
     ResetSession,
 
     /// Request the session to pair with a phone number.
@@ -94,7 +117,7 @@ pub enum LoginOutput {
 
 #[derive(Debug)]
 pub enum LoginCommand {
-    /// Reset the session to able to receive new qr codes.
+    /// Reset the session to be able to receive new qr codes.
     ResetSession,
 
     /// Update the QR Code.
@@ -137,304 +160,292 @@ impl AsyncComponent for Login {
                 set_title: &i18n!("Link your phone"),
                 set_vexpand: true,
 
-                gtk::Box {
-                    set_halign: gtk::Align::Center,
-                    set_valign: gtk::Align::Center,
-                    set_spacing: 15,
-                    set_orientation: gtk::Orientation::Vertical,
+                gtk::Stack {
+                    set_transition_type: gtk::StackTransitionType::SlideLeftRight,
 
-                    gtk::Box {
-                        set_spacing: 15,
+                    add_named[Some("qr-code")] = &gtk::Box {
+                        set_halign: gtk::Align::Center,
+                        set_valign: gtk::Align::Center,
+                        set_spacing: 5,
                         set_orientation: gtk::Orientation::Vertical,
 
-                        gtk::Label {
-                            set_label: &i18n!("Open WhatsApp on your phone and scan the QR code."),
-                            set_justify: gtk::Justification::Center,
-                            set_css_classes: &["body"]
+                        gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_spacing: 10,
+                            #[watch]
+                            set_css_classes: if model.qr_code.is_none() { &["card", "view"] } else { &[] },
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_width_request: 200,
+                            set_height_request: 200,
+
+                            gtk::Picture {
+                                set_halign: gtk::Align::Center,
+                                set_valign: gtk::Align::Center,
+                                set_hexpand: true,
+                                set_vexpand: true,
+                                #[watch]
+                                set_visible: model.qr_code.is_some(),
+                                #[watch]
+                                set_paintable: model.qr_code.as_ref(),
+                                set_css_classes: &["qr-code"]
+                            },
+
+                            gtk::Box {
+                                set_halign: gtk::Align::Center,
+                                set_valign: gtk::Align::Center,
+                                set_hexpand: true,
+                                set_vexpand: true,
+                                #[watch]
+                                set_visible: model.qr_code.is_none(),
+                                set_spacing: 20,
+                                set_orientation: gtk::Orientation::Vertical,
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &if model.state.session_scan_expired.load(Ordering::Acquire) {
+                                        i18n!("All QR codes for this session were expired.")
+                                    } else {
+                                        i18n!("Waiting QR code...")
+                                    },
+                                    set_justify: gtk::Justification::Center,
+                                    set_css_classes: &["title-4"],
+                                    set_max_width_chars: 14,
+
+                                    set_wrap: true,
+                                    set_wrap_mode: pango::WrapMode::WordChar,
+                                },
+
+                                adw::Spinner {
+                                    #[watch]
+                                    set_visible: !model.state.session_scan_expired.load(Ordering::Acquire),
+                                    set_width_request: 32,
+                                    set_height_request: 32
+                                },
+
+                                gtk::Button {
+                                    set_label: &i18n!("Reset Session"),
+                                    #[watch]
+                                    set_visible: model.state.session_scan_expired.load(Ordering::Acquire),
+                                    set_css_classes: &["pill", "suggested-action"],
+
+                                    connect_clicked[sender] => move |_| {
+                                        sender.oneshot_command(async { LoginCommand::ResetSession });
+                                    }
+                                }
+                            }
                         },
 
-                        gtk::Overlay {
-                            #[wrap(Some)]
-                            set_child = &gtk::Box {
+                        gtk::Revealer {
+                            #[watch]
+                            set_visible: model.page == LoginPage::QrCode,
+                            #[watch]
+                            set_reveal_child: model.qr_code.is_some(),
+                            set_margin_bottom: 20,
+                            set_transition_type: gtk::RevealerTransitionType::SwingDown,
+                            set_transition_duration: 300,
+
+                            gtk::ProgressBar {
+                                set_halign: gtk::Align::Center,
+                                set_valign: gtk::Align::End,
+                                #[watch]
+                                set_fraction: model.state.progress_fraction,
+                                set_width_request: 200
+                            }
+                        },
+
+                        gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_spacing: 10,
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_margin_bottom: 15,
+
+                            PairStep::new(1, &i18n!("Open WhatsApp on your phone.")).main_box {},
+                            PairStep::new(2, &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")) .main_box {},
+                            PairStep::new(3, &i18n!("Scan this QR code.")).main_box {}
+                        },
+
+                        gtk::Label {
+                            set_label: &format!("<a href=\"link-with-phone-number\">{}</a>", i18n!("Link with Phone Number")),
+                            set_justify: gtk::Justification::Center,
+                            set_use_markup: true,
+                            set_css_classes: &["body"],
+
+                            connect_activate_link[sender] => move |_, uri| {
+                                if uri == "link-with-phone-number" {
+                                    sender.input(LoginInput::PairWithPhoneNumber { edit: false });
+                                }
+
+                                glib::Propagation::Stop
+                            }
+                        }
+                    },
+
+                    add_named[Some("phone-number")] = &gtk::Stack {
+                        set_transition_type: gtk::StackTransitionType::Crossfade,
+
+                        add_named[Some("enter-phone-number")] = &gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_spacing: 20,
+                            set_orientation: gtk::Orientation::Vertical,
+
+                            gtk::Box {
                                 set_halign: gtk::Align::Center,
                                 set_valign: gtk::Align::Center,
                                 set_hexpand: true,
                                 set_vexpand: true,
                                 set_css_classes: &["card"],
-                                set_width_request: 200,
-                                set_height_request: 200,
+                                set_width_request: 80,
+                                set_height_request: 80,
 
                                 gtk::Image {
                                     set_halign: gtk::Align::Center,
                                     set_valign: gtk::Align::Center,
                                     set_hexpand: true,
                                     set_vexpand: true,
-                                    #[watch]
-                                    set_paintable: model.qr_code.as_ref(),
-                                    set_pixel_size: 180,
+                                    set_icon_name: Some("phone-right-facing-symbolic"),
+                                    set_pixel_size: 50
                                 }
-                            },
-
-                            add_overlay = &gtk::Box {
-                                set_halign: gtk::Align::Center,
-                                set_valign: gtk::Align::Center,
-                                set_hexpand: true,
-                                set_vexpand: true,
-                                set_opacity: 0.96,
-                                #[watch]
-                                set_visible: model.qr_code.is_none(),
-                                set_css_classes: &["card", "view"],
-                                set_width_request: 200,
-                                set_height_request: 200,
-
-                                gtk::Box {
-                                    set_halign: gtk::Align::Center,
-                                    set_valign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_vexpand: true,
-                                    set_spacing: 20,
-                                    set_orientation: gtk::Orientation::Vertical,
-
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: &if model.state.session_scan_expired.load(Ordering::Acquire) {
-                                            i18n!("All QR codes for this session were expired.")
-                                        } else {
-                                            i18n!("Waiting QR code...")
-                                        },
-                                        set_justify: gtk::Justification::Center,
-                                        set_css_classes: &["title-4"],
-                                        set_max_width_chars: 14,
-
-                                        set_wrap: true,
-                                        set_wrap_mode: pango::WrapMode::WordChar,
-                                    },
-
-                                    adw::Spinner {
-                                        #[watch]
-                                        set_visible: !model.state.session_scan_expired.load(Ordering::Acquire),
-                                        set_width_request: 32,
-                                        set_height_request: 32
-                                    },
-
-                                    gtk::Button {
-                                        set_label: &i18n!("Reset Session"),
-                                        #[watch]
-                                        set_visible: model.state.session_scan_expired.load(Ordering::Acquire),
-                                        set_css_classes: &["pill", "suggested-action"],
-
-                                        connect_clicked => LoginInput::ResetRequest,
-                                    }
-                                }
-                            },
-
-                            add_overlay = &gtk::ProgressBar {
-                                set_halign: gtk::Align::Center,
-                                set_valign: gtk::Align::End,
-                                #[watch]
-                                set_visible: model.qr_code.is_some(),
-                                #[watch]
-                                set_fraction: model.state.progress_fraction,
-                                set_margin_bottom: 1,
-                                set_width_request: 180
-                            }
-                        }
-                    },
-
-                    gtk::Separator {
-                        set_halign: gtk::Align::Center,
-                        set_margin_top: 10,
-                        set_css_classes: &["dimmed"],
-                        set_width_request: 300
-                    },
-
-                    gtk::Stack {
-                        set_transition_type: gtk::StackTransitionType::Crossfade,
-
-                        add_child = &gtk::Box {
-                            set_halign: gtk::Align::Center,
-                            set_spacing: 10,
-                            set_orientation: gtk::Orientation::Vertical,
-
-                            gtk::Label {
-                                set_label: &i18n!("or use your phone number:"),
-                                set_justify: gtk::Justification::Center,
-                                set_css_classes: &["body"]
                             },
 
                             gtk::Box {
-                                set_css_classes: &["linked"],
-                                set_orientation: gtk::Orientation::Horizontal,
+                                set_halign: gtk::Align::Center,
+                                set_hexpand: true,
 
-                                gtk::Button {
-                                    #[watch]
-                                    set_label: model.state.phone_number_country_emoji.as_deref().unwrap_or("🇺🇳"),
-                                    set_can_focus: false,
-                                    set_width_request: 2,
+                                gtk::Label {
+                                    set_label: &i18n!("Please enter your phone number."),
+                                    set_justify: gtk::Justification::Center,
+                                    set_css_classes: &["body", "dimmed"],
                                 },
+                            },
 
-                                #[local_ref]
-                                phone_number_entry -> gtk::Entry {
-                                    set_max_length: 20,
-                                    set_input_hints: gtk::InputHints::PRIVATE,
-                                    set_input_purpose: gtk::InputPurpose::Phone,
-                                    set_width_request: 200,
-                                    set_placeholder_text: Some("+55 99 99999-9999"),
+                            gtk::Box {
+                                set_halign: gtk::Align::Center,
+                                set_hexpand: true,
+                                set_spacing: 15,
+                                set_orientation: gtk::Orientation::Vertical,
 
-                                    connect_changed[sender] => move |_| { sender.oneshot_command(async { LoginCommand::ValidatePhoneNumber }); },
-                                    connect_activate[sender] => move |entry| {
-                                        let phone_number = entry.text().to_string();
-                                        sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
-                                    }
-                                },
+                                adw::PreferencesGroup {
+                                    set_separate_rows: true,
+                                    set_width_request: 300,
 
-                                gtk::Button {
-                                    set_icon_name: "go-next-symbolic",
-                                    #[watch]
-                                    set_css_classes: if model.state.valid_phone_number.load(Ordering::Acquire) {
-                                        &["suggested-action"]
-                                    } else {
-                                        &[]
+                                    #[local_ref]
+                                    add = &phone_number_entry -> adw::EntryRow {
+                                        set_title: &i18n!("Phone Number"),
+                                        set_max_length: 20,
+                                        set_input_hints: gtk::InputHints::PRIVATE,
+                                        set_input_purpose: gtk::InputPurpose::Phone,
+                                        set_width_request: 200,
+
+                                        connect_changed[sender] => move |_| { sender.oneshot_command(async { LoginCommand::ValidatePhoneNumber }); },
+                                        connect_entry_activated[sender] => move |entry| {
+                                            let phone_number = entry.text().to_string();
+                                            sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
+                                        }
                                     },
 
-                                    #[wrap(Some)]
-                                    set_child = &adw::Spinner {
+                                    add = &adw::ButtonRow{
+                                        set_title: &i18n!("Next"),
                                         #[watch]
-                                        set_visible: model.state.pair_state == PairState::PairingWithPhoneNumber,
-                                    },
+                                        set_css_classes: if model.state.valid_phone_number.load(Ordering::Acquire) { &["suggested-action"] } else { &[] },
+                                        set_end_icon_name: Some("go-next-symbolic"),
+                                        set_height_request: 40,
 
-                                    connect_clicked[sender, phone_number_entry, valid_phone_number = model.state.valid_phone_number.clone()] => move |_| {
-                                        if valid_phone_number.load(Ordering::Acquire) {
+                                        connect_activated[sender, phone_number_entry] => move |_| {
                                             let phone_number = phone_number_entry.text().to_string();
                                             sender.oneshot_command(async { LoginCommand::PairWithPhoneNumber { phone_number, } });
                                         }
                                     }
-                                },
-                            }
-                        } -> {
-                            set_name: "enter-phone-number"
-                        },
-
-                        add_child = &gtk::Box {
-                            set_halign: gtk::Align::Center,
-                            set_spacing: 10,
-                            set_orientation: gtk::Orientation::Vertical,
+                                }
+                            },
 
                             gtk::Label {
-                                set_label: &i18n!("enter this code on your WhatsApp:"),
+                                set_label: &format!("<a href=\"link-with-qr-code\">{}</a>", i18n!("Link with QR Code")),
                                 set_justify: gtk::Justification::Center,
-                                set_css_classes: &["body"]
+                                set_use_markup: true,
+                                set_css_classes: &["body"],
+
+                                connect_activate_link[sender] => move |_, uri| {
+                                    if uri == "link-with-qr-code" {
+                                        sender.input(LoginInput::PairWithQrCode);
+                                    }
+
+                                    glib::Propagation::Stop
+                                }
+                            }
+                        },
+
+                        add_named[Some("confirm-code")] = &gtk::Box {
+                            set_halign: gtk::Align::Center,
+                            set_valign: gtk::Align::Center,
+                            set_spacing: 20,
+                            set_orientation: gtk::Orientation::Vertical,
+
+                            gtk::Box {
+                                set_halign: gtk::Align::Center,
+                                set_valign: gtk::Align::Center,
+                                set_hexpand: true,
+                                set_vexpand: true,
+                                set_css_classes: &["card"],
+                                set_width_request: 80,
+                                set_height_request: 80,
+
+                                gtk::Image {
+                                    set_halign: gtk::Align::Center,
+                                    set_valign: gtk::Align::Center,
+                                    set_hexpand: true,
+                                    set_vexpand: true,
+                                    set_icon_name: Some("phonelink-setup-symbolic"),
+                                    set_pixel_size: 50
+                                }
+                            },
+
+                            gtk::Label {
+                                #[watch]
+                                set_label: &format!("{} (<a href=\"edit-phone-number\">{}</a>)", i18n!("Linking WhatsApp account <b>${phone-number}</b>"), i18n!("edit"))
+                                    .replace("${phone-number}", model.phone_number_entry.text().to_string().as_str()),
+                                set_justify: gtk::Justification::Center,
+                                set_use_markup: true,
+                                set_css_classes: &["body"],
+
+                                connect_activate_link[sender] => move |_, uri| {
+                                    if uri == "edit-phone-number" {
+                                        sender.input(LoginInput::PairWithPhoneNumber { edit: true });
+                                    }
+
+                                    glib::Propagation::Stop
+                                }
+                            },
+
+                            #[local_ref]
+                            pairing_box -> gtk::Box {
+                                set_halign: gtk::Align::Center,
+                                set_hexpand: true,
+                                set_homogeneous: true,
                             },
 
                             gtk::Box {
                                 set_halign: gtk::Align::Center,
                                 set_hexpand: true,
-                                set_spacing: 4,
-                                set_orientation: gtk::Orientation::Horizontal,
-                                set_homogeneous: true,
+                                set_spacing: 10,
+                                set_orientation: gtk::Orientation::Vertical,
 
-                                // TODO: use custom component
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[0].to_string()),
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[1].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[2].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[3].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    set_label: "-",
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    set_css_classes: &["title-2"]
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[4].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[5].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[6].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
-
-                                gtk::Label {
-                                    inline_css: "padding-top: 8px; padding-left: 8px; padding-right: 8px; padding-bottom: 8px;",
-                                    #[watch]
-                                    set_label?: &model.state.code.map(|c| c[7].to_string()),
-                                    set_halign: gtk::Align::Center,
-                                    set_hexpand: true,
-                                    set_justify: gtk::Justification::Center,
-                                    #[watch]
-                                    set_css_classes: &["title-3", "card", "frame", if model.state.pair_state == PairState::Paired { "success" } else { "accent" }],
-                                },
+                                PairStep::new(1, &i18n!("Open WhatsApp on your phone.")).main_box {},
+                                PairStep::new(2, &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")) .main_box {},
+                                PairStep::new(3, &i18n!("Tap <i>Connect with phone number</i> and enter this code on your phone.")).main_box {}
                             }
-                        } -> {
-                            set_name: "confirm-code"
                         },
 
                         #[watch]
-                        set_visible_child_name: model.bottom_page.as_ref(),
-                    }
+                        set_visible_child_name: model.phone_number_view.as_ref(),
+                    },
+
+                    #[watch]
+                    set_visible_child_name: model.page.as_ref(),
                 }
             }
         }
@@ -445,7 +456,6 @@ impl AsyncComponent for Login {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let state = LoginState::default();
         let error_dialog = Alert::builder().transient_for(&root).launch(AlertSettings {
             text: Some(i18n!("An error occurred")),
             secondary_text: None,
@@ -456,37 +466,23 @@ impl AsyncComponent for Login {
 
             ..Default::default()
         });
-        let reset_dialog = Alert::builder()
-            .transient_for(&root)
-            .launch(AlertSettings {
-                text: Some(i18n!("Do you really want to reset the session?")),
-                secondary_text: Some(i18n!(
-                    "This action will reset your phone number action if you are connecting with it."
-                )),
 
-                cancel_label: Some(i18n!("Cancel")),
-                confirm_label: Some(i18n!("Continue")),
-
-                is_modal: true,
-                destructive_accept: true,
-
-                ..Default::default()
-            })
-            .forward(sender.command_sender(), |output| match output {
-                AlertResponse::Confirm => LoginCommand::ResetSession,
-                _ => LoginCommand::Ignore,
-            });
-
-        let phone_number_entry = gtk::Entry::new();
+        let pairing_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let phone_number_entry = adw::EntryRow::new();
 
         let model = Self {
-            state,
+            page: LoginPage::QrCode,
+            state: LoginState::default(),
             qr_code: None,
-            bottom_page: LoginBottomPage::EnterPhoneNumber,
-            error_dialog,
-            reset_dialog,
+            pairing_box,
+            pairing_cells: None,
+            phone_number_view: LoginPhoneNumberView::EnterPhoneNumber,
             phone_number_entry: phone_number_entry.clone(),
+
+            error_dialog,
         };
+
+        let pairing_box = &model.pairing_box;
 
         let widgets = view_output!();
 
@@ -500,24 +496,42 @@ impl AsyncComponent for Login {
         _root: &Self::Root,
     ) {
         match input {
-            LoginInput::ResetRequest => {
-                self.reset_dialog.emit(AlertMsg::Show);
-            }
-
             LoginInput::PairCode {
                 code,
                 qr_code,
                 timeout,
             } => {
                 if let Some(code) = code {
+                    // Empty the pairing box, removing all cells
+                    self.pairing_box.remove_all();
+
+                    let mut cells = Vec::with_capacity(8);
                     let mut split_code = [' '; 8];
+
                     for (i, c) in code.chars().enumerate() {
                         split_code[i] = c;
+
+                        let cell = PairingCell::init(c);
+                        self.pairing_box.append(cell.widget_ref());
+                        cells.push(cell);
+
+                        if (i + 1) == 4 {
+                            let separator = gtk::Label::builder()
+                                .label("—")
+                                .halign(gtk::Align::Center)
+                                .valign(gtk::Align::Center)
+                                .css_classes(["title-2"])
+                                .build();
+                            self.pairing_box.append(&separator);
+                        }
                     }
 
                     self.state.code = Some(split_code);
-                    self.bottom_page = LoginBottomPage::ConfirmCode;
-                } else if let Some(qr_code) = qr_code {
+                    self.pairing_cells = cells.as_array().map(ToOwned::to_owned);
+                    self.phone_number_view = LoginPhoneNumberView::ConfirmCode;
+                }
+
+                if let Some(qr_code) = qr_code {
                     sender.oneshot_command(async move {
                         LoginCommand::UpdateQrCode {
                             data: qr_code,
@@ -528,17 +542,46 @@ impl AsyncComponent for Login {
             }
             LoginInput::PairSuccess => {
                 self.state.pair_state = PairState::Paired;
+
+                if let Some(cells) = self.pairing_cells.as_ref() {
+                    for cell in cells {
+                        cell.remove_css_class("accent");
+                        cell.add_css_class("success");
+                    }
+                }
+            }
+            LoginInput::PairWithQrCode => {
+                self.page = LoginPage::QrCode;
+            }
+            LoginInput::PairWithPhoneNumber { edit } => {
+                if edit {
+                    self.phone_number_view = LoginPhoneNumberView::EnterPhoneNumber;
+                }
+
+                self.page = LoginPage::PhoneNumber;
+                self.phone_number_entry.grab_focus();
             }
 
             LoginInput::Error { message } => {
-                self.state.pair_state = PairState::Pairing;
+                if self.page == LoginPage::PhoneNumber {
+                    // Reset session and start pair with phone number
+                    sender.oneshot_command(async { LoginCommand::ResetSession });
 
-                self.error_dialog.widgets().gtk_label_2.set_text(&message);
-                self.error_dialog.emit(AlertMsg::Show);
+                    let phone_number = self.phone_number_entry.text().to_string();
+                    sender.oneshot_command(async {
+                        LoginCommand::PairWithPhoneNumber { phone_number }
+                    });
+                } else {
+                    self.state.pair_state = PairState::Pairing;
+
+                    self.error_dialog.widgets().gtk_label_2.set_text(&message);
+                    self.error_dialog.emit(AlertMsg::Show);
+                }
             }
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update_cmd(
         &mut self,
         input: Self::CommandOutput,
@@ -550,18 +593,20 @@ impl AsyncComponent for Login {
                 // Reset the session.
                 self.qr_code = None;
                 self.state.code = None;
+                self.state.pair_state = PairState::Pairing;
+                self.phone_number_view = LoginPhoneNumberView::EnterPhoneNumber;
                 self.state.scan_attempts = 0;
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
                 self.state
                     .session_scan_expired
-                    .store(true, Ordering::Release);
+                    .store(false, Ordering::Release);
 
                 let _ = sender.output(LoginOutput::ResetSession);
             }
 
             LoginCommand::UpdateQrCode { data, timeout } => {
                 // Reset the QR code and progress bar.
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
 
                 if self.state.scan_attempts >= 5 {
                     self.state
@@ -572,32 +617,33 @@ impl AsyncComponent for Login {
                 self.state.scan_attempts += 1;
 
                 // Generate the QR code.
-                let texture = generate_qr_code(&data)
+                let texture = Box::pin(generate_qr_code(&data, 200))
                     .await
                     .expect("Failed to generate QR code");
-                self.qr_code = Some(texture.into());
+                self.qr_code = Some(texture.current_image());
 
                 // Make sure to not reset the qr code after it refreshes.
-                let timeout = timeout.checked_sub(Duration::from_secs(2)).unwrap();
+                let timeout = timeout.saturating_sub(Duration::from_secs(2));
 
                 let start = Instant::now();
-                sender.command(move |output, shutdown| {
+                sender.command(move |command_sender, shutdown| {
                     shutdown
                         .register(async move {
                             let mut elapsed = start.elapsed();
                             let mut interval = time::interval(Duration::from_millis(100));
-                            let mut fraction = elapsed.as_secs_f32() / timeout.as_secs_f32();
+                            let mut fraction =
+                                1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                             interval.tick().await;
 
                             while elapsed < timeout {
-                                let _ = output.send(LoginCommand::UpdateExpirationBar(fraction));
+                                command_sender.emit(LoginCommand::UpdateExpirationBar(fraction));
 
                                 elapsed = start.elapsed();
-                                fraction = elapsed.as_secs_f32() / timeout.as_secs_f32();
+                                fraction = 1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                                 interval.tick().await;
                             }
 
-                            let _ = output.send(LoginCommand::QrCodeExpired);
+                            command_sender.emit(LoginCommand::QrCodeExpired);
                         })
                         .drop_on_shutdown()
                         .boxed()
@@ -606,52 +652,57 @@ impl AsyncComponent for Login {
             LoginCommand::QrCodeExpired => {
                 // Reset the QR code and progress bar.
                 self.qr_code = None;
-                self.state.progress_fraction = 0.0;
+                self.state.progress_fraction = 1.0;
             }
             LoginCommand::UpdateExpirationBar(progress) => {
                 self.state.progress_fraction = f64::from(progress);
             }
             LoginCommand::PairWithPhoneNumber { phone_number } => {
-                self.state.pair_state = PairState::PairingWithPhoneNumber;
-
-                let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
+                if self.state.valid_phone_number.load(Ordering::Acquire) {
+                    let _ = sender.output(LoginOutput::PairWithPhoneNumber { phone_number });
+                }
             }
 
             LoginCommand::ValidatePhoneNumber => {
                 let entry = &self.phone_number_entry;
 
                 let text = entry.text();
-                let sanitazed = text
+                let mut sanitazed = text
                     .trim()
                     .chars()
                     .filter(|char| char.is_ascii_digit() || "+- ".contains(*char))
                     .collect::<String>();
 
                 if text == sanitazed {
+                    if !sanitazed.starts_with('+') {
+                        sanitazed = format!("+{sanitazed}");
+                    }
+
                     if let Ok(number) = sanitazed.parse::<PhoneNumber>() {
                         if number.is_valid() {
                             if !self.state.valid_phone_number.load(Ordering::Acquire) {
-                                let region_code = number.get_region_code().unwrap();
-                                let country_emoji = country_emoji::flag(region_code);
-
                                 self.state.valid_phone_number.store(true, Ordering::Release);
-                                self.state.phone_number_country_emoji = country_emoji;
 
                                 let formatted = number.format_as(PhoneNumberFormat::International);
                                 entry.set_text(&formatted);
                                 entry.set_position(-1);
                             }
-                        } else {
+                        } else if self.state.valid_phone_number.load(Ordering::Acquire) {
+                            let only_digits = sanitazed
+                                .chars()
+                                .filter(char::is_ascii_digit)
+                                .collect::<String>();
+                            entry.set_text(&only_digits);
+                            entry.set_position(-1);
+
                             self.state
                                 .valid_phone_number
                                 .store(false, Ordering::Release);
-                            self.state.phone_number_country_emoji = None;
                         }
-                    } else {
+                    } else if self.state.valid_phone_number.load(Ordering::Acquire) {
                         self.state
                             .valid_phone_number
                             .store(false, Ordering::Release);
-                        self.state.phone_number_country_emoji = None;
                     }
                 } else {
                     entry.set_text(&sanitazed);
