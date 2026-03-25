@@ -505,7 +505,7 @@ impl AsyncComponent for Application {
                                     #[wrap(Some)]
                                     set_content = &adw::ViewStack {
                                         #[local_ref]
-                                        add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::ScrolledWindow {} -> {
+                                        add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::Box {} -> {
                                             set_icon_name: Some("chat-bubbles-text-symbolic")
                                         },
 
@@ -1230,7 +1230,7 @@ impl AsyncComponent for Application {
                         self.chats.extend(chats);
 
                         for chat in &self.chats {
-                            // Add the chat in the chat list.
+                            // Add the chat to the chat list.
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
                                 at_top: false,

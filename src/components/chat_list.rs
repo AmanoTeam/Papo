@@ -82,64 +82,67 @@ impl SimpleAsyncComponent for ChatList {
     type Output = ChatListOutput;
 
     view! {
-        gtk::ScrolledWindow {
-            set_vexpand: true,
-            set_hscrollbar_policy: gtk::PolicyType::Never,
-            set_overlay_scrolling: true,
+        gtk::Box {
+            set_spacing: 2,
+            set_orientation: gtk::Orientation::Vertical,
 
-            gtk::Box {
-                set_spacing: 2,
-                set_orientation: gtk::Orientation::Vertical,
+            gtk::ScrolledWindow {
+                set_margin_start: 8,
+                set_margin_end: 8,
+                set_margin_top: 4,
+                set_hscrollbar_policy: gtk::PolicyType::External,
+                set_vscrollbar_policy: gtk::PolicyType::Never,
+                set_propagate_natural_height: true,
 
-                #[name = "tag_scrolled_window"]
-                gtk::ScrolledWindow {
-                    set_margin_start: 8,
-                    set_margin_end: 8,
-                    set_margin_top: 4,
-                    set_hscrollbar_policy: gtk::PolicyType::External,
-                    set_vscrollbar_policy: gtk::PolicyType::Never,
-                    set_propagate_natural_height: true,
+                adw::ToggleGroup {
+                    set_can_shrink: false,
+                    set_css_classes: &["round"],
 
-                    adw::ToggleGroup {
-                        set_can_shrink: false,
-                        set_css_classes: &["round"],
-
-                        add = adw::Toggle {
-                            set_name: Some("all"),
-                            set_label: Some(&i18n!("All")),
-                        },
-
-                        add = adw::Toggle {
-                            set_name: Some("unreads"),
-                            set_label: Some(&i18n!("Unreads")),
-                        },
-
-                        add = adw::Toggle {
-                            set_name: Some("groups"),
-                            set_label: Some(&i18n!("Groups")),
-                        },
-
-                        set_active_name: Some("all"),
-                        connect_active_name_notify[sender] => move |group| {
-                            let filter = group.active_name().map_or(Default::default(), |tag| tag.as_str().into());
-                            sender.input(ChatListInput::ApplyFilter(filter));
-                        }
+                    add = adw::Toggle {
+                        set_name: Some("all"),
+                        set_label: Some(&i18n!("All")),
                     },
 
-                    add_controller = gtk::EventControllerScroll {
-                        set_flags: gtk::EventControllerScrollFlags::VERTICAL,
-                        set_propagation_phase: gtk::PropagationPhase::Capture,
+                    add = adw::Toggle {
+                        set_name: Some("unreads"),
+                        set_label: Some(&i18n!("Unreads")),
+                    },
 
-                        connect_scroll[tag_scrolled_window] => move |_, _, dy| {
-                            let adj = tag_scrolled_window.hadjustment();
+                    add = adw::Toggle {
+                        set_name: Some("groups"),
+                        set_label: Some(&i18n!("Groups")),
+                    },
+
+                    set_active_name: Some("all"),
+                    connect_active_name_notify[sender] => move |group| {
+                        let filter = group.active_name().map_or(Default::default(), |tag| tag.as_str().into());
+                        sender.input(ChatListInput::ApplyFilter(filter));
+                    }
+                },
+
+                add_controller = gtk::EventControllerScroll {
+                    set_flags: gtk::EventControllerScrollFlags::VERTICAL,
+                    set_propagation_phase: gtk::PropagationPhase::Capture,
+
+                    connect_scroll => move |ctrl, _, dy| {
+                        if let Some(sw) = ctrl.widget().and_downcast::<gtk::ScrolledWindow>() {
+                            let adj = sw.hadjustment();
                             let mut new_value = adj.value() + (dy * 25.0);
                             new_value = new_value.clamp(adj.lower(), adj.upper() - adj.page_size());
                             adj.set_value(new_value);
 
-                            glib::Propagation::Stop
+                            return glib::Propagation::Stop;
                         }
+
+                        glib::Propagation::Proceed
                     }
-                },
+                }
+            },
+
+            gtk::ScrolledWindow {
+                set_vexpand: true,
+                set_hscrollbar_policy: gtk::PolicyType::Never,
+                set_overlay_scrolling: true,
 
                 #[local_ref]
                 list_view -> gtk::ListView {
@@ -240,28 +243,42 @@ impl SimpleAsyncComponent for ChatList {
                         avatar_texture,
                     };
 
-                    // Insert the updated row.
-                    let new_index = if move_to_top { 0 } else { index };
-                    self.list_view_wrapper.insert(new_index, updated_row);
+                    let adj = self.list_view_wrapper.view.vadjustment();
+                    let saved_scroll = adj.as_ref().map(|a| a.value());
 
-                    // Re-select the row and scroll to the top if it's the selected chat.
-                    if self.chat_jid.as_deref() == Some(&chat.jid) {
-                        self.list_view_wrapper
-                            .selection_model
-                            .select_item(new_index, true);
+                    if move_to_top {
+                        // Insert the new updated row.
+                        self.list_view_wrapper.insert(0, updated_row);
+                        let old_index = index + 1;
 
-                        if new_index == 0 {
-                            if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
-                                // Waits for GTK to finish updating the ListView dimensions, and then
-                                // snaps the viewport to the top.
+                        // Re-select the row and scroll to the top if it's the selected chat.
+                        if self.chat_jid.as_deref() == Some(&chat.jid) {
+                            self.list_view_wrapper.selection_model.select_item(0, true);
+
+                            if let Some(adj) = adj {
                                 glib::idle_add_local_once(move || adj.set_value(adj.lower()));
                             }
                         }
-                    }
 
-                    // Remove the old row.
-                    let old_index = if new_index <= index { index + 1 } else { index };
-                    self.list_view_wrapper.remove(old_index);
+                        // Remove the old row.
+                        self.list_view_wrapper.remove(old_index);
+                    } else {
+                        // Update the row in-place.
+                        self.list_view_wrapper.remove(index);
+                        self.list_view_wrapper.insert(index, updated_row);
+
+                        // Re-select the row.
+                        if self.chat_jid.as_deref() == Some(&chat.jid) {
+                            self.list_view_wrapper
+                                .selection_model
+                                .select_item(index, true);
+                        }
+
+                        // Scroll back to where it was before.
+                        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
+                            glib::idle_add_local_once(move || adj.set_value(value));
+                        }
+                    }
                 }
             }
 
@@ -270,7 +287,17 @@ impl SimpleAsyncComponent for ChatList {
                 self.list_view_wrapper.clear_filters();
 
                 match filter {
-                    ChatListFilter::All => {} // Already cleared.
+                    ChatListFilter::All => {
+                        // Re-select the row.
+                        if let Some(jid) = self.chat_jid.as_deref()
+                            && let Some(position) =
+                                self.list_view_wrapper.find(|row| row.chat.jid == jid)
+                        {
+                            self.list_view_wrapper
+                                .selection_model
+                                .select_item(position, true);
+                        }
+                    }
                     ChatListFilter::Groups => {
                         self.list_view_wrapper.add_filter(|row| row.chat.is_group())
                     }
