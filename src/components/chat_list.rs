@@ -1,7 +1,4 @@
-use std::{
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::path::Path;
 
 use adw::prelude::*;
 use chrono::Local;
@@ -19,8 +16,6 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ChatList {
-    /// Current chat list state.
-    state: ChatListState,
     /// Currently selected chat JID.
     chat_jid: Option<String>,
     /// `ListView` widget wrapper containing all chat rows.
@@ -28,9 +23,24 @@ pub struct ChatList {
 }
 
 #[derive(Debug, Default)]
-pub struct ChatListState {
-    /// Whether the user is searching chats.
-    searching_chats: Arc<AtomicBool>,
+pub enum ChatListFilter {
+    /// All existing chat.
+    #[default]
+    All,
+    /// Only groups.
+    Groups,
+    /// Chats that have unread messages.
+    Unreads,
+}
+
+impl From<&str> for ChatListFilter {
+    fn from(value: &str) -> Self {
+        match value {
+            "groups" => Self::Groups,
+            "unreads" => Self::Unreads,
+            _ => Self::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -47,6 +57,9 @@ pub enum ChatListInput {
         /// Whether move the chat to the top of the list.
         move_to_top: bool,
     },
+
+    /// Apply a filter.
+    ApplyFilter(ChatListFilter),
 
     /// Select a chat.
     Select(String),
@@ -74,9 +87,64 @@ impl SimpleAsyncComponent for ChatList {
             set_hscrollbar_policy: gtk::PolicyType::Never,
             set_overlay_scrolling: true,
 
-            #[local_ref]
-            list_view -> gtk::ListView {
-                set_css_classes: &["navigation-sidebar"],
+            gtk::Box {
+                set_spacing: 2,
+                set_orientation: gtk::Orientation::Vertical,
+
+                #[name = "tag_scrolled_window"]
+                gtk::ScrolledWindow {
+                    set_margin_start: 8,
+                    set_margin_end: 8,
+                    set_margin_top: 4,
+                    set_hscrollbar_policy: gtk::PolicyType::External,
+                    set_vscrollbar_policy: gtk::PolicyType::Never,
+                    set_propagate_natural_height: true,
+
+                    adw::ToggleGroup {
+                        set_can_shrink: false,
+                        set_css_classes: &["round"],
+
+                        add = adw::Toggle {
+                            set_name: Some("all"),
+                            set_label: Some(&i18n!("All")),
+                        },
+
+                        add = adw::Toggle {
+                            set_name: Some("unreads"),
+                            set_label: Some(&i18n!("Unreads")),
+                        },
+
+                        add = adw::Toggle {
+                            set_name: Some("groups"),
+                            set_label: Some(&i18n!("Groups")),
+                        },
+
+                        set_active_name: Some("all"),
+                        connect_active_name_notify[sender] => move |group| {
+                            let filter = group.active_name().map_or("all".to_string(), |tag| tag.to_string());
+                            sender.input(ChatListInput::ApplyFilter(filter.as_str().into()));
+                        }
+                    },
+
+                    add_controller = gtk::EventControllerScroll {
+                        set_flags: gtk::EventControllerScrollFlags::VERTICAL,
+                        set_propagation_phase: gtk::PropagationPhase::Capture,
+
+                        connect_scroll[tag_scrolled_window] => move |_, _, dy| {
+                            let adj = tag_scrolled_window.hadjustment();
+                            let mut new_value = adj.value() + (dy * 25.0);
+                            new_value = new_value.clamp(adj.lower(), adj.upper() - adj.page_size());
+                            adj.set_value(new_value);
+
+                            glib::Propagation::Stop
+                        }
+                    }
+                },
+
+                #[local_ref]
+                list_view -> gtk::ListView {
+                    set_css_classes: &["navigation-sidebar"],
+                },
             }
         }
     }
@@ -87,7 +155,6 @@ impl SimpleAsyncComponent for ChatList {
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let model = Self {
-            state: ChatListState::default(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
@@ -198,6 +265,21 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
 
+            ChatListInput::ApplyFilter(filter) => {
+                // Remove any existing filter to avoid stacking one filter on top of other.
+                self.list_view_wrapper.clear_filters();
+
+                match filter {
+                    ChatListFilter::All => {} // Already cleared.
+                    ChatListFilter::Groups => {
+                        self.list_view_wrapper.add_filter(|row| row.chat.is_group())
+                    }
+                    ChatListFilter::Unreads => self
+                        .list_view_wrapper
+                        .add_filter(|row| row.unread_count > 0),
+                };
+            }
+
             ChatListInput::Select(jid) => {
                 // Check if the selected chat isn't already selected.
                 if self.chat_jid.as_deref() != Some(&jid) {
@@ -207,7 +289,7 @@ impl SimpleAsyncComponent for ChatList {
             }
             ChatListInput::SelectPosition(position) => {
                 // Get the chat row.
-                if let Some(item) = self.list_view_wrapper.get(position) {
+                if let Some(item) = self.list_view_wrapper.get_visible(position) {
                     let row = item.borrow();
 
                     let jid = row.chat.jid.clone();
