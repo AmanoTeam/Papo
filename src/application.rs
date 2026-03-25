@@ -12,6 +12,7 @@ use relm4::{
 };
 use strum::{AsRefStr, EnumString};
 use tokio::time;
+use uuid::Uuid;
 use wacore::types::message::MessageInfo;
 use waproto::whatsapp::Message;
 
@@ -24,7 +25,7 @@ use crate::{
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{Client, ClientInput, ClientOutput, RuntimeCache},
-    state::{Chat, ChatMessage},
+    state::{Chat, ChatMessage, MessageStatus},
     store::Database,
     utils::format_lid_as_number,
 };
@@ -151,11 +152,25 @@ pub enum AppMsg {
         available: bool,
         last_seen: Option<DateTime<Utc>>,
     },
+    /// Message status updated.
+    MessageStatusUpdate {
+        chat_jid: String,
+        msg_id: Uuid,
+        status: MessageStatus,
+    },
 
     /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
+    },
+
+    /// Send a text message.
+    SendTextMessage {
+        /// The content of the message.
+        text: String,
+        /// Message recipient.
+        recipient: String,
     },
 
     Unknown,
@@ -279,7 +294,7 @@ impl Application {
                 sender_messages
                     .entry(sender_jid)
                     .or_default()
-                    .push(message.id);
+                    .push(message.server_id);
             }
 
             // Send read receipts to WhatsApp.
@@ -561,6 +576,16 @@ impl AsyncComponent for Application {
                 ClientOutput::MessageReceived { info, message } => {
                     AppMsg::MessageReceived { info, message }
                 }
+                ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
+                    chat_jid,
+                    msg_id,
+                    status: MessageStatus::Sent,
+                },
+                ClientOutput::MessageFailed { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
+                    chat_jid,
+                    msg_id,
+                    status: MessageStatus::Failed,
+                },
 
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
@@ -577,6 +602,10 @@ impl AsyncComponent for Application {
                 ChatViewOutput::ChatOpen => AppMsg::ChatOpen,
                 ChatViewOutput::ChatClosed => AppMsg::ChatClosed,
                 ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
+
+                ChatViewOutput::SendTextMessage { text, recipient } => {
+                    AppMsg::SendTextMessage { text, recipient }
+                }
             });
 
         let sync_progress_bar = gtk::ProgressBar::new();
@@ -734,7 +763,7 @@ impl AsyncComponent for Application {
                 chat_jid,
                 message_ids,
             } => {
-                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
                     for msg_id in message_ids {
                         if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
                             if let Err(e) = message.mark_read().await {
@@ -743,12 +772,8 @@ impl AsyncComponent for Application {
                         }
                     }
 
-                    if let Err(e) = chat.save().await {
-                        tracing::error!("Failed to update chat: {}", e);
-                    }
-
                     self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat: chat.clone(),
+                        chat,
                         move_to_top: false,
                     });
                 }
@@ -772,6 +797,29 @@ impl AsyncComponent for Application {
                     last_seen,
                 });
             }
+            AppMsg::MessageStatusUpdate {
+                chat_jid,
+                msg_id,
+                status,
+            } => {
+                // Get the chat and message altogether.
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
+                    && let Ok(Some(mut message)) = chat.find_message_by_local_id(&msg_id).await
+                {
+                    // Update the message status in-place.
+                    message.status = status;
+
+                    // Update the message in the database.
+                    if let Err(e) = message.save().await {
+                        tracing::error!("Failed to update message: {}", e);
+                    }
+
+                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                        msg_id: message.server_id,
+                        status: message.status,
+                    });
+                }
+            }
 
             AppMsg::MessageReceived { info, message } => {
                 if let Some(content) = message.conversation.clone() {
@@ -783,14 +831,20 @@ impl AsyncComponent for Application {
                             let chat_jid = info.source.chat.to_string();
                             let outgoing = info.source.is_from_me;
 
+                            let status = if !outgoing {
+                                MessageStatus::Sent
+                            } else {
+                                MessageStatus::Read
+                            };
                             let chat_message = ChatMessage {
-                                id: info.id.clone(),
+                                local_id: Uuid::new_v4(),
+                                server_id: info.id.clone(),
                                 chat_jid: chat_jid.clone(),
                                 sender_jid: info.source.sender.to_string(),
                                 sender_name: Some(info.push_name.clone()),
 
                                 media: None,
-                                unread: !outgoing,
+                                status,
                                 content,
                                 outgoing,
                                 reactions: IndexMap::new(),
@@ -827,6 +881,39 @@ impl AsyncComponent for Application {
                         info,
                         message
                     );
+                }
+            }
+
+            AppMsg::SendTextMessage { text, recipient } => {
+                // Check if the chat exists and is loaded.
+                if self.chats.iter().find(|c| c.jid == recipient).is_some() {
+                    let timestamp = Utc::now();
+                    let message = ChatMessage {
+                        local_id: Uuid::new_v4(),
+                        server_id: String::new(), // will be replaced later by the client.
+                        chat_jid: recipient,
+                        sender_jid: self.user_jid.clone().unwrap_or_default(),
+                        sender_name: self.user_push_name.clone(),
+
+                        media: None,
+                        status: MessageStatus::Sending,
+                        content: text,
+                        outgoing: true,
+                        reactions: IndexMap::new(),
+                        timestamp,
+
+                        db: self.db.clone(),
+                    };
+
+                    // Save the message in the database.
+                    if let Err(e) = message.save().await {
+                        tracing::error!("Failed to save message: {}", e);
+                    }
+
+                    self.client.emit(ClientInput::SendMessage {
+                        message: message.clone(),
+                    });
+                    self.chat_view.emit(ChatViewInput::MessageReceived(message));
                 }
             }
 

@@ -4,6 +4,7 @@ use adw::prelude::*;
 use chrono::{DateTime, Utc};
 use relm4::prelude::*;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 use wacore::{
     pair_code::{PairCodeOptions, PlatformId},
     types::{events::Event, message::MessageInfo},
@@ -16,7 +17,7 @@ use whatsapp_rust::{Jid, bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
-use crate::{DATA_DIR, i18n, session::RuntimeCache};
+use crate::{DATA_DIR, i18n, session::RuntimeCache, state::ChatMessage};
 
 /// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -100,13 +101,8 @@ pub enum ClientInput {
         sender_jid: Option<String>,
         message_ids: Vec<String>,
     },
-    /// Send a text message.
-    SendMessage {
-        /// Target JID (e.g., "1234567890@s.whatsapp.net").
-        jid: String,
-        /// The content of the message.
-        text: String,
-    },
+    /// Send a message.
+    SendMessage { message: ChatMessage },
 }
 
 #[derive(Debug)]
@@ -159,9 +155,9 @@ pub enum ClientOutput {
     },
 
     /// Message was sent successfully.
-    MessageSent { id: String },
+    MessageSent { chat_jid: String, msg_id: Uuid },
     /// Message failed to send.
-    MessageFailed { id: String, error: String },
+    MessageFailed { chat_jid: String, msg_id: Uuid },
     /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
@@ -309,6 +305,40 @@ impl AsyncComponent for Client {
                         if let Err(e) = client.mark_as_read(&jid, s_jid.as_ref(), message_ids).await
                         {
                             tracing::error!("Failed to mark messages as read: {e}");
+                        }
+                    }
+                }
+            }
+            ClientInput::SendMessage { mut message } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(jid) = message.chat_jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {}", message.chat_jid);
+                        return;
+                    };
+
+                    match Box::pin(client.send_message(jid, message.clone().into())).await {
+                        Ok(msg_id) => {
+                            // Update the message server id in-place.
+                            message.server_id = msg_id;
+
+                            // Update the message in the database.
+                            if let Err(e) = message.save().await {
+                                tracing::error!("Failed to update message: {}", e);
+                            }
+
+                            let _ = sender.output(ClientOutput::MessageSent {
+                                chat_jid: message.chat_jid,
+                                msg_id: message.local_id,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to send message: {e}");
+
+                            let _ = sender.output(ClientOutput::MessageFailed {
+                                chat_jid: message.chat_jid,
+                                msg_id: message.local_id,
+                            });
                         }
                     }
                 }
@@ -497,7 +527,7 @@ impl AsyncComponent for Client {
                     let handle = self.handle.lock().await;
                     if let Some(client) = handle.as_ref() {
                         (
-                            client.get_pn().await.map(|j| j.to_string()),
+                            client.get_lid().await.map(|j| j.to_string()),
                             client.get_push_name().await,
                         )
                     } else {

@@ -24,6 +24,7 @@ libsql = { version = "0.9", features = ["encryption"] }
 # Utilities
 rand = "0.10"
 moka = { version = "0.12", features = ["future"] }
+uuid = { version = "1.22", features = ["v4"] }
 strum = { version = "0.27", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = [
   "std",

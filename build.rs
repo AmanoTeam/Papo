@@ -15,6 +15,7 @@ fn main() {
             "pin",
             "menu",
             "go-next",
+            "clock-alt",
             "speaker-0",
             "speaker-1",
             "speaker-2",
@@ -25,8 +26,11 @@ fn main() {
             "image-round",
             "paper-plane",
             "info-outline",
+            "exclamation-mark",
             "chat-bubbles-text",
             "chat-bubbles-empty",
+            "check-round-outline",
+            "check-round-outline2",
         ],
     );
 }

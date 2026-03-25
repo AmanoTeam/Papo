@@ -3,10 +3,11 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use libsql::{Builder, Cipher, Connection, EncryptionConfig, params::IntoParams};
+use uuid::Uuid;
 
 use crate::{
     DATA_DIR,
-    state::{Chat, ChatMessage, Media, MediaType},
+    state::{Chat, ChatMessage, Media, MediaType, MessageStatus},
 };
 
 /// Papo's own database for UI state persistence.
@@ -68,13 +69,14 @@ impl Database {
             .execute(
                 r"
             CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
+                local_id TEXT PRIMARY KEY,
+                server_id TEXT UNIQUE,
                 chat_jid TEXT NOT NULL,
                 sender_jid TEXT NOT NULL,
                 sender_name TEXT,
                 content TEXT,
                 outgoing INTEGER DEFAULT 0,
-                unread INTEGER DEFAULT 1,
+                status INTEGER DEFAULT 0,
                 timestamp INTEGER NOT NULL,
                 media_type TEXT,
                 media_data BLOB,
@@ -253,21 +255,24 @@ impl Database {
         self.conn
             .execute(
                 r"
-            INSERT INTO messages (id, chat_jid, sender_jid, sender_name, content,
-                                  outgoing, unread, timestamp, media_type, media_data)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(id) DO UPDATE SET
-                unread = excluded.unread,
-                content = excluded.content
+            INSERT INTO messages (local_id, server_id, chat_jid, sender_jid, sender_name, content,
+                                  outgoing, status, timestamp, media_type, media_data)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(local_id) DO UPDATE SET
+                status = excluded.status,
+                content = excluded.content,
+                server_id = excluded.server_id
             ",
                 libsql::params![
-                    msg.id.clone(),
+                    msg.local_id.to_string(),
+                    msg.server_id.clone(),
                     chat_jid,
                     msg.sender_jid.clone(),
-                    msg.sender_name.clone(),
+                    // msg.sender_name.clone(),
+                    "Andriel Ferreira",
                     msg.content.clone(),
                     i32::from(msg.outgoing),
-                    i32::from(msg.unread),
+                    msg.status as i32,
                     msg.timestamp.timestamp(),
                     media_type,
                     media_data
@@ -286,25 +291,25 @@ impl Database {
         Ok(())
     }
 
-    pub async fn load_message(
+    pub async fn load_message_by_local_id(
         &self,
         chat_jid: &str,
-        msg_id: &str,
+        msg_id: &Uuid,
     ) -> Result<Option<ChatMessage>, libsql::Error> {
         let mut rows = self.conn.query(
             r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
             FROM messages
-            WHERE chat_jid = ?1 AND id = ?2
+            WHERE chat_jid = ?1 AND local_id = ?2
             ORDER BY timestamp DESC
-            LIMIT ?2
+            LIMIT 1
             ",
-            libsql::params![chat_jid, msg_id],
+            libsql::params![chat_jid, msg_id.to_string()],
         ).await?;
 
         if let Some(row) = rows.next().await? {
-            let media = row.get::<String>(8).map_or(None, |media_type| {
-                row.get::<Vec<u8>>(9).map_or(None, |data| {
+            let media = row.get::<String>(9).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(10).map_or(None, |data| {
                     let media_type: MediaType = media_type.into();
 
                     Some(Media {
@@ -317,16 +322,68 @@ impl Database {
             });
 
             Ok(Some(ChatMessage {
-                id: row.get(0)?,
-                chat_jid: row.get(1)?,
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                reactions: IndexMap::new(),
+
+                db: Arc::new(self.clone()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn load_message_by_server_id(
+        &self,
+        chat_jid: &str,
+        msg_id: &str,
+    ) -> Result<Option<ChatMessage>, libsql::Error> {
+        let mut rows = self.conn.query(
+            r"
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
+            FROM messages
+            WHERE chat_jid = ?1 AND server_id = ?2
+            ORDER BY timestamp DESC
+            LIMIT 1
+            ",
+            libsql::params![chat_jid, msg_id],
+        ).await?;
+
+        if let Some(row) = rows.next().await? {
+            let media = row.get::<String>(9).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(10).map_or(None, |data| {
+                    let media_type: MediaType = media_type.into();
+
+                    Some(Media {
+                        data: Arc::new(data),
+                        r#type: media_type,
+                        mime_type: media_type.guess_mime_type(),
+                        ..Default::default()
+                    })
+                })
+            });
+
+            Ok(Some(ChatMessage {
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
+
+                media,
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -343,7 +400,7 @@ impl Database {
     ) -> Result<Vec<ChatMessage>, libsql::Error> {
         let mut rows = self.conn.query(
             r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
             FROM messages
             WHERE chat_jid = ?1
             ORDER BY timestamp DESC
@@ -354,8 +411,8 @@ impl Database {
 
         let mut messages = Vec::new();
         while let Some(row) = rows.next().await? {
-            let media = row.get::<String>(8).map_or(None, |media_type| {
-                row.get::<Vec<u8>>(9).map_or(None, |data| {
+            let media = row.get::<String>(9).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(10).map_or(None, |data| {
                     let media_type: MediaType = media_type.into();
 
                     Some(Media {
@@ -368,16 +425,17 @@ impl Database {
             });
 
             messages.push(ChatMessage {
-                id: row.get(0)?,
-                chat_jid: row.get(1)?,
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -398,7 +456,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp
             FROM messages
             WHERE chat_jid = ?1 AND timestamp > ?2
             ORDER BY timestamp ASC
@@ -411,16 +469,17 @@ impl Database {
         let mut messages = Vec::new();
         while let Some(row) = rows.next().await? {
             messages.push(ChatMessage {
-                id: row.get(0)?,
-                chat_jid: row.get(1)?,
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media: None,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -441,7 +500,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp
             FROM messages
             WHERE chat_jid = ?1 AND timestamp < ?2
             ORDER BY timestamp DESC
@@ -454,16 +513,17 @@ impl Database {
         let mut messages = Vec::new();
         while let Some(row) = rows.next().await? {
             messages.push(ChatMessage {
-                id: row.get(0)?,
-                chat_jid: row.get(1)?,
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media: None,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -475,7 +535,7 @@ impl Database {
 
     pub async fn delete_message(&self, message_id: &str) -> Result<(), libsql::Error> {
         self.conn
-            .execute("DELETE FROM messages WHERE id = ?1", [message_id])
+            .execute("DELETE FROM messages WHERE server_id = ?1", [message_id])
             .await?;
 
         Ok(())
@@ -485,7 +545,7 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                "SELECT COUNT(*) FROM messages WHERE chat_jid = ?1 AND unread = 1",
+                "SELECT COUNT(*) FROM messages WHERE chat_jid = ?1 AND status != 1 AND outgoing == 0",
                 [chat_jid],
             )
             .await?;
@@ -503,9 +563,9 @@ impl Database {
     ) -> Result<Vec<ChatMessage>, libsql::Error> {
         let mut rows = self.conn.query(
             r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp, media_type, media_data
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp, media_type, media_data
             FROM messages
-            WHERE chat_jid = ?1 AND unread = 1
+            WHERE chat_jid = ?1 AND status != 1 AND outgoing == 0
             ORDER BY timestamp DESC
             LIMIT ?2
             ",
@@ -514,8 +574,8 @@ impl Database {
 
         let mut messages = Vec::new();
         while let Some(row) = rows.next().await? {
-            let media = row.get::<String>(8).map_or(None, |media_type| {
-                row.get::<Vec<u8>>(9).map_or(None, |data| {
+            let media = row.get::<String>(9).map_or(None, |media_type| {
+                row.get::<Vec<u8>>(10).map_or(None, |data| {
                     let media_type: MediaType = media_type.into();
 
                     Some(Media {
@@ -528,16 +588,17 @@ impl Database {
             });
 
             messages.push(ChatMessage {
-                id: row.get(0)?,
-                chat_jid: row.get(1)?,
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: MessageStatus::from(row.get::<i32>(7)?),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -669,7 +730,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT id, chat_jid, sender_jid, sender_name, content, outgoing, unread, timestamp
+            SELECT local_id, server_id, chat_jid, sender_jid, sender_name, content, outgoing, status, timestamp
             FROM messages
             WHERE content LIKE ?1
             ORDER BY timestamp DESC
@@ -683,16 +744,17 @@ impl Database {
         while let Some(row) = rows.next().await? {
             let chat_jid: String = row.get(1)?;
             let message = ChatMessage {
-                id: row.get(0)?,
+                local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
+                server_id: row.get(1)?,
                 chat_jid: chat_jid.clone(),
-                sender_jid: row.get(2)?,
-                sender_name: row.get(3).ok(),
+                sender_jid: row.get(3)?,
+                sender_name: row.get(4).ok(),
 
                 media: None,
-                unread: row.get::<i32>(6)? != 0,
-                content: row.get(4)?,
-                outgoing: row.get::<i32>(5)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(7)?, 0).unwrap_or_else(Utc::now),
+                status: row.get::<i32>(7)?.into(),
+                content: row.get(5)?,
+                outgoing: row.get::<i32>(6)? != 0,
+                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
