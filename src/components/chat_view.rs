@@ -32,7 +32,7 @@ pub struct ChatView {
     chat: Option<Chat>,
     /// Current chat view state.
     state: ChatViewState,
-    /// Metadata tracking for each row, mirrors list_view_wrapper order.
+    /// Metadata tracking for each row, mirrors `list_view_wrapper` order.
     /// Used to update pagination cursors when trimming rows.
     row_metadata: VecDeque<RowMetadata>,
     /// Text input for sending messages.
@@ -52,14 +52,15 @@ enum RowMetadata {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ChatViewState {
     /// Whether a load operation is currently in progress.
     is_loading: bool,
     /// Whether the scroll is at the bottom.
     is_at_bottom: bool,
-    /// Whether messages at the top have been trimmed due to exceeding MAX_LOADED_ROWS.
+    /// Whether messages at the top have been trimmed due to exceeding `MAX_LOADED_ROWS`.
     top_trimmed: bool,
-    /// Whether messages at the bottom have been trimmed due to exceeding MAX_LOADED_ROWS.
+    /// Whether messages at the bottom have been trimmed due to exceeding `MAX_LOADED_ROWS`.
     bottom_trimmed: bool,
     /// Whether there might be more older messages to load.
     has_more_messages: bool,
@@ -77,6 +78,7 @@ pub struct ChatViewState {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ChatViewInput {
     /// Open a chat.
     Open(Chat),
@@ -204,7 +206,7 @@ impl AsyncComponent for ChatView {
 
                         gtk::Label {
                             #[watch]
-                            set_label?: model.chat.as_ref().map(|c| c.get_name_or_number()).as_ref(),
+                            set_label?: model.chat.as_ref().map(Chat::get_name_or_number).as_ref(),
                             #[watch]
                             set_visible: model.chat.is_some(),
                             set_selectable: false,
@@ -412,6 +414,7 @@ impl AsyncComponent for ChatView {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
     async fn update(
         &mut self,
         input: Self::Input,
@@ -437,7 +440,7 @@ impl AsyncComponent for ChatView {
 
                 // Load the initial batch of messages.
                 if let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await {
-                    self.state.has_more_messages = messages.len() as u32 == INITIAL_LOAD_COUNT;
+                    self.state.has_more_messages = messages.len() == INITIAL_LOAD_COUNT as usize;
 
                     // Track the oldest loaded timestamp for pagination.
                     if let Some(oldest) = messages.last() {
@@ -454,7 +457,7 @@ impl AsyncComponent for ChatView {
                         let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
                         // Insert a date separator if the date changed.
-                        if self.state.last_message_date.map_or(true, |d| d != msg_date) {
+                        if self.state.last_message_date != Some(msg_date) {
                             self.list_view_wrapper
                                 .append(ChatRow::DateSeparator(msg_date));
                             self.row_metadata
@@ -478,7 +481,7 @@ impl AsyncComponent for ChatView {
                         let info = gtk::ScrollInfo::new();
                         info.set_enable_vertical(true);
                         self.list_view_wrapper.view.scroll_to(
-                            (count - 1) as u32,
+                            count - 1,
                             gtk::ListScrollFlags::FOCUS,
                             Some(info),
                         );
@@ -553,7 +556,7 @@ impl AsyncComponent for ChatView {
                 let msg_date = message.timestamp.with_timezone(&Local).date_naive();
 
                 // Insert a date separator if the date changed.
-                if self.state.last_message_date.map_or(true, |d| d != msg_date) {
+                if self.state.last_message_date != Some(msg_date) {
                     self.list_view_wrapper
                         .append(ChatRow::DateSeparator(msg_date));
                     self.row_metadata
@@ -569,10 +572,10 @@ impl AsyncComponent for ChatView {
                 self.row_metadata.push_back(RowMetadata::Message(ts));
 
                 // If the user is at the bottom, they're seeing this message — mark read.
-                if self.state.is_at_bottom {
-                    if let Some(ref chat) = self.chat {
-                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
-                    }
+                if self.state.is_at_bottom
+                    && let Some(ref chat) = self.chat
+                {
+                    let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
                 }
             }
 
@@ -581,16 +584,16 @@ impl AsyncComponent for ChatView {
                 available,
                 last_seen,
             } => {
-                if let Some(ref mut chat) = self.chat {
-                    if jid == chat.jid {
-                        if !chat.is_group() {
-                            chat.available = Some(available);
-                        }
-                        chat.last_seen = last_seen;
-
-                        // Update the user presence label.
-                        self.update_presence();
+                if let Some(ref mut chat) = self.chat
+                    && jid == chat.jid
+                {
+                    if !chat.is_group() {
+                        chat.available = Some(available);
                     }
+                    chat.last_seen = last_seen;
+
+                    // Update the user presence label.
+                    self.update_presence();
                 }
             }
             ChatViewInput::MessageStatusUpdate { msg_id, status } => {
@@ -615,45 +618,43 @@ impl AsyncComponent for ChatView {
                     self.state.first_message_date = None;
                     self.state.last_message_date = None;
 
-                    if let Some(ref chat) = self.chat {
-                        if let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await {
-                            self.state.has_more_messages =
-                                messages.len() as u32 == INITIAL_LOAD_COUNT;
+                    if let Some(ref chat) = self.chat
+                        && let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await
+                    {
+                        self.state.has_more_messages =
+                            messages.len() == INITIAL_LOAD_COUNT as usize;
 
-                            // Track the oldest loaded timestamp for pagination.
-                            if let Some(oldest) = messages.last() {
-                                self.state.oldest_loaded_timestamp =
-                                    Some(oldest.timestamp.timestamp());
-                            }
+                        // Track the oldest loaded timestamp for pagination.
+                        if let Some(oldest) = messages.last() {
+                            self.state.oldest_loaded_timestamp = Some(oldest.timestamp.timestamp());
+                        }
 
-                            // Track the newest loaded timestamp for downward pagination.
-                            if let Some(newest) = messages.first() {
-                                self.state.newest_loaded_timestamp =
-                                    Some(newest.timestamp.timestamp());
-                            }
+                        // Track the newest loaded timestamp for downward pagination.
+                        if let Some(newest) = messages.first() {
+                            self.state.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
+                        }
 
-                            for msg in messages.iter().rev() {
-                                // Convert to local date for separator comparison.
-                                let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+                        for msg in messages.iter().rev() {
+                            // Convert to local date for separator comparison.
+                            let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
-                                // Insert a date separator if the date changed.
-                                if self.state.last_message_date.map_or(true, |d| d != msg_date) {
-                                    self.list_view_wrapper
-                                        .append(ChatRow::DateSeparator(msg_date));
-                                    self.row_metadata
-                                        .push_back(RowMetadata::Separator(msg_date));
-                                    self.state.last_message_date = Some(msg_date);
-                                }
-
-                                // Track the first message date for prepend separators.
-                                if self.state.first_message_date.is_none() {
-                                    self.state.first_message_date = Some(msg_date);
-                                }
-
-                                self.list_view_wrapper.append(ChatRow::Message(msg.clone()));
+                            // Insert a date separator if the date changed.
+                            if self.state.last_message_date != Some(msg_date) {
+                                self.list_view_wrapper
+                                    .append(ChatRow::DateSeparator(msg_date));
                                 self.row_metadata
-                                    .push_back(RowMetadata::Message(msg.timestamp.timestamp()));
+                                    .push_back(RowMetadata::Separator(msg_date));
+                                self.state.last_message_date = Some(msg_date);
                             }
+
+                            // Track the first message date for prepend separators.
+                            if self.state.first_message_date.is_none() {
+                                self.state.first_message_date = Some(msg_date);
+                            }
+
+                            self.list_view_wrapper.append(ChatRow::Message(msg.clone()));
+                            self.row_metadata
+                                .push_back(RowMetadata::Message(msg.timestamp.timestamp()));
                         }
                     }
                 }
@@ -664,7 +665,7 @@ impl AsyncComponent for ChatView {
                     let info = gtk::ScrollInfo::new();
                     info.set_enable_vertical(true);
                     self.list_view_wrapper.view.scroll_to(
-                        (count - 1) as u32,
+                        count - 1,
                         gtk::ListScrollFlags::FOCUS,
                         Some(info),
                     );
@@ -675,6 +676,7 @@ impl AsyncComponent for ChatView {
         }
     }
 
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
@@ -696,7 +698,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_loading = true;
 
                 if let Ok(messages) = chat.load_messages_before(before_ts, LOAD_MORE_COUNT).await {
-                    self.state.has_more_messages = messages.len() as u32 == LOAD_MORE_COUNT;
+                    self.state.has_more_messages = messages.len() == LOAD_MORE_COUNT as usize;
 
                     // Update the oldest loaded timestamp cursor.
                     if let Some(oldest) = messages.last() {
@@ -711,7 +713,7 @@ impl AsyncComponent for ChatView {
                         let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
                         // Insert a date separator if the date changed.
-                        if prev_date.map_or(true, |d| d != msg_date) {
+                        if prev_date != Some(msg_date) {
                             self.list_view_wrapper
                                 .insert(insert_pos, ChatRow::DateSeparator(msg_date));
                             self.row_metadata
@@ -732,13 +734,12 @@ impl AsyncComponent for ChatView {
 
                     // Remove duplicate date separator if the last prepended date matches
                     // the first existing date separator.
-                    if let Some(last_prepended_date) = prev_date {
-                        if Some(last_prepended_date) == self.state.first_message_date
-                            && insert_pos < self.list_view_wrapper.len()
-                        {
-                            self.list_view_wrapper.remove(insert_pos);
-                            self.row_metadata.remove(insert_pos as usize);
-                        }
+                    if let Some(last_prepended_date) = prev_date
+                        && Some(last_prepended_date) == self.state.first_message_date
+                        && insert_pos < self.list_view_wrapper.len()
+                    {
+                        self.list_view_wrapper.remove(insert_pos);
+                        self.row_metadata.remove(insert_pos as usize);
                     }
 
                     // Update first_message_date to the oldest prepended message's date.
@@ -781,7 +782,7 @@ impl AsyncComponent for ChatView {
 
                 if let Ok(messages) = chat.load_messages_after(after_ts, LOAD_MORE_COUNT).await {
                     // If fewer messages returned than requested, we've reached the real bottom.
-                    if (messages.len() as u32) < LOAD_MORE_COUNT {
+                    if messages.len() < LOAD_MORE_COUNT as usize {
                         self.state.bottom_trimmed = false;
                     }
 
@@ -790,11 +791,11 @@ impl AsyncComponent for ChatView {
                         self.state.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
                     }
 
-                    for msg in messages.iter() {
+                    for msg in &messages {
                         let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
                         // Insert a date separator if the date changed.
-                        if self.state.last_message_date.map_or(true, |d| d != msg_date) {
+                        if self.state.last_message_date != Some(msg_date) {
                             self.list_view_wrapper
                                 .append(ChatRow::DateSeparator(msg_date));
                             self.row_metadata
@@ -843,7 +844,7 @@ impl AsyncComponent for ChatView {
 
 impl ChatView {
     /// Update bottom cursors (`newest_loaded_timestamp`, `last_message_date`)
-    /// from the row_metadata after trimming rows from the bottom.
+    /// from the `row_metadata` after trimming rows from the bottom.
     fn update_bottom_cursors(&mut self) {
         self.state.last_message_date = None;
         self.state.newest_loaded_timestamp = None;
@@ -873,13 +874,13 @@ impl ChatView {
     }
 
     /// Update top cursors (`oldest_loaded_timestamp`, `first_message_date`)
-    /// from the row_metadata after trimming rows from the top.
+    /// from the `row_metadata` after trimming rows from the top.
     fn update_top_cursors(&mut self) {
         self.state.first_message_date = None;
         self.state.oldest_loaded_timestamp = None;
 
         // Walk forward through metadata to find the oldest message and first date.
-        for meta in self.row_metadata.iter() {
+        for meta in &self.row_metadata {
             match meta {
                 RowMetadata::Message(ts) => {
                     if self.state.oldest_loaded_timestamp.is_none() {
@@ -908,6 +909,7 @@ impl ChatView {
 
 /// A single row in the chat history list.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ChatRow {
     /// A regular chat message bubble.
     Message(ChatMessage),
@@ -1063,9 +1065,11 @@ impl RelmListItem for ChatRow {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
                 widgets.content_label.set_label(&msg.content);
+                // Convert UTC timestamp to local time for display
+                let local_time = msg.timestamp.with_timezone(&Local);
                 widgets
                     .timestamp_label
-                    .set_label(&msg.timestamp.format("%H:%M").to_string());
+                    .set_label(&local_time.format("%H:%M").to_string());
 
                 widgets.bubble_box.remove_css_class("incoming");
                 widgets.bubble_box.remove_css_class("outgoing");

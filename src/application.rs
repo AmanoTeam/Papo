@@ -17,6 +17,7 @@ use wacore::types::message::MessageInfo;
 use waproto::whatsapp::Message;
 
 use crate::{
+    DATA_DIR,
     components::{
         ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
         LoginInput, LoginOutput,
@@ -24,9 +25,9 @@ use crate::{
     config::{APP_ID, PROFILE},
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
-    session::{Client, ClientInput, ClientOutput, RuntimeCache},
+    session::{Client, ClientInput, ClientOutput, RuntimeCache, SyncedMessage},
     state::{Chat, ChatMessage, MessageStatus},
-    store::Database,
+    store::{Contact, Database},
     utils::format_lid_as_number,
 };
 
@@ -146,6 +147,18 @@ pub enum AppMsg {
         chat_jid: String,
         message_ids: Vec<String>,
     },
+    /// Avatar updated for a chat.
+    AvatarUpdate {
+        jid: String,
+        path: String,
+    },
+    /// Contact updated (from sync or individual update).
+    ContactUpdate {
+        jid: String,
+        name: Option<String>,
+        push_name: Option<String>,
+        phone_number: String,
+    },
     /// User presence updated.
     PresenceUpdate {
         jid: String,
@@ -173,6 +186,28 @@ pub enum AppMsg {
         recipient: String,
     },
 
+    /// Chat synced from history.
+    ChatSynced {
+        jid: String,
+        name: Option<String>,
+        pinned: bool,
+        archived: bool,
+        unread_count: Option<u32>,
+        participants: Vec<(String, Option<String>)>,
+        mute_end_time: Option<u64>,
+        last_message_time: Option<u64>,
+    },
+    /// Sync completed, fetch avatars for chats.
+    SyncCompleted {
+        /// List of JIDs that need avatar fetching.
+        chats_needing_avatars: Vec<String>,
+    },
+    /// Messages synced from history for a chat.
+    MessagesSynced {
+        chat_jid: String,
+        messages: Vec<SyncedMessage>,
+    },
+
     Unknown,
     /// Error occurred.
     Error {
@@ -186,6 +221,21 @@ pub enum AppMsg {
 pub enum AppCmd {
     /// Sync cache from database.
     Sync,
+    /// Process chat sync from history (background task).
+    ProcessChatSync {
+        jid: String,
+        name: Option<String>,
+        pinned: bool,
+        archived: bool,
+        participants: Vec<(String, Option<String>)>,
+        last_message_time: Option<u64>,
+    },
+    /// Process messages sync from history (background task).
+    ProcessMessagesSync {
+        chat_jid: String,
+        is_group: bool,
+        messages: Vec<SyncedMessage>,
+    },
 }
 
 impl Application {
@@ -206,10 +256,8 @@ impl Application {
         }
 
         // Add the chat in the chat list.
-        self.chat_list.emit(ChatListInput::AddChat {
-            chat: chat,
-            at_top: true,
-        });
+        self.chat_list
+            .emit(ChatListInput::AddChat { chat, at_top: true });
     }
 
     async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
@@ -236,12 +284,20 @@ impl Application {
                 pinned: false,
                 available: None,
                 last_seen: None,
+                avatar_path: None,
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
 
                 db: Arc::clone(&self.db),
             })
             .await;
+
+            // Fetch avatar for new individual chats.
+            if !is_group {
+                self.client.emit(ClientInput::FetchAvatar {
+                    jid: chat_jid.to_string(),
+                });
+            }
         }
 
         // Get the chat.
@@ -250,16 +306,14 @@ impl Application {
         };
 
         // Check if the message was sent by the connected user.
-        if !message.outgoing {
-            if is_group && !chat.participants.contains_key(&message.sender_jid) {
-                chat.participants.insert(
-                    message.sender_jid.clone(),
-                    message
-                        .sender_name
-                        .clone()
-                        .unwrap_or_else(|| "Unknown".to_string()),
-                );
-            }
+        if !message.outgoing && is_group && !chat.participants.contains_key(&message.sender_jid) {
+            chat.participants.insert(
+                message.sender_jid.clone(),
+                message
+                    .sender_name
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".to_string()),
+            );
         }
 
         // Save the chat in the database.
@@ -587,6 +641,44 @@ impl AsyncComponent for Application {
                     status: MessageStatus::Failed,
                 },
 
+                ClientOutput::ChatSynced {
+                    jid,
+                    name,
+                    pinned,
+                    archived,
+                    unread_count,
+                    participants,
+                    mute_end_time,
+                    last_message_time,
+                } => AppMsg::ChatSynced {
+                    jid,
+                    name,
+                    pinned,
+                    archived,
+                    unread_count,
+                    participants,
+                    mute_end_time,
+                    last_message_time,
+                },
+
+                ClientOutput::MessagesSynced { chat_jid, messages } => {
+                    AppMsg::MessagesSynced { chat_jid, messages }
+                }
+
+                ClientOutput::ContactUpdate {
+                    jid,
+                    name,
+                    push_name,
+                    phone_number,
+                } => AppMsg::ContactUpdate {
+                    jid,
+                    name,
+                    push_name,
+                    phone_number,
+                },
+
+                ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
+
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
             });
@@ -693,6 +785,15 @@ impl AsyncComponent for Application {
                     self.page = AppPage::Session;
                 }
             }
+
+            AppMsg::SyncCompleted {
+                chats_needing_avatars,
+            } => {
+                // Fetch avatars for chats that don't have them.
+                for jid in chats_needing_avatars {
+                    self.client.emit(ClientInput::FetchAvatar { jid });
+                }
+            }
             AppMsg::LoggedOut => {
                 self.page = AppPage::Loading;
                 self.state = AppState::Pairing;
@@ -765,10 +866,10 @@ impl AsyncComponent for Application {
             } => {
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
                     for msg_id in message_ids {
-                        if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
-                            if let Err(e) = message.mark_read().await {
-                                tracing::error!("Failed to mark message as read: {e}");
-                            }
+                        if let Ok(Some(mut message)) = chat.find_message(&msg_id).await
+                            && let Err(e) = message.mark_read().await
+                        {
+                            tracing::error!("Failed to mark message as read: {e}");
                         }
                     }
 
@@ -776,6 +877,88 @@ impl AsyncComponent for Application {
                         chat,
                         move_to_top: false,
                     });
+                }
+            }
+            AppMsg::AvatarUpdate { jid, path } => {
+                // Update the chat's avatar path.
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    chat.avatar_path = Some(path);
+
+                    // Update in chat list.
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: chat.clone(),
+                        move_to_top: false,
+                    });
+
+                    tracing::info!("Updated avatar for chat: {}", jid);
+                }
+            }
+            AppMsg::ContactUpdate {
+                jid,
+                name,
+                push_name,
+                phone_number,
+            } => {
+                // Save contact to database in background.
+                let db = Arc::clone(&self.db);
+                let jid_for_contact = jid.clone();
+                let name_for_contact = name.clone();
+
+                let contact = Contact {
+                    jid: jid.clone(),
+                    name: name.clone(),
+                    push_name,
+                    phone_number: Some(phone_number),
+                    is_registered: true,
+                };
+
+                relm4::spawn(async move {
+                    if let Err(e) = db.save_contact(&contact).await {
+                        tracing::error!("Failed to save contact {}: {}", jid_for_contact, e);
+                    } else {
+                        tracing::debug!(
+                            "Saved contact: {} (name: {:?})",
+                            jid_for_contact,
+                            name_for_contact
+                        );
+                    }
+                });
+
+                // Update chat name if this contact has a chat and we got a name.
+                if let Some(contact_name) = name
+                    && let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid)
+                {
+                    // Only update if current name is generic (phone number or "Unknown").
+                    let current_name = chat.get_name_or_number();
+                    let is_generic = current_name == contact_name
+                        || current_name == i18n!("Unknown")
+                        || current_name == format_lid_as_number(&jid);
+
+                    if is_generic {
+                        chat.name.clone_from(&contact_name);
+
+                        // Save updated chat in background.
+                        let jid_clone = jid.clone();
+                        let chat_clone = chat.clone();
+
+                        relm4::spawn(async move {
+                            if let Err(e) = chat_clone.save().await {
+                                tracing::error!(
+                                    "Failed to update chat name for {}: {}",
+                                    jid_clone,
+                                    e
+                                );
+                            }
+                        });
+
+                        // Update in chat list immediately.
+                        self.chat_list.emit(ChatListInput::UpdateChat {
+                            chat: chat.clone(),
+                            move_to_top: false,
+                        });
+
+                        tracing::info!("Updated chat name for {} to: {}", jid, contact_name);
+                    }
                 }
             }
             AppMsg::PresenceUpdate {
@@ -917,6 +1100,70 @@ impl AsyncComponent for Application {
                 }
             }
 
+            AppMsg::ChatSynced {
+                jid,
+                name,
+                pinned,
+                archived,
+                participants,
+                last_message_time,
+                ..
+            } => {
+                // Skip if chat already exists (quick check, non-blocking).
+                if self.chats.iter().any(|c| c.jid == jid) {
+                    return;
+                }
+
+                // Fetch avatar after chat is processed (store JID for later).
+                let jid_for_avatar = jid.clone();
+
+                // Offload heavy processing to background command.
+                sender.oneshot_command(async move {
+                    AppCmd::ProcessChatSync {
+                        jid,
+                        name,
+                        pinned,
+                        archived,
+                        participants,
+                        last_message_time,
+                    }
+                });
+
+                // Fetch avatar for the chat (not for groups yet).
+                if !jid_for_avatar.ends_with("@g.us") {
+                    self.client.emit(ClientInput::FetchAvatar {
+                        jid: jid_for_avatar,
+                    });
+                }
+            }
+
+            AppMsg::MessagesSynced { chat_jid, messages } => {
+                // Check if chat exists (quick check, non-blocking).
+                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
+                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
+                    return;
+                }
+
+                let is_group = chat_jid.ends_with("@g.us");
+
+                // Update chat in the list (lightweight UI update) before moving values.
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat,
+                        move_to_top: false,
+                    });
+                }
+
+                // Offload heavy message processing to background command.
+                sender.oneshot_command(async move {
+                    AppCmd::ProcessMessagesSync {
+                        chat_jid,
+                        is_group,
+                        messages,
+                    }
+                });
+            }
+
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
                 self.state = AppState::Error(message.clone());
@@ -939,19 +1186,41 @@ impl AsyncComponent for Application {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
-        _sender: AsyncComponentSender<Self>,
+        sender: AsyncComponentSender<Self>,
         _root: &Self::Root,
     ) {
         match command {
             AppCmd::Sync => {
                 self.state = AppState::Syncing;
+                let mut chats_needing_avatars = Vec::new();
 
                 match self.db.load_chats().await {
-                    Ok(chats) => {
+                    Ok(mut chats) => {
                         tracing::info!("Loaded {} chats from own database", chats.len());
+
+                        // Check for existing cached avatars.
+                        for chat in &mut chats {
+                            if !chat.is_group() {
+                                // Check if avatar exists in cache.
+                                let avatar_path = DATA_DIR.join("avatars").join(format!(
+                                    "{}.jpg",
+                                    chat.jid.replace(
+                                        ['/', '\\', ':', '*', '?', '"', '<', '>', '|'],
+                                        "_"
+                                    )
+                                ));
+                                if avatar_path.exists() {
+                                    chat.avatar_path =
+                                        Some(avatar_path.to_string_lossy().into_owned());
+                                } else {
+                                    chats_needing_avatars.push(chat.jid.clone());
+                                }
+                            }
+                        }
 
                         // Insert all chats into our cached list.
                         self.chats.extend(chats);
@@ -968,6 +1237,179 @@ impl AsyncComponent for Application {
                 }
 
                 self.state = AppState::Ready;
+
+                // Emit `SyncCompleted` to fetch avatars in the regular update cycle.
+                if !chats_needing_avatars.is_empty() {
+                    sender.input(AppMsg::SyncCompleted {
+                        chats_needing_avatars,
+                    });
+                }
+            }
+
+            AppCmd::ProcessChatSync {
+                jid,
+                name,
+                pinned,
+                archived,
+                participants,
+                last_message_time,
+            } => {
+                // Skip if chat already exists (double-check in background).
+                if self.chats.iter().any(|c| c.jid == jid) {
+                    return;
+                }
+
+                // Determine chat name.
+                let chat_name = name.unwrap_or_else(|| {
+                    if jid.ends_with("@g.us") {
+                        format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
+                    } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
+                        i18n!("You")
+                    } else {
+                        format_lid_as_number(&jid)
+                    }
+                });
+
+                // Create last message time from timestamp (already in seconds).
+                let last_message_time = last_message_time
+                    .and_then(|ts| DateTime::from_timestamp(ts.cast_signed(), 0))
+                    .unwrap_or_else(Utc::now);
+
+                // Create participants map for groups.
+                let mut participants_map = HashMap::new();
+                for (pjid, pname) in participants {
+                    participants_map.insert(pjid, pname.unwrap_or_else(|| i18n!("Unknown")));
+                }
+
+                let chat = Chat {
+                    jid,
+                    name: chat_name,
+                    muted: false, // TODO: handle mute_end_time
+                    pinned,
+                    available: None,
+                    last_seen: None,
+                    avatar_path: None,
+                    participants: participants_map,
+                    last_message_time,
+
+                    db: Arc::clone(&self.db),
+                };
+
+                // Add to cached list and UI immediately (don't wait for DB).
+                self.chats.push(chat.clone());
+
+                // Sort chats.
+                self.chats.sort_by(|a, b| {
+                    b.pinned
+                        .cmp(&a.pinned)
+                        .then_with(|| b.last_message_time.cmp(&a.last_message_time))
+                });
+
+                // Add to chat list UI.
+                self.chat_list.emit(ChatListInput::AddChat {
+                    chat: chat.clone(),
+                    at_top: true,
+                });
+
+                // Save the chat to database in blocking thread (fire and forget).
+                relm4::spawn(async move {
+                    if let Err(e) = chat.save().await {
+                        tracing::error!("Failed to save synced chat {}: {}", chat.jid, e);
+                    } else {
+                        tracing::info!(
+                            "Synced chat from history: {} (archived: {}, pinned: {})",
+                            chat.jid,
+                            archived,
+                            pinned
+                        );
+                    }
+                });
+            }
+
+            AppCmd::ProcessMessagesSync {
+                chat_jid,
+                is_group,
+                messages,
+            } => {
+                // Check if chat exists.
+                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
+                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
+                    return;
+                }
+
+                let db = Arc::clone(&self.db);
+
+                // Collect sender info for participant updates.
+                let sender_info: Vec<(String, Option<String>)> = if is_group {
+                    messages
+                        .iter()
+                        .filter(|m| !m.outgoing && !m.sender_jid.is_empty())
+                        .map(|m| (m.sender_jid.clone(), m.sender_name.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                // Update participants for groups immediately (in-memory).
+                if is_group && let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
+                    for (sender_jid, sender_name) in &sender_info {
+                        if !chat.participants.contains_key(sender_jid) {
+                            chat.participants.insert(
+                                sender_jid.clone(),
+                                sender_name.clone().unwrap_or_else(|| i18n!("Unknown")),
+                            );
+                        }
+                    }
+                }
+
+                // Spawn database operations in background task.
+                relm4::spawn(async move {
+                    let mut saved_count = 0;
+                    for synced_msg in messages {
+                        // Skip messages without content for now.
+                        let Some(content) = synced_msg.content else {
+                            continue;
+                        };
+
+                        // Select message status based on `unread` and `outgoing` fields.
+                        let status = match (synced_msg.unread, synced_msg.outgoing) {
+                            (true, false) => MessageStatus::Delivered,
+                            (true, true) => MessageStatus::Sent,
+                            (false, _) => MessageStatus::Read,
+                        };
+
+                        // Timestamp is already in seconds (Unix timestamp).
+                        let timestamp =
+                            DateTime::from_timestamp(synced_msg.timestamp.cast_signed(), 0)
+                                .unwrap_or_else(Utc::now);
+
+                        let message = ChatMessage {
+                            local_id: Uuid::new_v4(),
+                            server_id: synced_msg.id,
+                            chat_jid: chat_jid.clone(),
+                            sender_jid: synced_msg.sender_jid.clone(),
+                            sender_name: synced_msg.sender_name.clone(),
+
+                            media: None,
+                            status,
+                            content,
+                            outgoing: synced_msg.outgoing,
+                            reactions: IndexMap::new(),
+                            timestamp,
+
+                            db: Arc::clone(&db),
+                        };
+
+                        // Save the message to database.
+                        if let Err(e) = message.save().await {
+                            tracing::error!("Failed to save synced message: {}", e);
+                        } else {
+                            saved_count += 1;
+                        }
+                    }
+
+                    tracing::info!("Synced {} messages for chat: {}", saved_count, chat_jid);
+                });
             }
         }
     }

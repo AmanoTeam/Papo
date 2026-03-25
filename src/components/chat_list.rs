@@ -5,6 +5,7 @@ use std::sync::{
 
 use adw::prelude::*;
 use chrono::Local;
+use gtk::{gdk::Texture, gio};
 use indexmap::IndexMap;
 use relm4::{RelmListBoxExt, prelude::*};
 
@@ -198,6 +199,18 @@ async fn build_chat_row(chat: &Chat) -> adw::ActionRow {
             .text(&chat.name)
             .show_initials(true)
             .build();
+
+        // Load avatar image if available.
+        if let Some(ref avatar_path) = chat.avatar_path {
+            let file = gio::File::for_path(avatar_path);
+
+            if let Ok(texture) = Texture::from_file(&file) {
+                avatar.set_custom_image(Some(&texture));
+            } else {
+                tracing::warn!("Failed to load avatar image from {avatar_path}");
+            }
+        }
+
         overlay.set_child(Some(&avatar));
 
         // TODO: online dot
