@@ -37,6 +37,7 @@
 mod config;
 mod application;
 mod components;
+mod formatter;
 mod modals;
 mod session;
 mod state;

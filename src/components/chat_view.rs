@@ -9,6 +9,7 @@ use relm4::{
 };
 
 use crate::{
+    formatter::parse_whatsapp_formatting,
     i18n,
     state::{Chat, ChatMessage, MessageStatus},
     utils::format_date_label,
@@ -1055,7 +1056,8 @@ impl RelmListItem for ChatRow {
             Self::Message(msg) => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
-                widgets.content_label.set_label(&msg.content);
+                let formatted_content = parse_whatsapp_formatting(&msg.content);
+                widgets.content_label.set_markup(&formatted_content);
                 // Convert UTC timestamp to local time for display
                 let local_time = msg.timestamp.with_timezone(&Local);
                 widgets
