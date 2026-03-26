@@ -106,6 +106,18 @@ pub enum Status {
     Delivered,
 }
 
+impl Status {
+    /// Get the corresponding status icon name.
+    pub fn icon_name(&self) -> &str {
+        match self {
+            Self::Sent => "check-round-outline-symbolic",
+            Self::Read | Self::Delivered => "check-round-outline2-symbolic",
+            Self::Failed => "exclamation-mark-symbolic",
+            Self::Sending => "clock-alt-symbolic",
+        }
+    }
+}
+
 impl From<i32> for Status {
     fn from(value: i32) -> Self {
         match value {

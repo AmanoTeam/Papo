@@ -17,6 +17,10 @@ scss_deps = files(
     'stylesheet/_common.scss',
     'stylesheet/_vendor.scss',
     'stylesheet/_widgets.scss',
+    'stylesheet/_chat_list.scss',
+    'stylesheet/_chat_view.scss',
+    'stylesheet/_login_view.scss',
+    'stylesheet/_session_view.scss',
 )
 
 stylesheet = custom_target(

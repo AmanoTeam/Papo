@@ -53,11 +53,9 @@
   padding: 4px 10px;
   font-size: 0.85em;
   border-radius: 8px;
-  background-color: color-mix(
-    in srgb,
-    var(--card-bg-color) 100%,
-    transparent 20%
-  );
+  background-color: color-mix(in srgb,
+      var(--card-bg-color) 100%,
+      transparent 20%);
 }
 
 .message-bubble {
@@ -88,7 +86,7 @@
     border-bottom-right-radius: vendor.$menu_radius;
 
     &.dimmed {
-      color: color-mix(in srgb, var(--accent-fg-color) 30%, transparent);
+      color: color-mix(in srgb, var(--accent-fg-color) 90%, transparent);
     }
 
     &:first-child {
@@ -107,11 +105,18 @@
   font-size: 0.95em;
 
   &.activatable {
+
     &:hover,
     &:focus {
       label {
         text-decoration-line: underline;
       }
     }
+  }
+}
+
+.status-icon {
+  &.white {
+    color: #FFFFFF;
   }
 }
