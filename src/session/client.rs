@@ -85,6 +85,7 @@ impl ClientState {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClientInput {
     /// Start the client connection.
     Start,

@@ -1,9 +1,4 @@
-use std::{
-    cell::Cell,
-    collections::VecDeque,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
+use std::{cell::Cell, collections::VecDeque, ops::Deref, rc::Rc};
 
 use adw::{gdk, glib, prelude::*};
 use chrono::{DateTime, Local, NaiveDate, Utc};
@@ -546,7 +541,7 @@ impl AsyncComponent for ChatView {
                     |item| matches!(item.borrow().deref(), ChatRow::Message(message) if message.server_id == msg_id),
                     ) {
                         let mut row = item.borrow_mut();
-                        if let ChatRow::Message(message) = row.deref_mut() {
+                        if let ChatRow::Message(message) = &mut *row {
                             message.status = status;
                         }
                     }
@@ -1096,7 +1091,7 @@ impl RelmListItem for ChatRow {
                             widgets.status_icon.add_css_class("warning");
                         }
                         _ => {}
-                    };
+                    }
                 } else {
                     widgets.message_box.set_halign(gtk::Align::Start);
                     widgets.bubble_box.add_css_class("incoming");

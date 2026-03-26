@@ -1014,10 +1014,10 @@ impl AsyncComponent for Application {
                             let chat_jid = info.source.chat.to_string();
                             let outgoing = info.source.is_from_me;
 
-                            let status = if !outgoing {
-                                MessageStatus::Sent
-                            } else {
+                            let status = if outgoing {
                                 MessageStatus::Read
+                            } else {
+                                MessageStatus::Sent
                             };
                             let chat_message = ChatMessage {
                                 local_id: Uuid::new_v4(),

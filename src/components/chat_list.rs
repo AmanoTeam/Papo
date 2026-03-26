@@ -116,7 +116,7 @@ impl SimpleAsyncComponent for ChatList {
 
                     set_active_name: Some("all"),
                     connect_active_name_notify[sender] => move |group| {
-                        let filter = group.active_name().map_or(Default::default(), |tag| tag.as_str().into());
+                        let filter = group.active_name().map_or(ChatListFilter::default(), |tag| tag.as_str().into());
                         sender.input(ChatListInput::ApplyFilter(filter));
                     }
                 },
@@ -182,6 +182,7 @@ impl SimpleAsyncComponent for ChatList {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update(&mut self, input: Self::Input, sender: AsyncComponentSender<Self>) {
         match input {
             ChatListInput::AddChat { chat, at_top } => {
@@ -245,7 +246,7 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     let adj = self.list_view_wrapper.view.vadjustment();
-                    let saved_scroll = adj.as_ref().map(|a| a.value());
+                    let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
 
                     if move_to_top {
                         // Insert the new updated row.
@@ -300,12 +301,12 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     }
                     ChatListFilter::Groups => {
-                        self.list_view_wrapper.add_filter(|row| row.chat.is_group())
+                        self.list_view_wrapper.add_filter(|row| row.chat.is_group());
                     }
                     ChatListFilter::Unreads => self
                         .list_view_wrapper
                         .add_filter(|row| row.unread_count > 0),
-                };
+                }
             }
 
             ChatListInput::Select(jid) => {
@@ -592,7 +593,7 @@ impl RelmListItem for ChatRow {
                         widgets.status_icon.add_css_class("warning");
                     }
                     _ => {}
-                };
+                }
             } else {
                 widgets.status_icon.set_visible(false);
             }

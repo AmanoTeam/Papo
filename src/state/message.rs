@@ -59,11 +59,11 @@ impl Message {
 
     /// Mark this message as read.
     pub async fn mark_read(&mut self) -> Result<(), libsql::Error> {
-        if self.status != Status::Read {
+        if self.status == Status::Read {
+            Ok(())
+        } else {
             self.status = Status::Read;
             self.save().await
-        } else {
-            Ok(())
         }
     }
 }
