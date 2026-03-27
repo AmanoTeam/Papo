@@ -54,7 +54,7 @@ use std::{fs::create_dir_all, path::PathBuf, sync::LazyLock};
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
-use relm4::{RELM_THREADS, RelmApp, gtk, main_application, once_cell::sync::OnceCell};
+use relm4::{RELM_THREADS, RelmApp, gtk, main_application};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use application::Application;
@@ -113,15 +113,16 @@ fn main() {
         .set(4)
         .expect("Failed to set the number of threads");
 
+    // Set app name and initialize libadwaita.
     glib::set_application_name("Papo");
-
     adw::init().expect("Failed to init GTK/libadwaita");
 
+    // Initialize default resources.
     let res = gio::Resource::load(RESOURCES_FILE).expect("Could not load gresource file");
     gio::resources_register(&res);
-
     gtk::Window::set_default_icon_name(APP_ID);
 
+    // Initialize custom resources.
     let app = main_application();
     app.set_flags(gio::ApplicationFlags::HANDLES_OPEN);
     app.set_resource_base_path(Some("/com/amanoteam/Papo/"));
@@ -132,6 +133,7 @@ fn main() {
     tracing::info!("Version: {} ({})", VERSION, PROFILE);
     tracing::info!("Datadir: {}", DATA_DIR.as_path().display());
 
+    // Initialize styles.
     let data = res
         .lookup_data(
             "/com/amanoteam/Papo/style.css",

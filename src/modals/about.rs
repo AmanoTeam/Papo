@@ -24,8 +24,14 @@ impl SimpleComponent for AboutDialog {
             .issue_url("https://github.com/AmanoTeam/Papo/issues")
             .version(VERSION)
             .copyright("© 2026 Andriel Ferreira")
-            .developers(["Andriel Ferreira"])
-            .designers(["Andriel Ferreira", "Eduardo Fonseca"])
+            .developers([
+                "Andriel Ferreira <andrielfr@proton.me>",
+                "Alisson Lauffer <me@alisson.sh>",
+            ])
+            .designers([
+                "Andriel Ferreira <andrielfr@proton.me>",
+                "Eduardo Fonseca <me@eduu.xyz>",
+            ])
             .translator_credits(i18n!("translator-credits"))
             .build()
     }
