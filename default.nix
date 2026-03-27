@@ -24,8 +24,7 @@ pkgs.stdenv.mkDerivation {
   cargoDeps = pkgs.rustPlatform.importCargoLock {
     lockFile = ./Cargo.lock;
     outputHashes = {
-      "wacore-0.2.0" = "sha256-BA+xdc1+iAK8yDAOH+k0xpu6SHc2b8QNn64dsjpGRj0=";
-      "libglycin-gtk4-rebind-0.0.1" = "sha256-QYMFay6HHQxdAV3xZy29SkSAt2zU/yMLvDp6f3EwfvY=";
+      "wacore-0.5.0" = "sha256-uG4DNkmQ2ID7gJnLgRf75hytadcGX84Wm/ynSLxThVE=";
     };
   };
 
