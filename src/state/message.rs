@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use uuid::Uuid;
+use wacore::types::presence::ReceiptType;
 use waproto::whatsapp as wa;
 
 use crate::{
@@ -57,7 +58,7 @@ impl Message {
             .map(|c| c.expect("Failed to get chat attached to message"))
     }
 
-    /// Mark this message as read.
+    /// Mark this message as read locally.
     pub async fn mark_read(&mut self) -> Result<(), libsql::Error> {
         if self.status == Status::Read {
             Ok(())
@@ -100,6 +101,8 @@ pub enum Status {
     Read,
     /// The message has failed to send.
     Failed,
+    /// The message's media has been played.
+    Played,
     /// The message is being sent.
     Sending,
     /// The recipient(s) has received the message.
@@ -111,7 +114,7 @@ impl Status {
     pub fn icon_name(&self) -> &str {
         match self {
             Self::Sent => "check-round-outline-symbolic",
-            Self::Read | Self::Delivered => "check-round-outline2-symbolic",
+            Self::Read | Self::Played | Self::Delivered => "check-round-outline2-symbolic",
             Self::Failed => "exclamation-mark-symbolic",
             Self::Sending => "clock-alt-symbolic",
         }
@@ -124,9 +127,26 @@ impl From<i32> for Status {
             0 => Self::Sent,
             1 => Self::Read,
             2 => Self::Failed,
-            3 => Self::Sending,
-            4 => Self::Delivered,
+            3 => Self::Played,
+            4 => Self::Sending,
+            5 => Self::Delivered,
             _ => Self::default(),
+        }
+    }
+}
+
+impl TryFrom<ReceiptType> for Status {
+    type Error = String;
+
+    fn try_from(value: ReceiptType) -> Result<Self, Self::Error> {
+        match value {
+            ReceiptType::Read | ReceiptType::ReadSelf => Ok(Self::Read),
+            ReceiptType::Retry | ReceiptType::ServerError => Ok(Self::Failed),
+            ReceiptType::Played | ReceiptType::PlayedSelf => Ok(Self::Played),
+            ReceiptType::Sender => Ok(Self::Sent),
+            ReceiptType::Delivered => Ok(Self::Delivered),
+            ReceiptType::Other(t) if t == "delivery" => Ok(Self::Delivered),
+            r => Err(format!("Message status doesn't have a {r:?} equivalent")),
         }
     }
 }

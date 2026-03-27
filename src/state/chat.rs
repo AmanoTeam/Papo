@@ -45,7 +45,7 @@ impl Chat {
         if self.get_unread_count().await.is_ok_and(|count| count > 0) {
             self.db
                 .execute(
-                    "UPDATE messages SET status = 1 WHERE chat_jid = ?1 AND (status == 0 OR status == 4)",
+                    "UPDATE messages SET status = 1 WHERE chat_jid = ?1 AND (status == 0 OR status == 5)",
                     [self.jid.as_str()],
                 )
                 .await
