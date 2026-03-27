@@ -13,7 +13,7 @@ use relm4::{
 use strum::{AsRefStr, EnumString};
 use tokio::time;
 use uuid::Uuid;
-use wacore::types::message::MessageInfo;
+use wacore::types::{message::MessageInfo, presence::ReceiptType};
 use waproto::whatsapp::Message;
 
 use crate::{
@@ -142,11 +142,6 @@ pub enum AppMsg {
     /// Mark a chat as read.
     MarkChatRead(String),
 
-    /// Read receipts updated.
-    ReadReceipts {
-        chat_jid: String,
-        message_ids: Vec<String>,
-    },
     /// Avatar updated for a chat.
     AvatarUpdate {
         jid: String,
@@ -158,6 +153,12 @@ pub enum AppMsg {
         name: Option<String>,
         push_name: Option<String>,
         phone_number: String,
+    },
+    /// Message receipt updated.
+    ReceiptUpdate {
+        chat_jid: String,
+        message_ids: Vec<String>,
+        receipt_type: ReceiptType,
     },
     /// User presence updated.
     PresenceUpdate {
@@ -607,12 +608,14 @@ impl AsyncComponent for Application {
                 },
                 ClientOutput::PairSuccess => AppMsg::DevicePaired,
 
-                ClientOutput::ReadReceipts {
+                ClientOutput::ReceiptUpdate {
                     chat_jid,
                     message_ids,
-                } => AppMsg::ReadReceipts {
+                    receipt_type,
+                } => AppMsg::ReceiptUpdate {
                     chat_jid,
                     message_ids,
+                    receipt_type,
                 },
                 ClientOutput::PresenceUpdate {
                     jid,
@@ -857,25 +860,6 @@ impl AsyncComponent for Application {
                 self.mark_chat_read(&jid).await;
             }
 
-            AppMsg::ReadReceipts {
-                chat_jid,
-                message_ids,
-            } => {
-                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
-                    for msg_id in message_ids {
-                        if let Ok(Some(mut message)) = chat.find_message(&msg_id).await
-                            && let Err(e) = message.mark_read().await
-                        {
-                            tracing::error!("Failed to mark message as read: {e}");
-                        }
-                    }
-
-                    self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat,
-                        move_to_top: false,
-                    });
-                }
-            }
             AppMsg::AvatarUpdate { jid, path } => {
                 // Update the chat's avatar path.
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
@@ -955,6 +939,37 @@ impl AsyncComponent for Application {
                         });
 
                         tracing::info!("Updated chat name for {} to: {}", jid, contact_name);
+                    }
+                }
+            }
+            AppMsg::ReceiptUpdate {
+                chat_jid,
+                message_ids,
+                receipt_type,
+            } => {
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                    match MessageStatus::try_from(receipt_type) {
+                        Ok(status) => {
+                            for msg_id in message_ids {
+                                if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
+                                    // Update message status.
+                                    message.status = status;
+
+                                    // Update the message in the database.
+                                    if let Err(e) = message.save().await {
+                                        tracing::error!("Failed to update message: {}", e);
+                                    }
+                                }
+                            }
+
+                            self.chat_list.emit(ChatListInput::UpdateChat {
+                                chat,
+                                move_to_top: false,
+                            });
+                        }
+                        Err(e) => tracing::error!(
+                            "Failed to convert `ReceiptType` to `MessageStatus`: {e}"
+                        ),
                     }
                 }
             }

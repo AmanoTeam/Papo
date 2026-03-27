@@ -14,6 +14,7 @@ use wacore::{
     types::{
         events::{Event, LazyConversation},
         message::MessageInfo,
+        presence::ReceiptType,
     },
 };
 use waproto::whatsapp::{
@@ -161,10 +162,11 @@ pub enum ClientOutput {
     /// Call ended.
     CallEnded { call_id: String },
 
-    /// Read receipts updated.
-    ReadReceipts {
+    /// Message receipt updated.
+    ReceiptUpdate {
         chat_jid: String,
         message_ids: Vec<String>,
+        receipt_type: ReceiptType,
     },
     /// User presence updated.
     PresenceUpdate {
@@ -556,9 +558,10 @@ impl AsyncComponent for Client {
                                         let chat_jid = receipt.source.chat.to_string();
                                         let message_ids = receipt.message_ids;
 
-                                        let _ = sender.output(ClientOutput::ReadReceipts {
+                                        let _ = sender.output(ClientOutput::ReceiptUpdate {
                                             chat_jid,
                                             message_ids,
+                                            receipt_type: receipt.r#type,
                                         });
                                     }
                                     Event::Presence(presence) => {
