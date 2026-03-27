@@ -54,7 +54,7 @@ use std::{fs::create_dir_all, path::PathBuf, sync::LazyLock};
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
-use relm4::{RelmApp, gtk, main_application, once_cell::sync::OnceCell};
+use relm4::{RELM_THREADS, RelmApp, gtk, main_application, once_cell::sync::OnceCell};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use application::Application;
@@ -62,9 +62,6 @@ use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSIO
 
 /// Papo's data directory path (e.g., ~/.local/share/papo on Linux).
 pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_data_dir().join("papo"));
-
-/// How many threads that Relm4 should use for asynchronous background tasks.
-pub static RELM_THREADS: OnceCell<usize> = OnceCell::with_value(4);
 
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
@@ -110,6 +107,11 @@ fn main() {
     if let Err(e) = create_dir_all(DATA_DIR.as_path()) {
         tracing::error!("Failed to create data dir: {e}");
     }
+
+    // Tell `relm4` to use 4 threads for asynchronous background tasks.
+    RELM_THREADS
+        .set(4)
+        .expect("Failed to set the number of threads");
 
     glib::set_application_name("Papo");
 
