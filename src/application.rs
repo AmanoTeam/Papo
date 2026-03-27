@@ -292,12 +292,9 @@ impl Application {
             })
             .await;
 
-            // Fetch avatar for new individual chats.
-            if !is_group {
-                self.client.emit(ClientInput::FetchAvatar {
-                    jid: chat_jid.to_string(),
-                });
-            }
+            self.client.emit(ClientInput::FetchAvatar {
+                jid: chat_jid.to_string(),
+            });
         }
 
         // Get the chat.
@@ -1133,12 +1130,9 @@ impl AsyncComponent for Application {
                     }
                 });
 
-                // Fetch avatar for the chat (not for groups yet).
-                if !jid_for_avatar.ends_with("@g.us") {
-                    self.client.emit(ClientInput::FetchAvatar {
-                        jid: jid_for_avatar,
-                    });
-                }
+                self.client.emit(ClientInput::FetchAvatar {
+                    jid: jid_for_avatar,
+                });
             }
 
             AppMsg::MessagesSynced { chat_jid, messages } => {
@@ -1208,21 +1202,16 @@ impl AsyncComponent for Application {
 
                         // Check for existing cached avatars.
                         for chat in &mut chats {
-                            if !chat.is_group() {
-                                // Check if avatar exists in cache.
-                                let avatar_path = DATA_DIR.join("avatars").join(format!(
-                                    "{}.jpg",
-                                    chat.jid.replace(
-                                        ['/', '\\', ':', '*', '?', '"', '<', '>', '|'],
-                                        "_"
-                                    )
-                                ));
-                                if avatar_path.exists() {
-                                    chat.avatar_path =
-                                        Some(avatar_path.to_string_lossy().into_owned());
-                                } else {
-                                    chats_needing_avatars.push(chat.jid.clone());
-                                }
+                            // Check if avatar exists in cache.
+                            let avatar_path = DATA_DIR.join("avatars").join(format!(
+                                "{}.jpg",
+                                chat.jid
+                                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+                            ));
+                            if avatar_path.exists() {
+                                chat.avatar_path = Some(avatar_path.to_string_lossy().into_owned());
+                            } else {
+                                chats_needing_avatars.push(chat.jid.clone());
                             }
                         }
 
