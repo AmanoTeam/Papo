@@ -1,4 +1,3 @@
-use adw::gtk;
 use chrono::{Datelike, Local, NaiveDate};
 use fast_qr::{
     ECL, QRBuilder,
@@ -7,6 +6,7 @@ use fast_qr::{
 use glib::Bytes;
 use glycin::Loader;
 use gtk::{gdk, glib};
+use relm4::prelude::*;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
 use crate::i18n;

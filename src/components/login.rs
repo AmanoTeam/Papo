@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
-use adw::{glib, prelude::*};
+use adw::prelude::*;
 use futures_util::FutureExt;
-use gtk::{gdk, pango};
+use gtk::{gdk, glib, pango};
 use relm4::{RelmRemoveAllExt, component::Connector, prelude::*};
 use relm4_components::alert::{Alert, AlertMsg, AlertSettings};
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};

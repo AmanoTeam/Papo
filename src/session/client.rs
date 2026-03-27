@@ -21,7 +21,7 @@ use waproto::whatsapp::{
     Message,
     device_props::{AppVersion, PlatformType},
 };
-use whatsapp_rust::{Jid, bot::Bot, store::SqliteStore};
+use whatsapp_rust::{Jid, TokioRuntime, bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
@@ -377,6 +377,7 @@ impl AsyncComponent for Client {
                         .pair_with_code(PairCodeOptions {
                             platform_id: PlatformId::OtherWebClient,
                             phone_number,
+                            platform_display: "Desktop (Linux)".to_string(),
                             show_push_notification: true,
                             ..Default::default()
                         })
@@ -501,6 +502,7 @@ impl AsyncComponent for Client {
                     let sender_clone = sender.clone();
                     let mut bot = Bot::builder()
                         .with_backend(backend)
+                        .with_runtime(TokioRuntime)
                         .with_http_client(UreqHttpClient::new())
                         .with_device_props(
                             Some(self.os_type.clone()),
@@ -623,7 +625,7 @@ impl AsyncComponent for Client {
                         })
                         .build()
                         .await
-                        .expect("Failed to build bot");
+                        .expect("Failed to build client");
 
                     // Extract client from bot.
                     let client = bot.client();
@@ -631,20 +633,27 @@ impl AsyncComponent for Client {
 
                     self.update_state(ClientState::Connecting);
 
-                    // Runs the bot.
-                    if let Err(e) = bot.run().await {
-                        tracing::error!("Bot failed to start: {e}");
+                    // Start the client.
+                    match bot.run().await {
+                        Ok(handle) => {
+                            // Wait client stop in background.
+                            relm4::spawn(async move {
+                                let _ = handle.await;
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Client failed to start: {e}");
 
-                        let message = format!("Connection failed: {e}");
-                        self.update_state(ClientState::Error(message.clone()));
-                        let _ = sender.output(ClientOutput::Error { message });
+                            let message = format!("Connection failed: {e}");
+                            self.update_state(ClientState::Error(message.clone()));
+                            let _ = sender.output(ClientOutput::Error { message });
+                        }
                     }
                 }
             }
             ClientCommand::Stop => {
                 {
                     let mut handle = self.handle.lock().await;
-
                     // TODO: graceful shutdown
                     if let Some(client) = handle.as_ref() {
                         client.disconnect().await;
@@ -837,7 +846,6 @@ impl AsyncComponent for Client {
             ClientCommand::ProcessJoinedGroup { lazy_conv } => {
                 // Offload CPU-intensive protobuf parsing to blocking thread.
                 let sender_clone = sender.clone();
-
                 relm4::spawn_blocking(move || {
                     // Parse the lazy conversation (this does protobuf decoding - CPU intensive).
                     if let Some(conv) = lazy_conv.get() {

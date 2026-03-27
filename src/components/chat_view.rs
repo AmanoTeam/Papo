@@ -1,8 +1,9 @@
 use std::{cell::Cell, collections::VecDeque, ops::Deref, rc::Rc};
 
-use adw::{gdk, glib, prelude::*};
+use adw::prelude::*;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use gtk::pango;
+use gtk::{gdk, glib};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},

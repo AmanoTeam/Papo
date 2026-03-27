@@ -10,6 +10,10 @@ description = "GTK client for WhatsApp Web"
 
 [profile.release]
 lto = true
+panic = "abort"
+strip = true
+opt-level = "z"
+codegen-units = 1
 
 [dependencies]
 # GTK
@@ -61,23 +65,23 @@ futures-util = { version = "0.3", default-features = false, features = [
 # WhatsApp
 [dependencies.wacore]
 git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+rev = "320fe331603171a1cb21c88c8957c366590e08a7"
 
 [dependencies.waproto]
 git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+rev = "320fe331603171a1cb21c88c8957c366590e08a7"
 
 [dependencies.whatsapp-rust]
 git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+rev = "320fe331603171a1cb21c88c8957c366590e08a7"
 
 [dependencies.whatsapp-rust-tokio-transport]
 git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+rev = "320fe331603171a1cb21c88c8957c366590e08a7"
 
 [dependencies.whatsapp-rust-ureq-http-client]
 git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "28d8e00c980e506a52c6d387559df5284e1cb17c"
+rev = "320fe331603171a1cb21c88c8957c366590e08a7"
 
 [build-dependencies]
 relm4-icons-build = "0.10"
