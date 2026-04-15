@@ -14,6 +14,7 @@ fn main() {
         [
             "pin",
             "menu",
+            "loupe",
             "go-next",
             "clock-alt",
             "speaker-0",

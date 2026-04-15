@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use relm4::{
     abstractions::Toaster,
     actions::{AccelsPlus, RelmAction, RelmActionGroup},
+    component::AsyncConnector,
     main_application,
     prelude::*,
 };
@@ -20,7 +21,7 @@ use crate::{
     DATA_DIR,
     components::{
         ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
-        LoginInput, LoginOutput,
+        LoginInput, LoginOutput, SearchView,
     },
     config::{APP_ID, PROFILE},
     i18n,
@@ -48,8 +49,12 @@ pub struct Application {
     chat_view: AsyncController<ChatView>,
     /// The `SplitView` widget from the session page.
     split_view: adw::NavigationSplitView,
-    /// Page session view is displaying.
-    session_page: AppSessionPage,
+    /// Search view component.
+    search_view: AsyncConnector<SearchView>,
+    /// Current session view.
+    session_view: AppSessionView,
+    /// Current sidebar view.
+    sidebar_view: AppSidebarView,
 
     /// JID from the connected user.
     user_jid: Option<String>,
@@ -97,11 +102,20 @@ enum AppState {
 
 #[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
-enum AppSessionPage {
+enum AppSessionView {
     /// No chat selected view.
     Empty,
     /// Chat history view.
     ChatHistory,
+}
+
+#[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
+#[strum(serialize_all = "lowercase")]
+enum AppSidebarView {
+    /// List entries view.
+    List,
+    /// Search entries view.
+    Search,
 }
 
 #[derive(Debug)]
@@ -130,6 +144,9 @@ pub enum AppMsg {
     PairWithPhoneNumber {
         phone_number: String,
     },
+
+    /// Toggle search mode.
+    ToggleSearchMode,
 
     /// A chat was open.
     ChatOpen,
@@ -374,6 +391,7 @@ relm4::new_action_group!(pub(super) WindowActionGroup, "win");
 relm4::new_stateless_action!(ContactsAction, WindowActionGroup, "show-contacts");
 relm4::new_stateless_action!(PreferencesAction, WindowActionGroup, "show-preferences");
 relm4::new_stateless_action!(pub(super) ShortcutsAction, WindowActionGroup, "show-help-overlay");
+relm4::new_stateless_action!(SearchEntriesAction, WindowActionGroup, "search-entries");
 relm4::new_stateless_action!(AboutAction, WindowActionGroup, "about");
 relm4::new_stateless_action!(QuitAction, WindowActionGroup, "quit");
 
@@ -490,24 +508,42 @@ impl AsyncComponent for Application {
                                                 set_show_initials: true,
                                             }
                                         },
+
                                         pack_end = &gtk::MenuButton {
                                             set_icon_name: "menu-symbolic",
                                             set_menu_model: Some(&primary_menu),
                                             set_tooltip_text: Some(&i18n!("Menu")),
                                         },
+                                        #[name = "search_button"]
+                                        pack_end = &gtk::ToggleButton {
+                                            set_icon_name: "loupe-symbolic",
+                                            set_tooltip_text: Some(&i18n!("Search mode")),
+
+                                            connect_toggled => AppMsg::ToggleSearchMode
+                                        }
                                     },
 
-                                    #[name = "view_stack"]
                                     #[wrap(Some)]
-                                    set_content = &adw::ViewStack {
-                                        #[local_ref]
-                                        add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::Box {} -> {
-                                            set_icon_name: Some("chat-bubbles-text-symbolic")
+                                    set_content = &gtk::Stack {
+                                        set_transition_type: gtk::StackTransitionType::Crossfade,
+
+                                        #[name = "view_stack"]
+                                        add_named[Some("list")] = &adw::ViewStack {
+                                            #[local_ref]
+                                            add_titled[Some("chats"), &i18n!("Chats")] = chat_list_widget -> gtk::Box {} -> {
+                                                set_icon_name: Some("chat-bubbles-text-symbolic")
+                                            },
+
+                                            /* add_titled[Some("status"), &i18n!("Status")] = &gtk::ScrolledWindow {} -> {
+                                                set_icon_name: Some("image-round-symbolic")
+                                            } */
                                         },
 
-                                        /* add_titled[Some("status"), &i18n!("Status")] = &gtk::ScrolledWindow {} -> {
-                                            set_icon_name: Some("image-round-symbolic")
-                                        } */
+                                        #[local_ref]
+                                        add_named[Some("search")] = search_view -> gtk::Box {},
+
+                                        #[watch]
+                                        set_visible_child_name: model.sidebar_view.as_ref()
                                     },
 
                                     add_bottom_bar = &adw::ViewSwitcherBar {
@@ -540,7 +576,7 @@ impl AsyncComponent for Application {
                                     add_named[Some("chat-history")] = chat_view_widget -> adw::ToolbarView {},
 
                                     #[watch]
-                                    set_visible_child_name: model.session_page.as_ref(),
+                                    set_visible_child_name: model.session_view.as_ref(),
                                 }
                             }
                         },
@@ -697,6 +733,7 @@ impl AsyncComponent for Application {
                     AppMsg::SendTextMessage { text, recipient }
                 }
             });
+        let search_view = SearchView::builder().launch((chat_list.widget().clone(),));
 
         let model = Self {
             page: AppPage::Fetching,
@@ -707,7 +744,9 @@ impl AsyncComponent for Application {
             chat_list,
             chat_view,
             split_view: adw::NavigationSplitView::new(),
-            session_page: AppSessionPage::Empty,
+            search_view,
+            session_view: AppSessionView::Empty,
+            sidebar_view: AppSidebarView::List,
 
             user_jid: None,
             user_push_name: None,
@@ -718,13 +757,22 @@ impl AsyncComponent for Application {
         };
 
         let split_view = &model.split_view;
+        let search_view = model.search_view.widget();
         let login_widget = model.login.widget();
         let toast_overlay = model.toaster.overlay_widget();
         let chat_list_widget = model.chat_list.widget();
         let chat_view_widget = model.chat_view.widget();
 
         let app = root.application().unwrap();
+        let widgets = view_output!();
         let mut actions = RelmActionGroup::<WindowActionGroup>::new();
+
+        let search_entries_action = {
+            let button = widgets.search_button.clone();
+            RelmAction::<SearchEntriesAction>::new_stateless(move |_| {
+                button.set_active(!button.is_active());
+            })
+        };
 
         let shortcuts_action = {
             RelmAction::<ShortcutsAction>::new_stateless(move |_| {
@@ -745,12 +793,11 @@ impl AsyncComponent for Application {
             })
         };
 
-        // Connect actions with hotkeys
+        // Connect actions with hotkeys.
+        app.set_accelerators_for_action::<SearchEntriesAction>(&["<Control>F"]);
         app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
-        // app.set_accelerators_for_action::<QuitAction>(&["<Control>w"]);
 
-        let widgets = view_output!();
-
+        actions.add_action(search_entries_action);
         actions.add_action(shortcuts_action);
         actions.add_action(about_action);
         actions.add_action(quit_action);
@@ -837,14 +884,22 @@ impl AsyncComponent for Application {
                     .emit(ClientInput::PairWithPhoneNumber { phone_number });
             }
 
+            AppMsg::ToggleSearchMode => {
+                if self.sidebar_view != AppSidebarView::Search {
+                    self.sidebar_view = AppSidebarView::Search;
+                } else {
+                    self.sidebar_view = AppSidebarView::List;
+                }
+            }
+
             AppMsg::ChatOpen => {
                 self.split_view.set_show_content(true);
-                self.session_page = AppSessionPage::ChatHistory;
+                self.session_view = AppSessionView::ChatHistory;
             }
             AppMsg::ChatClosed => {
                 self.chat_list.emit(ChatListInput::ClearSelection);
                 self.split_view.set_show_content(false);
-                self.session_page = AppSessionPage::Empty;
+                self.session_view = AppSessionView::Empty;
             }
             AppMsg::ChatSelected(jid) => {
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == jid).cloned() {
@@ -1174,6 +1229,7 @@ impl AsyncComponent for Application {
 
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
+                tracing::error!("An error ocurred: {message}");
                 self.state = AppState::Error(message.clone());
 
                 #[allow(clippy::match_same_arms)] // FIXME: remove when `Error` page is added

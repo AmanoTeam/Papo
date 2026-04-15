@@ -357,11 +357,12 @@ impl ChatList {
 /// A single row in the chat history list.
 #[derive(Clone, Debug)]
 pub struct ChatRow {
-    chat: Chat,
+    pub chat: Chat,
     /// The last sent message in the chat.
-    last_message: Option<ChatMessage>,
+    pub last_message: Option<ChatMessage>,
     /// How many messages are unread.
     unread_count: u32,
+    /// The cached avatar texture.
     avatar_texture: Option<Texture>,
 }
 

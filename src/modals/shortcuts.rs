@@ -26,8 +26,11 @@ impl SimpleComponent for ShortcutsDialog {
 
         // General section
         let general = adw::ShortcutsSection::new(Some(&i18n!("General")));
+        general.add(adw::ShortcutsItem::new(
+            &i18n!("Toggle search entries mode"),
+            "<Control>F",
+        ));
         general.add(adw::ShortcutsItem::new(&i18n!("Quit"), "<Control>q"));
-        // section.add(adw::ShortcutsItem::new("New Tab", "<Control>t"));
         widgets.add(general);
 
         widgets.present(Some(&relm4::main_adw_application().windows()[0]));
