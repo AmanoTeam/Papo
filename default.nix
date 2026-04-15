@@ -24,8 +24,7 @@ pkgs.stdenv.mkDerivation {
   cargoDeps = pkgs.rustPlatform.importCargoLock {
     lockFile = ./Cargo.lock;
     outputHashes = {
-      "wacore-0.2.0" = "sha256-BA+xdc1+iAK8yDAOH+k0xpu6SHc2b8QNn64dsjpGRj0=";
-      "libglycin-gtk4-rebind-0.0.1" = "sha256-QYMFay6HHQxdAV3xZy29SkSAt2zU/yMLvDp6f3EwfvY=";
+      "wacore-0.5.0" = "sha256-uG4DNkmQ2ID7gJnLgRf75hytadcGX84Wm/ynSLxThVE=";
     };
   };
 
@@ -37,35 +36,46 @@ pkgs.stdenv.mkDerivation {
 
   # Compile time dependencies
   nativeBuildInputs = with pkgs; [
+    # Rust
+    rustToolchain
+    rustPlatform.cargoSetupHook
+
+    # GTK
+    wrapGAppsHook4
+
+    # Build
+    cmake
     ninja
     meson
     gettext
     appstream
     grass-sass
     pkg-config
-    rustToolchain
-    wrapGAppsHook4
     desktop-file-utils
-    rustPlatform.cargoSetupHook
   ];
 
   # Runtime dependencies which will be shipped
   # with nix package
   buildInputs = with pkgs; [
+    # Rust
+    rustPlatform.bindgenHook
+
+    # GTK
     gtk4
     glib
-    sqlite
-    libwebp
-    openssl
-    libadwaita
-    gdk-pixbuf
     libglycin
-    gnome-desktop
+    gdk-pixbuf
+    libadwaita
     glycin-loaders
     libglycin-gtk4
     adwaita-icon-theme
+
+    # Build
+    sqlite
+    libwebp
+    openssl
+    gnome-desktop
     desktop-file-utils
-    rustPlatform.bindgenHook
   ];
 
   # Compiler LD variables
