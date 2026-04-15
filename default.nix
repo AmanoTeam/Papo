@@ -36,35 +36,46 @@ pkgs.stdenv.mkDerivation {
 
   # Compile time dependencies
   nativeBuildInputs = with pkgs; [
+    # Rust
+    rustToolchain
+    rustPlatform.cargoSetupHook
+
+    # GTK
+    wrapGAppsHook4
+
+    # Build
+    cmake
     ninja
     meson
     gettext
     appstream
     grass-sass
     pkg-config
-    rustToolchain
-    wrapGAppsHook4
     desktop-file-utils
-    rustPlatform.cargoSetupHook
   ];
 
   # Runtime dependencies which will be shipped
   # with nix package
   buildInputs = with pkgs; [
+    # Rust
+    rustPlatform.bindgenHook
+
+    # GTK
     gtk4
     glib
-    sqlite
-    libwebp
-    openssl
-    libadwaita
-    gdk-pixbuf
     libglycin
-    gnome-desktop
+    gdk-pixbuf
+    libadwaita
     glycin-loaders
     libglycin-gtk4
     adwaita-icon-theme
+
+    # Build
+    sqlite
+    libwebp
+    openssl
+    gnome-desktop
     desktop-file-utils
-    rustPlatform.bindgenHook
   ];
 
   # Compiler LD variables
