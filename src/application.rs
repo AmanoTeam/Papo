@@ -50,8 +50,6 @@ pub struct Application {
     split_view: adw::NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
-    /// Progress bar displayed when syncing data.
-    sync_progress_bar: gtk::ProgressBar,
 
     /// JID from the connected user.
     user_jid: Option<String>,
@@ -700,8 +698,6 @@ impl AsyncComponent for Application {
                 }
             });
 
-        let sync_progress_bar = gtk::ProgressBar::new();
-
         let model = Self {
             page: AppPage::Loading,
             login,
@@ -712,7 +708,6 @@ impl AsyncComponent for Application {
             chat_view,
             split_view: adw::NavigationSplitView::new(),
             session_page: AppSessionPage::Empty,
-            sync_progress_bar,
 
             user_jid: None,
             user_push_name: None,
