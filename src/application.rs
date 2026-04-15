@@ -67,12 +67,12 @@ pub struct Application {
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
 #[strum(serialize_all = "lowercase")]
 enum AppPage {
-    /// Loading page.
-    Loading,
     /// Login view.
     Login,
     /// Session view.
     Session,
+    /// Loading/fetching page.
+    Fetching,
     /// Error page.
     Error,
 }
@@ -100,8 +100,8 @@ enum AppState {
 enum AppSessionPage {
     /// No chat selected view.
     Empty,
-    /// Chat conversation view.
-    Chat,
+    /// Chat history view.
+    ChatHistory,
 }
 
 #[derive(Debug)]
@@ -421,7 +421,7 @@ impl AsyncComponent for Application {
                 gtk::Stack {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
 
-                    add_named[Some("loading")] = &adw::ToolbarView {
+                    add_named[Some("fetching")] = &adw::ToolbarView {
                         add_top_bar = &adw::HeaderBar {
                             pack_end = &gtk::Button {
                                 set_icon_name: "info-outline-symbolic",
@@ -537,7 +537,7 @@ impl AsyncComponent for Application {
                                     },
 
                                     #[local_ref]
-                                    add_named[Some("chat")] = chat_view_widget -> adw::ToolbarView {},
+                                    add_named[Some("chat-history")] = chat_view_widget -> adw::ToolbarView {},
 
                                     #[watch]
                                     set_visible_child_name: model.session_page.as_ref(),
@@ -699,7 +699,7 @@ impl AsyncComponent for Application {
             });
 
         let model = Self {
-            page: AppPage::Loading,
+            page: AppPage::Fetching,
             login,
             state: AppState::Loading,
             client,
@@ -790,7 +790,7 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::LoggedOut => {
-                self.page = AppPage::Loading;
+                self.page = AppPage::Fetching;
                 self.state = AppState::Pairing;
 
                 sender.input(AppMsg::ResetSession);
@@ -815,7 +815,7 @@ impl AsyncComponent for Application {
                 qr_code,
                 timeout,
             } => {
-                if self.page == AppPage::Loading {
+                if self.page == AppPage::Fetching {
                     self.page = AppPage::Login;
                 }
 
@@ -839,7 +839,7 @@ impl AsyncComponent for Application {
 
             AppMsg::ChatOpen => {
                 self.split_view.set_show_content(true);
-                self.session_page = AppSessionPage::Chat;
+                self.session_page = AppSessionPage::ChatHistory;
             }
             AppMsg::ChatClosed => {
                 self.chat_list.emit(ChatListInput::ClearSelection);
@@ -1181,11 +1181,11 @@ impl AsyncComponent for Application {
                     AppPage::Login => {
                         self.login.emit(LoginInput::Error { message });
                     }
-                    AppPage::Loading => {
-                        self.page = AppPage::Error;
-                    }
                     AppPage::Session => {
                         // TODO: display error
+                    }
+                    AppPage::Fetching => {
+                        self.page = AppPage::Error;
                     }
                     AppPage::Error => {}
                 }
