@@ -45,7 +45,7 @@ mod utils;
 mod widgets;
 
 mod icon_names {
-    #[allow(unused_imports)]
+    #[allow(unused_imports)] // FIXME: Only re-export used icons
     pub use shipped::*; // Include all shipped icons by default
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
