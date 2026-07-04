@@ -17,31 +17,29 @@ const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 /// Represents a chat message.
 #[derive(Clone, Debug)]
 pub struct Message {
-    /// Local unique message identifier.
-    pub local_id: Uuid,
-    /// Server unique message identifier.
-    pub server_id: String,
-    /// JID (Jabbed ID) - unique chat identifier.
-    pub chat_jid: String,
-    /// Sender identifier.
-    pub sender_jid: String,
-    /// Sender's display name (push name, for group chats).
-    pub sender_name: Option<String>,
-
+    pub db: Arc<Database>,
     /// Media attached to this message.
     pub media: Option<Media>,
     /// Actual state of the message.
     pub status: Status,
     /// Message text.
     pub content: String,
+    /// JID (Jabbed ID) - unique chat identifier.
+    pub chat_jid: String,
+    /// Local unique message identifier.
+    pub local_id: Uuid,
     /// Whether the message was sent by the current user.
     pub outgoing: bool,
     /// Reactions on this message (emoji -> [sender JID]).
     pub reactions: IndexMap<String, Vec<String>>,
+    /// Sender identifier.
+    pub sender_jid: String,
+    /// Server unique message identifier.
+    pub server_id: String,
     /// When the message was sent/received.
     pub timestamp: DateTime<Utc>,
-
-    pub db: Arc<Database>,
+    /// Sender's display name (push name, for group chats).
+    pub sender_name: Option<String>,
 }
 
 impl Message {
