@@ -48,6 +48,13 @@ impl Message {
         self.db.save_message(&self.chat_jid, self).await
     }
 
+    /// Insert the message, skipping if a duplicate `server_id` already exists.
+    /// Also ensures the chat exists for foreign key satisfaction.
+    /// Returns `true` if inserted, `false` if skipped as duplicate.
+    pub async fn save_or_ignore(&self) -> Result<bool, libsql::Error> {
+        self.db.save_synced_message(&self.chat_jid, self).await
+    }
+
     /// Load the chat this message is attached to.
     pub async fn load_chat(&self) -> Result<Chat, libsql::Error> {
         self.db

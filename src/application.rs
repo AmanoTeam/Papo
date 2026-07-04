@@ -1209,12 +1209,6 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::MessagesSynced { chat_jid, messages } => {
-                // Check if chat exists (quick check, non-blocking).
-                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
-                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
-                    return;
-                }
-
                 let is_group = chat_jid.ends_with("@g.us");
 
                 // Update chat in the list (lightweight UI update) before moving values.
@@ -1461,12 +1455,6 @@ impl AsyncComponent for Application {
                 is_group,
                 messages,
             } => {
-                // Check if chat exists.
-                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
-                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
-                    return;
-                }
-
                 let db = Arc::clone(&self.db);
 
                 // Collect sender info for participant updates.
@@ -1530,11 +1518,11 @@ impl AsyncComponent for Application {
                             db: Arc::clone(&db),
                         };
 
-                        // Save the message to database.
-                        if let Err(e) = message.save().await {
-                            tracing::error!("Failed to save synced message: {}", e);
-                        } else {
-                            saved_count += 1;
+                        // Save the message, skipping duplicates on server_id.
+                        match message.save_or_ignore().await {
+                            Ok(true) => saved_count += 1,
+                            Ok(false) => {}
+                            Err(e) => tracing::error!("Failed to save synced message: {}", e),
                         }
                     }
 

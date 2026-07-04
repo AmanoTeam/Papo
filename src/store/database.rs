@@ -165,6 +165,18 @@ impl Database {
         Ok(())
     }
 
+    /// Ensure a chat row exists in the database to satisfy foreign key constraints.
+    /// Uses `INSERT OR IGNORE` so it won't overwrite an existing chat with proper data.
+    pub async fn ensure_chat_exists(&self, jid: &str) -> Result<(), libsql::Error> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO chats (jid, name, muted, pinned, last_message_time, archived) VALUES (?1, ?1, 0, 0, 0, 0)",
+                [jid],
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn load_chat(&self, jid: &str) -> Result<Option<Chat>, libsql::Error> {
         let mut rows = self
             .conn
@@ -297,6 +309,55 @@ impl Database {
             .await?;
 
         Ok(())
+    }
+
+    /// Save a synced message, skipping duplicates on both `local_id` and `server_id`.
+    /// Also ensures the chat exists to satisfy the foreign key constraint.
+    /// Returns `true` if the message was inserted, `false` if it was a duplicate.
+    pub async fn save_synced_message(
+        &self,
+        chat_jid: &str,
+        msg: &ChatMessage,
+    ) -> Result<bool, libsql::Error> {
+        self.ensure_chat_exists(chat_jid).await?;
+
+        let media_type = msg.media.as_ref().map(|m| format!("{:?}", m.r#type));
+        let media_data = msg.media.as_ref().map(|m| m.data.as_ref().clone());
+
+        let rows = self
+            .conn
+            .execute(
+                r"
+            INSERT OR IGNORE INTO messages (local_id, server_id, chat_jid, sender_jid, sender_name,
+                                            content, outgoing, status, timestamp, media_type, media_data)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ",
+                libsql::params![
+                    msg.local_id.to_string(),
+                    msg.server_id.clone(),
+                    chat_jid,
+                    msg.sender_jid.clone(),
+                    msg.sender_name.clone(),
+                    msg.content.clone(),
+                    i32::from(msg.outgoing),
+                    msg.status as i32,
+                    msg.timestamp.timestamp(),
+                    media_type,
+                    media_data
+                ],
+            )
+            .await?;
+
+        if rows > 0 {
+            self.conn
+                .execute(
+                    "UPDATE chats SET last_message_time = ?1 WHERE jid = ?2",
+                    libsql::params![msg.timestamp.timestamp(), chat_jid],
+                )
+                .await?;
+        }
+
+        Ok(rows > 0)
     }
 
     pub async fn load_message_by_local_id(
