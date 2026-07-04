@@ -40,27 +40,26 @@ pub struct ChatView {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChatViewState {
+    /// User presence.
+    presence: Option<String>,
     /// Whether a load operation is currently in progress.
     is_loading: bool,
-    /// Whether the scroll is at the bottom.
-    is_at_bottom: bool,
     /// Whether messages at the top have been trimmed due to exceeding `MAX_LOADED_ROWS`.
     top_trimmed: bool,
+    /// Whether the scroll is at the bottom.
+    is_at_bottom: bool,
     /// Whether messages at the bottom have been trimmed due to exceeding `MAX_LOADED_ROWS`.
     bottom_trimmed: bool,
     /// Whether there might be more messages to load.
     has_more_messages: bool,
-
-    /// User presence.
-    presence: Option<String>,
     /// Date of the first displayed message (top).
     first_message_date: Option<NaiveDate>,
     /// Date of the last appended message (bottom).
     last_message_date: Option<NaiveDate>,
-    /// Timestamp of the oldest loaded message.
-    oldest_loaded_timestamp: Option<i64>,
     /// Timestamp of the newest loaded message.
     newest_loaded_timestamp: Option<i64>,
+    /// Timestamp of the oldest loaded message.
+    oldest_loaded_timestamp: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -265,17 +264,16 @@ impl AsyncComponent for ChatView {
         let model = Self {
             chat: None,
             state: ChatViewState {
+                presence: None,
                 is_loading: true,
-                is_at_bottom: true,
                 top_trimmed: true,
+                is_at_bottom: true,
                 bottom_trimmed: false,
                 has_more_messages: false,
-
-                presence: None,
                 first_message_date: None,
                 last_message_date: None,
-                oldest_loaded_timestamp: None,
                 newest_loaded_timestamp: None,
+                oldest_loaded_timestamp: None,
             },
             row_metadata: VecDeque::new(),
             message_entry: gtk::Entry::new(),
@@ -355,7 +353,7 @@ impl AsyncComponent for ChatView {
         AsyncComponentParts { model, widgets }
     }
 
-    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    #[allow(clippy::too_many_lines)]
     async fn update(
         &mut self,
         input: Self::Input,
@@ -381,7 +379,7 @@ impl AsyncComponent for ChatView {
 
                 // Load the initial batch of messages.
                 if let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await {
-                    self.state.has_more_messages = messages.len() == INITIAL_LOAD_COUNT as usize;
+                    self.state.has_more_messages = messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap();
 
                     // Track the oldest loaded timestamp for pagination.
                     if let Some(oldest) = messages.last() {
@@ -563,7 +561,7 @@ impl AsyncComponent for ChatView {
                         && let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await
                     {
                         self.state.has_more_messages =
-                            messages.len() == INITIAL_LOAD_COUNT as usize;
+                            messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap();
 
                         // Track the oldest loaded timestamp for pagination.
                         if let Some(oldest) = messages.last() {
@@ -617,7 +615,7 @@ impl AsyncComponent for ChatView {
         }
     }
 
-    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    #[allow(clippy::too_many_lines)]
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
@@ -639,7 +637,8 @@ impl AsyncComponent for ChatView {
                 self.state.is_loading = true;
 
                 if let Ok(messages) = chat.load_messages_before(before_ts, LOAD_MORE_COUNT).await {
-                    self.state.has_more_messages = messages.len() == LOAD_MORE_COUNT as usize;
+                    self.state.has_more_messages =
+                        messages.len() == usize::try_from(LOAD_MORE_COUNT).unwrap();
 
                     // Update the oldest loaded timestamp cursor.
                     if let Some(oldest) = messages.last() {
@@ -723,7 +722,7 @@ impl AsyncComponent for ChatView {
 
                 if let Ok(messages) = chat.load_messages_after(after_ts, LOAD_MORE_COUNT).await {
                     // If fewer messages returned than requested, we've reached the real bottom.
-                    if messages.len() < LOAD_MORE_COUNT as usize {
+                    if messages.len() < usize::try_from(LOAD_MORE_COUNT).unwrap() {
                         self.state.bottom_trimmed = false;
                     }
 
@@ -912,23 +911,22 @@ pub enum ChatRow {
 }
 
 pub struct ChatRowWidgets {
-    /// Outer container for message bubbles.
-    message_box: gtk::Box,
     /// The message bubble itself.
     bubble_box: gtk::Box,
+    /// Outer container for message bubbles.
+    message_box: gtk::Box,
+    /// Message status icon (e.g. "Sending", "Sent").
+    status_icon: gtk::Image,
     /// Sender name label (visible in group chats for incoming messages).
     sender_label: gtk::Label,
     /// Message text content.
     content_label: gtk::Label,
-    /// Timestamp label (e.g. "14:30").
-    timestamp_label: gtk::Label,
-    /// Message status icon (e.g. "Sending", "Sent").
-    status_icon: gtk::Image,
-
-    /// Date separator label (e.g. "Today", "Yesterday").
-    separator_label: gtk::Label,
     /// Service event label (e.g. "someone added xxx").
     service_label: gtk::Label,
+    /// Date separator label (e.g. "Today", "Yesterday").
+    separator_label: gtk::Label,
+    /// Timestamp label (e.g. "14:30").
+    timestamp_label: gtk::Label,
 }
 
 impl RelmListItem for ChatRow {
@@ -1023,14 +1021,14 @@ impl RelmListItem for ChatRow {
         root.append(&message_box);
 
         let widgets = ChatRowWidgets {
-            message_box,
             bubble_box,
+            message_box,
+            status_icon,
             sender_label,
             content_label,
-            timestamp_label,
-            status_icon,
-            separator_label,
             service_label,
+            separator_label,
+            timestamp_label,
         };
 
         (root, widgets)
