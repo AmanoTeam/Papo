@@ -86,7 +86,6 @@ impl ClientState {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum ClientInput {
     /// Start the client connection.
     Start,
@@ -117,7 +116,7 @@ pub enum ClientInput {
         message_ids: Vec<String>,
     },
     /// Send a message.
-    SendMessage { message: ChatMessage },
+    SendMessage { message: Box<ChatMessage> },
     /// Fetch avatar for a chat.
     FetchAvatar {
         /// Chat JID.
@@ -428,7 +427,7 @@ impl AsyncComponent for Client {
                         return;
                     };
 
-                    match Box::pin(client.send_message(jid, message.clone().into())).await {
+                    match Box::pin(client.send_message(jid, (*message).clone().into())).await {
                         Ok(msg_id) => {
                             // Update the message server id in-place.
                             message.server_id = msg_id;

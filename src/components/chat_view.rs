@@ -63,7 +63,6 @@ pub struct ChatViewState {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum ChatViewInput {
     /// Open a chat.
     Open(Chat),
@@ -73,7 +72,7 @@ pub enum ChatViewInput {
     /// Send a message.
     SendMessage,
     /// New message received.
-    MessageReceived(ChatMessage),
+    MessageReceived(Box<ChatMessage>),
 
     /// User presence updated.
     PresenceUpdate {
@@ -507,7 +506,7 @@ impl AsyncComponent for ChatView {
                 let ts = message.timestamp.timestamp();
                 self.state.newest_loaded_timestamp = Some(ts);
 
-                self.list_view_wrapper.append(ChatRow::Message(message));
+                self.list_view_wrapper.append(ChatRow::Message(*message));
                 self.row_metadata.push_back(RowMetadata::Message(ts));
 
                 // If the user is at the bottom, they're seeing this message — mark read.

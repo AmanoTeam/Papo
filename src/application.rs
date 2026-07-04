@@ -1097,9 +1097,10 @@ impl AsyncComponent for Application {
                     }
 
                     self.client.emit(ClientInput::SendMessage {
-                        message: message.clone(),
+                        message: Box::new(message.clone()),
                     });
-                    self.chat_view.emit(ChatViewInput::MessageReceived(message));
+                    self.chat_view
+                        .emit(ChatViewInput::MessageReceived(Box::new(message)));
                     self.chat_list.emit(ChatListInput::UpdateChat {
                         chat,
                         move_to_top: true,
