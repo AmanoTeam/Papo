@@ -273,6 +273,25 @@ pub struct SyncedMessage {
     pub sender_name: Option<String>,
 }
 
+/// Delete the `WhatsApp` database files to clear stored credentials.
+fn clear_whatsapp_credentials() {
+    let db_path = DATA_DIR.join("whatsapp.db");
+    let wal_path = format!("{}-wal", db_path.display());
+    let shm_path = format!("{}-shm", db_path.display());
+
+    for path in [
+        db_path.as_path(),
+        std::path::Path::new(&wal_path),
+        std::path::Path::new(&shm_path),
+    ] {
+        if path.exists()
+            && let Err(e) = std::fs::remove_file(path)
+        {
+            tracing::warn!("Failed to delete {}: {}", path.display(), e);
+        }
+    }
+}
+
 /// Extract synced messages from a conversation's message list.
 /// Shared between `ProcessJoinedGroup` and `ProcessHistorySync`.
 fn extract_synced_messages(
@@ -789,7 +808,17 @@ impl AsyncComponent for Client {
             }
             ClientCommand::Restart => {
                 // Stop the client.
-                sender.oneshot_command(async { ClientCommand::Stop });
+                {
+                    let mut handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        client.disconnect().await;
+                        *handle = None;
+                    }
+                }
+                tracing::info!("Disconnected from WhatsApp");
+
+                // Clear credentials for a fresh start.
+                clear_whatsapp_credentials();
 
                 // Reset the client state.
                 self.update_state(ClientState::Loading);
@@ -819,14 +848,34 @@ impl AsyncComponent for Client {
             ClientCommand::LoggedOut => {
                 tracing::info!("Logged out from WhatsApp");
 
+                // Disconnect and clear client reference.
+                {
+                    let mut handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        client.disconnect().await;
+                        *handle = None;
+                    }
+                }
+
+                // Clear stale credentials so the next start begins fresh pairing.
+                clear_whatsapp_credentials();
+
                 self.update_state(ClientState::LoggedOut);
                 let _ = sender.output(ClientOutput::LoggedOut);
             }
             ClientCommand::Disconnected => {
                 tracing::info!("Disconnected from WhatsApp");
 
-                self.update_state(ClientState::Disconnected);
-                let _ = sender.output(ClientOutput::Disconnected);
+                // Don't overwrite active connection states from stale disconnect
+                // events (e.g. when a previous connection's Disconnected event
+                // arrives after a new connection has started).
+                if !matches!(
+                    self.state,
+                    ClientState::Connected | ClientState::Connecting | ClientState::Syncing
+                ) {
+                    self.update_state(ClientState::Disconnected);
+                    let _ = sender.output(ClientOutput::Disconnected);
+                }
             }
 
             ClientCommand::Pair {

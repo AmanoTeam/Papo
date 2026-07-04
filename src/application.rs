@@ -840,7 +840,9 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Fetching;
                 self.state = AppState::Pairing;
 
-                sender.input(AppMsg::ResetSession);
+                // Start a fresh client — the old credentials have been cleared
+                // by the ClientCommand::LoggedOut handler.
+                self.client.emit(ClientInput::Start);
 
                 let db = self.db.clone();
                 let chats = std::mem::take(&mut self.chats);
