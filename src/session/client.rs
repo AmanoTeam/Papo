@@ -287,7 +287,7 @@ pub enum ClientCommand {
     /// Process a `JoinedGroup` event (conversation sync) in background.
     ProcessJoinedGroup {
         /// Lazy conversation to parse.
-        lazy_conv: LazyConversation,
+        lazy_conv: Box<LazyConversation>,
     },
 }
 
@@ -589,7 +589,9 @@ impl AsyncComponent for Client {
                                         // Offload conversation parsing to background task
                                         // to avoid blocking the UI thread
                                         sender.oneshot_command(async move {
-                                            ClientCommand::ProcessJoinedGroup { lazy_conv }
+                                            ClientCommand::ProcessJoinedGroup {
+                                                lazy_conv: Box::new(lazy_conv),
+                                            }
                                         });
                                     }
 
