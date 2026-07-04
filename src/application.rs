@@ -236,7 +236,7 @@ pub enum AppCmd {
 }
 
 impl Application {
-    async fn add_chat(&mut self, chat: Chat) {
+    fn add_chat(&mut self, chat: Chat) {
         // Insert the chat into our cached list.
         self.chats.push(chat.clone());
 
@@ -248,16 +248,19 @@ impl Application {
         });
 
         // Save the chat in the database.
-        if let Err(e) = chat.save().await {
-            tracing::error!("Failed to save chat: {}", e);
-        }
+        let chat_clone = chat.clone();
+        relm4::spawn(async move {
+            if let Err(e) = chat_clone.save().await {
+                tracing::error!("Failed to save chat: {}", e);
+            }
+        });
 
         // Add the chat in the chat list.
         self.chat_list
             .emit(ChatListInput::AddChat { chat, at_top: true });
     }
 
-    async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
+    fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
         // Check if the message's chat is a group.
         let is_group = chat_jid.ends_with("@g.us");
 
@@ -286,8 +289,7 @@ impl Application {
                 last_message_time: message.timestamp,
 
                 db: Arc::clone(&self.db),
-            })
-            .await;
+            });
 
             self.client.emit(ClientInput::FetchAvatar {
                 jid: chat_jid.to_string(),
@@ -306,19 +308,24 @@ impl Application {
                 message
                     .sender_name
                     .clone()
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                    .unwrap_or_else(|| i18n!("Unknown")),
             );
         }
 
         // Save the chat in the database.
-        if let Err(e) = chat.save().await {
-            tracing::error!("Failed to update chat: {}", e);
-        }
+        let chat_clone = chat.clone();
+        relm4::spawn(async move {
+            if let Err(e) = chat_clone.save().await {
+                tracing::error!("Failed to update chat: {}", e);
+            }
+        });
 
         // Save the message in the database.
-        if let Err(e) = message.save().await {
-            tracing::error!("Failed to save message: {}", e);
-        }
+        relm4::spawn(async move {
+            if let Err(e) = message.save().await {
+                tracing::error!("Failed to save message: {}", e);
+            }
+        });
 
         // Update the chat in the chat list.
         self.chat_list.emit(ChatListInput::UpdateChat {
@@ -355,9 +362,12 @@ impl Application {
             }
 
             // Mark chat as read locally.
-            if let Err(e) = chat.mark_read().await {
-                tracing::error!("Failed to mark a chat as read: {e}");
-            }
+            let chat_clone = chat.clone();
+            relm4::spawn(async move {
+                if let Err(e) = chat_clone.mark_read().await {
+                    tracing::error!("Failed to mark a chat as read: {e}");
+                }
+            });
 
             // Update the chat in the chat list.
             self.chat_list.emit(ChatListInput::UpdateChat {
@@ -947,9 +957,12 @@ impl AsyncComponent for Application {
                                     message.status = status;
 
                                     // Update the message in the database.
-                                    if let Err(e) = message.save().await {
-                                        tracing::error!("Failed to update message: {}", e);
-                                    }
+                                    let msg_clone = message.clone();
+                                    relm4::spawn(async move {
+                                        if let Err(e) = msg_clone.save().await {
+                                            tracing::error!("Failed to update message: {}", e);
+                                        }
+                                    });
                                 }
                             }
 
@@ -996,9 +1009,12 @@ impl AsyncComponent for Application {
                     message.status = status;
 
                     // Update the message in the database.
-                    if let Err(e) = message.save().await {
-                        tracing::error!("Failed to update message: {}", e);
-                    }
+                    let msg_clone = message.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = msg_clone.save().await {
+                            tracing::error!("Failed to update message: {}", e);
+                        }
+                    });
 
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
                         msg_id: message.server_id,
@@ -1008,46 +1024,47 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::MessageReceived { info, message } => {
-                if let Some(content) = message.conversation.clone() {
-                    match content.as_str() {
-                        "status@broadcast" => {
-                            // TODO: handle status events
-                        }
-                        _ if !content.is_empty() => {
-                            let chat_jid = info.source.chat.to_string();
-                            let outgoing = info.source.is_from_me;
+                let content = message
+                    .conversation
+                    .clone()
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| {
+                        message
+                            .extended_text_message
+                            .as_ref()
+                            .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
+                    });
 
-                            let status = if outgoing {
-                                MessageStatus::Read
-                            } else {
-                                MessageStatus::Sent
-                            };
-                            let chat_message = ChatMessage {
-                                local_id: Uuid::new_v4(),
-                                server_id: info.id.clone(),
-                                chat_jid: chat_jid.clone(),
-                                sender_jid: info.source.sender.to_string(),
-                                sender_name: Some(info.push_name.clone()),
+                if let Some(content) = content {
+                    if content == "status@broadcast" {
+                        // TODO: handle status events
+                    } else {
+                        let chat_jid = info.source.chat.to_string();
+                        let outgoing = info.source.is_from_me;
 
-                                media: None,
-                                status,
-                                content,
-                                outgoing,
-                                reactions: IndexMap::new(),
-                                timestamp: info.timestamp,
+                        let status = if outgoing {
+                            MessageStatus::Read
+                        } else {
+                            MessageStatus::Sent
+                        };
+                        let chat_message = ChatMessage {
+                            local_id: Uuid::new_v4(),
+                            server_id: info.id.clone(),
+                            chat_jid: chat_jid.clone(),
+                            sender_jid: info.source.sender.to_string(),
+                            sender_name: Some(info.push_name.clone()),
 
-                                db: Arc::clone(&self.db),
-                            };
+                            media: None,
+                            status,
+                            content,
+                            outgoing,
+                            reactions: IndexMap::new(),
+                            timestamp: info.timestamp,
 
-                            self.add_message(&chat_jid, chat_message).await;
-                        }
-                        _ => {
-                            tracing::trace!(
-                                "Message received: info = {:#?}, message = {:#?}",
-                                info,
-                                message
-                            );
-                        }
+                            db: Arc::clone(&self.db),
+                        };
+
+                        self.add_message(&chat_jid, chat_message);
                     }
                 } else if let Some(sent_message) = message.device_sent_message {
                     if let Some(_chat_jid) = sent_message.destination_jid {
@@ -1092,9 +1109,12 @@ impl AsyncComponent for Application {
                     };
 
                     // Save the message in the database.
-                    if let Err(e) = message.save().await {
-                        tracing::error!("Failed to save message: {}", e);
-                    }
+                    let msg_clone = message.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = msg_clone.save().await {
+                            tracing::error!("Failed to save message: {}", e);
+                        }
+                    });
 
                     self.client.emit(ClientInput::SendMessage {
                         message: Box::new(message.clone()),
