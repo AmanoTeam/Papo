@@ -75,8 +75,13 @@ macro_rules! i18n {
 
 #[macro_export]
 macro_rules! i18n_f {
-    ($s:expr, $($arg:tt)*) => {
-        format!(gettextrs::gettext($s).as_str(), $($arg)*)
+    ($s:expr, $a:expr) => {
+        gettextrs::gettext($s).replacen("{0}", &format!("{}", $a), 1)
+    };
+    ($s:expr, $a:expr, $b:expr) => {
+        gettextrs::gettext($s)
+            .replacen("{0}", &format!("{}", $a), 1)
+            .replacen("{1}", &format!("{}", $b), 1)
     };
 }
 
@@ -114,7 +119,7 @@ fn main() {
         .expect("Failed to set the number of threads");
 
     // Set app name and initialize libadwaita.
-    glib::set_application_name("Papo");
+    glib::set_application_name(&i18n!("Papo"));
     adw::init().expect("Failed to init GTK/libadwaita");
 
     // Initialize default resources.
