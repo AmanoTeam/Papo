@@ -17,7 +17,7 @@ impl SimpleComponent for AboutDialog {
 
     fn init_root() -> Self::Root {
         adw::AboutDialog::builder()
-            .application_name("Papo")
+            .application_name(i18n!("Papo"))
             .application_icon(APP_ID)
             .license_type(gtk::License::Apache20)
             .website("https://github.com/AmanoTeam/Papo")

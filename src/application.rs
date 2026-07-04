@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use adw::prelude::*;
+use adw::{NavigationSplitView, prelude::*};
 use chrono::{DateTime, Utc};
 use gtk::{gio, glib, pango};
 use indexmap::IndexMap;
@@ -32,8 +32,12 @@ use crate::{
 };
 
 pub struct Application {
+    /// Papo's own database.
+    db: Arc<Database>,
     /// Page main stack is displaying.
     page: AppPage,
+    /// Current chats data.
+    chats: Vec<Chat>,
     /// User login component.
     login: AsyncController<Login>,
     /// Current app state.
@@ -42,26 +46,20 @@ pub struct Application {
     client: AsyncController<Client>,
     /// Toaster overlay.
     toaster: Toaster,
+    /// JID from the connected user.
+    user_jid: Option<String>,
     /// Chat list component.
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
     chat_view: AsyncController<ChatView>,
     /// The `SplitView` widget from the session page.
-    split_view: adw::NavigationSplitView,
+    split_view: NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
-
-    /// JID from the connected user.
-    user_jid: Option<String>,
-    /// Push name from the connected user.
-    user_push_name: Option<String>,
-
-    /// Papo's own database.
-    db: Arc<Database>,
-    /// Current chats data.
-    chats: Vec<Chat>,
     /// Runtime cache for `WhatsApp` data.
     runtime_cache: Arc<RuntimeCache>,
+    /// Push name from the connected user.
+    user_push_name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -388,12 +386,12 @@ impl AsyncComponent for Application {
     menu! {
         primary_menu: {
             section! {
-                "_Contacts" => ContactsAction,
+                &i18n!("_Contacts") => ContactsAction,
             },
             section! {
-                "_Preferences" => PreferencesAction,
-                "_Keyboard Shortcuts" => ShortcutsAction,
-                "_About Papo" => AboutAction,
+                &i18n!("_Preferences") => PreferencesAction,
+                &i18n!("_Keyboard Shortcuts") => ShortcutsAction,
+                &i18n!("_About Papo") => AboutAction,
             }
         }
     }
@@ -401,7 +399,7 @@ impl AsyncComponent for Application {
     view! {
         #[root]
         main_window = adw::ApplicationWindow::new(&main_application()) {
-            set_title: Some("Papo"),
+            set_title: Some(&i18n!("Papo")),
             set_visible: true,
             set_width_request: 360,
             set_height_request: 440,
@@ -471,7 +469,7 @@ impl AsyncComponent for Application {
                             #[name = "sidebar"]
                             #[wrap(Some)]
                             set_sidebar = &adw::NavigationPage {
-                                set_title: "Papo",
+                                set_title: &i18n!("Papo"),
                                 set_css_classes: &["background"],
 
                                 #[wrap(Some)]
@@ -520,7 +518,7 @@ impl AsyncComponent for Application {
                             #[name = "content"]
                             #[wrap(Some)]
                             set_content = &adw::NavigationPage {
-                                set_title: "Chat",
+                                set_title: &i18n!("Chat"),
                                 set_css_classes: &["view"],
 
                                 #[wrap(Some)]
@@ -699,22 +697,20 @@ impl AsyncComponent for Application {
             });
 
         let model = Self {
+            db,
             page: AppPage::Fetching,
+            chats: Vec::new(),
             login,
             state: AppState::Loading,
             client,
             toaster: Toaster::default(),
+            user_jid: None,
             chat_list,
             chat_view,
-            split_view: adw::NavigationSplitView::new(),
+            split_view: NavigationSplitView::new(),
             session_page: AppSessionPage::Empty,
-
-            user_jid: None,
-            user_push_name: None,
-
-            db,
-            chats: Vec::new(),
             runtime_cache,
+            user_push_name: None,
         };
 
         let split_view = &model.split_view;
