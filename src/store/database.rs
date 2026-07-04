@@ -750,7 +750,7 @@ impl Database {
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let chat_jid: String = row.get(1)?;
+            let chat_jid: String = row.get(2)?;
             let message = ChatMessage {
                 local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
                 server_id: row.get(1)?,

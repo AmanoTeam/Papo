@@ -115,6 +115,10 @@ pub enum AppMsg {
     ResetSession,
     /// Client has been disconnected.
     Disconnected,
+    /// Self push name updated.
+    SelfPushNameUpdated {
+        push_name: String,
+    },
 
     /// Pair device.
     PairDevice {
@@ -201,9 +205,27 @@ pub enum AppMsg {
     },
     /// Messages synced from history for a chat.
     MessagesSynced {
+        /// Chat JID.
         chat_jid: String,
+        /// Synced messages.
         messages: Vec<SyncedMessage>,
     },
+
+    /// Chat property updated (pin, mute, archive).
+    ChatPropertyUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Whether the chat is pinned.
+        pinned: Option<bool>,
+        /// Whether the chat is muted.
+        muted: Option<bool>,
+        /// Whether the chat is archived.
+        archived: Option<bool>,
+    },
+    /// History sync completed.
+    HistorySyncCompleted,
+    /// Offline sync completed.
+    OfflineSyncCompleted,
 
     Unknown,
     /// Error occurred.
@@ -603,6 +625,9 @@ impl AsyncComponent for Application {
                 ClientOutput::Connected { jid, push_name } => AppMsg::Connected { jid, push_name },
                 ClientOutput::LoggedOut => AppMsg::LoggedOut,
                 ClientOutput::Disconnected => AppMsg::Disconnected,
+                ClientOutput::SelfPushNameUpdated { push_name } => {
+                    AppMsg::SelfPushNameUpdated { push_name }
+                }
 
                 ClientOutput::PairCode {
                     code,
@@ -671,6 +696,21 @@ impl AsyncComponent for Application {
                 ClientOutput::MessagesSynced { chat_jid, messages } => {
                     AppMsg::MessagesSynced { chat_jid, messages }
                 }
+
+                ClientOutput::ChatPropertyUpdate {
+                    jid,
+                    pinned,
+                    muted,
+                    archived,
+                } => AppMsg::ChatPropertyUpdate {
+                    jid,
+                    pinned,
+                    muted,
+                    archived,
+                },
+
+                ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
+                ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
                 ClientOutput::ContactUpdate {
                     jid,
@@ -812,6 +852,9 @@ impl AsyncComponent for Application {
             }
             AppMsg::Disconnected => {
                 self.state = AppState::Disconnected;
+            }
+            AppMsg::SelfPushNameUpdated { push_name } => {
+                self.user_push_name = Some(push_name);
             }
             AppMsg::ResetSession => {
                 self.client.emit(ClientInput::Restart);
@@ -1190,6 +1233,67 @@ impl AsyncComponent for Application {
                 });
             }
 
+            AppMsg::ChatPropertyUpdate {
+                jid,
+                pinned,
+                muted,
+                archived,
+            } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    if let Some(pinned) = pinned {
+                        chat.pinned = pinned;
+                    }
+                    if let Some(muted) = muted {
+                        chat.muted = muted;
+                    }
+                    if let Some(archived) = archived {
+                        chat.archived = archived;
+                    }
+
+                    // Always save the chat to the database (including archive state).
+                    let chat_clone = chat.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = chat_clone.save().await {
+                            tracing::error!("Failed to save chat property update: {}", e);
+                        }
+                    });
+
+                    // Handle UI updates based on archive state.
+                    if let Some(archived) = archived {
+                        if archived {
+                            // Remove from chat list UI.
+                            self.chat_list
+                                .emit(ChatListInput::RemoveChat { jid: jid.clone() });
+                        } else {
+                            // Unarchive: add back to chat list (AddChat handles both
+                            // new and existing entries).
+                            self.chat_list.emit(ChatListInput::AddChat {
+                                chat: chat.clone(),
+                                at_top: false,
+                            });
+                        }
+                    } else {
+                        // Pin/mute only — update in place.
+                        self.chat_list.emit(ChatListInput::UpdateChat {
+                            chat: chat.clone(),
+                            move_to_top: false,
+                        });
+                    }
+                }
+            }
+            AppMsg::HistorySyncCompleted => {
+                tracing::info!("History sync completed");
+                if self.state == AppState::Syncing {
+                    self.state = AppState::Ready;
+                }
+            }
+            AppMsg::OfflineSyncCompleted => {
+                tracing::info!("Offline sync completed");
+                if self.state == AppState::Syncing {
+                    self.state = AppState::Ready;
+                }
+            }
+
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
                 self.state = AppState::Error(message.clone());
@@ -1317,7 +1421,7 @@ impl AsyncComponent for Application {
                     db: Arc::clone(&self.db),
                 };
 
-                // Add to cached list and UI immediately (don't wait for DB).
+                // Add to cached list (keep in memory for property updates even if archived).
                 self.chats.push(chat.clone());
 
                 // Sort chats.
@@ -1327,11 +1431,13 @@ impl AsyncComponent for Application {
                         .then_with(|| b.last_message_time.cmp(&a.last_message_time))
                 });
 
-                // Add to chat list UI.
-                self.chat_list.emit(ChatListInput::AddChat {
-                    chat: chat.clone(),
-                    at_top: true,
-                });
+                // Add to chat list UI only if not archived.
+                if !archived {
+                    self.chat_list.emit(ChatListInput::AddChat {
+                        chat: chat.clone(),
+                        at_top: true,
+                    });
+                }
 
                 // Save the chat to database in blocking thread (fire and forget).
                 relm4::spawn(async move {

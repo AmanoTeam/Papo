@@ -65,6 +65,11 @@ pub enum ChatListInput {
     Select(String),
     /// Select a chat by its position.
     SelectPosition(u32),
+    /// Remove a chat from the list.
+    RemoveChat {
+        /// Chat JID.
+        jid: String,
+    },
     /// Clear the chat selection.
     ClearSelection,
 }
@@ -323,6 +328,14 @@ impl SimpleAsyncComponent for ChatList {
 
                     let jid = row.chat.jid.clone();
                     sender.input(ChatListInput::Select(jid));
+                }
+            }
+            ChatListInput::RemoveChat { jid } => {
+                if let Some(index) = self.get_index_by_jid(&jid) {
+                    self.list_view_wrapper.remove(index);
+                    if self.chat_jid.as_deref() == Some(&jid) {
+                        self.chat_jid = None;
+                    }
                 }
             }
             ChatListInput::ClearSelection => {

@@ -140,6 +140,9 @@ pub enum ClientOutput {
     /// Client has been disconnected.
     Disconnected,
 
+    /// Self push name updated.
+    SelfPushNameUpdated { push_name: String },
+
     /// 8-character pairing code or qr code received.
     PairCode {
         code: Option<String>,
@@ -211,6 +214,23 @@ pub enum ClientOutput {
         messages: Vec<SyncedMessage>,
     },
 
+    /// Chat property updated (pin, mute, archive).
+    ChatPropertyUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Whether the chat is pinned.
+        pinned: Option<bool>,
+        /// Whether the chat is muted.
+        muted: Option<bool>,
+        /// Whether the chat is archived.
+        archived: Option<bool>,
+    },
+
+    /// History sync completed.
+    HistorySyncCompleted,
+    /// Offline sync completed.
+    OfflineSyncCompleted,
+
     /// Avatar updated for a chat.
     AvatarUpdate {
         /// Chat JID.
@@ -245,12 +265,61 @@ pub struct SyncedMessage {
     pub content: Option<String>,
     /// Whether message was sent by current user.
     pub outgoing: bool,
-    /// Sender JID.
-    pub sender_jid: String,
     /// Message timestamp.
     pub timestamp: u64,
+    /// Sender JID.
+    pub sender_jid: String,
     /// Sender push name.
     pub sender_name: Option<String>,
+}
+
+/// Extract synced messages from a conversation's message list.
+/// Shared between `ProcessJoinedGroup` and `ProcessHistorySync`.
+fn extract_synced_messages(
+    conv: &waproto::whatsapp::Conversation,
+    chat_jid: &str,
+) -> Vec<SyncedMessage> {
+    let mut synced_messages = Vec::new();
+    for hist_msg in &conv.messages {
+        if let Some(web_msg) = &hist_msg.message
+            && let Some(msg) = &web_msg.message
+        {
+            let msg_id = web_msg.key.id.clone().unwrap_or_default();
+            let sender_jid = web_msg
+                .key
+                .participant
+                .clone()
+                .unwrap_or_else(|| chat_jid.to_string());
+            let outgoing = web_msg.key.from_me.unwrap_or(false);
+            let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            });
+
+            let content = msg
+                .conversation
+                .clone()
+                .filter(|c| !c.is_empty())
+                .or_else(|| {
+                    msg.extended_text_message
+                        .as_ref()
+                        .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
+                });
+
+            synced_messages.push(SyncedMessage {
+                id: msg_id,
+                unread: false,
+                content,
+                outgoing,
+                timestamp,
+                sender_jid,
+                sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
+            });
+        }
+    }
+    synced_messages
 }
 
 #[derive(Debug)]
@@ -286,6 +355,11 @@ pub enum ClientCommand {
     ProcessJoinedGroup {
         /// Lazy conversation to parse.
         lazy_conv: Box<LazyConversation>,
+    },
+    /// Process a `HistorySync` event in background.
+    ProcessHistorySync {
+        /// History sync protobuf.
+        history_sync: Box<waproto::whatsapp::HistorySync>,
     },
 }
 
@@ -593,16 +667,56 @@ impl AsyncComponent for Client {
                                         });
                                     }
 
-                                    Event::HistorySync(_)
-                                    | Event::OfflineSyncPreview(_)
-                                    | Event::OfflineSyncCompleted(_) => {
-                                        // History sync events - already handled via JoinedGroup
-                                        tracing::debug!("History sync event received");
+                                    Event::HistorySync(history_sync) => {
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::ProcessHistorySync {
+                                                history_sync: Box::new(history_sync),
+                                            }
+                                        });
+                                    }
+                                    Event::OfflineSyncPreview(_) => {
+                                        tracing::debug!("Offline sync preview received");
+                                    }
+                                    Event::OfflineSyncCompleted(_) => {
+                                        let _ = sender.output(ClientOutput::OfflineSyncCompleted);
                                     }
 
                                     Event::DeviceListUpdate(_) => {
                                         // Device list updates - not critical for chat sync
                                         tracing::debug!("Device list update received");
+                                    }
+
+                                    Event::PinUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: update.action.pinned,
+                                            muted: None,
+                                            archived: None,
+                                        });
+                                    }
+                                    Event::MuteUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: None,
+                                            muted: update.action.muted,
+                                            archived: None,
+                                        });
+                                    }
+                                    Event::ArchiveUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: None,
+                                            muted: None,
+                                            archived: update.action.archived,
+                                        });
+                                    }
+                                    Event::MarkChatAsReadUpdate(update) => {
+                                        // Ignore for now - read state is managed locally.
+                                        tracing::debug!(
+                                            "Mark chat as read update: {} = {:?}",
+                                            update.jid,
+                                            update.action
+                                        );
                                     }
 
                                     Event::ContactUpdate(contact_update) => {
@@ -616,6 +730,12 @@ impl AsyncComponent for Client {
                                             name,
                                             push_name,
                                             phone_number,
+                                        });
+                                    }
+
+                                    Event::SelfPushNameUpdated(update) => {
+                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
+                                            push_name: update.new_name,
                                         });
                                     }
 
@@ -848,7 +968,8 @@ impl AsyncComponent for Client {
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
                     // Parse the lazy conversation (this does protobuf decoding - CPU intensive).
-                    if let Some(conv) = lazy_conv.get() {
+                    // Use get_with_messages() because get() strips messages to save memory.
+                    if let Some(conv) = lazy_conv.get_with_messages() {
                         let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
                         let is_group = chat_jid.ends_with("@g.us");
 
@@ -873,42 +994,7 @@ impl AsyncComponent for Client {
                         });
 
                         // Process messages from the conversation.
-                        let mut synced_messages = Vec::new();
-                        for hist_msg in &conv.messages {
-                            if let Some(web_msg) = &hist_msg.message
-                                && let Some(msg) = &web_msg.message
-                            {
-                                let msg_id = web_msg.key.id.clone().unwrap_or_default();
-                                let sender_jid = web_msg
-                                    .key
-                                    .participant
-                                    .clone()
-                                    .unwrap_or_else(|| chat_jid.clone());
-                                let outgoing = web_msg.key.from_me.unwrap_or(false);
-                                let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
-                                    SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs()
-                                });
-
-                                // Extract message content.
-                                let content = msg.conversation.clone().filter(|c| !c.is_empty());
-
-                                synced_messages.push(SyncedMessage {
-                                    id: msg_id,
-                                    unread: false,
-                                    content,
-                                    outgoing,
-                                    sender_jid,
-                                    timestamp,
-                                    sender_name: web_msg
-                                        .push_name
-                                        .clone()
-                                        .filter(|n| !n.is_empty()),
-                                });
-                            }
-                        }
+                        let synced_messages = extract_synced_messages(&conv, &chat_jid);
 
                         // Emit messages synced event if we have messages.
                         if !synced_messages.is_empty() {
@@ -918,6 +1004,45 @@ impl AsyncComponent for Client {
                             });
                         }
                     }
+                });
+            }
+            ClientCommand::ProcessHistorySync { history_sync } => {
+                let sender_clone = sender.clone();
+                relm4::spawn_blocking(move || {
+                    for conv in &history_sync.conversations {
+                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
+                        let is_group = chat_jid.ends_with("@g.us");
+
+                        // Extract participants for groups.
+                        let mut participants = Vec::new();
+                        if is_group {
+                            for p in &conv.participant {
+                                participants.push((p.user_jid.clone(), None::<String>));
+                            }
+                        }
+
+                        let _ = sender_clone.output(ClientOutput::ChatSynced {
+                            jid: chat_jid.clone(),
+                            name: conv.name.clone(),
+                            pinned: conv.pinned.is_some_and(|p| p > 0),
+                            archived: conv.archived.unwrap_or(false),
+                            unread_count: conv.unread_count,
+                            participants,
+                            mute_end_time: conv.mute_end_time,
+                            last_message_time: conv.last_msg_timestamp,
+                        });
+
+                        let synced_messages = extract_synced_messages(conv, &chat_jid);
+
+                        if !synced_messages.is_empty() {
+                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
+                                chat_jid,
+                                messages: synced_messages,
+                            });
+                        }
+                    }
+
+                    let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
             }
         }
