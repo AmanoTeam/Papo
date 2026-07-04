@@ -282,6 +282,7 @@ impl Application {
                 name,
                 muted: false,
                 pinned: false,
+                archived: false,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
@@ -1306,6 +1307,7 @@ impl AsyncComponent for Application {
                     name: chat_name,
                     muted: false, // TODO: handle mute_end_time
                     pinned,
+                    archived,
                     available: None,
                     last_seen: None,
                     avatar_path: None,

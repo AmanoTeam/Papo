@@ -157,7 +157,7 @@ impl Database {
                     i32::from(chat.muted),
                     i32::from(chat.pinned),
                     last_msg_time,
-                    0i32 // archived
+                    i32::from(chat.archived)
                 ],
             )
             .await?;
@@ -170,7 +170,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time, archived
             FROM chats
             WHERE jid = ?1 AND archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -188,6 +188,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
+                archived: row.get::<i32>(5)? != 0,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
@@ -207,7 +208,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time, archived
             FROM chats
             WHERE archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -225,6 +226,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
+                archived: row.get::<i32>(5)? != 0,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
