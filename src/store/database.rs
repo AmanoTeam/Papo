@@ -32,7 +32,12 @@ impl Database {
                 .build()
                 .await?,
         );
-        let conn = Arc::new(db.connect()?);
+        let db_clone = Arc::clone(&db);
+        let conn = Arc::new(
+            relm4::spawn_blocking(move || db_clone.connect())
+                .await
+                .expect("Database connection task panicked")?,
+        );
 
         let this = Self { db, conn };
         this.init_tables().await?;
