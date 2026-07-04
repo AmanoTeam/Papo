@@ -26,7 +26,7 @@ use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
 use crate::{
-    DATA_DIR, i18n,
+    DATA_DIR, i18n, i18n_f,
     session::{AvatarCache, RuntimeCache},
     state::ChatMessage,
 };
@@ -46,7 +46,7 @@ pub struct Client {
     os_type: String,
 
     /// Avatar cache for downloading and storing profile pictures.
-    avatar_cache: Arc<tokio::sync::Mutex<Option<AvatarCache>>>,
+    avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
     /// Runtime cache shared with Application.
     runtime_cache: Arc<RuntimeCache>,
 }
@@ -240,19 +240,18 @@ pub enum ClientOutput {
 pub struct SyncedMessage {
     /// Message ID.
     pub id: String,
-    /// Sender JID.
-    pub sender_jid: String,
-    /// Sender push name.
-    pub sender_name: Option<String>,
-
     /// Whether message is unread.
     pub unread: bool,
     /// Message content (text).
     pub content: Option<String>,
     /// Whether message was sent by current user.
     pub outgoing: bool,
+    /// Sender JID.
+    pub sender_jid: String,
     /// Message timestamp.
     pub timestamp: u64,
+    /// Sender push name.
+    pub sender_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -335,7 +334,7 @@ impl AsyncComponent for Client {
             state: ClientState::Loading,
             handle: Arc::new(Mutex::new(None)),
             os_type,
-            avatar_cache: Arc::new(tokio::sync::Mutex::new(avatar_cache)),
+            avatar_cache: Arc::new(Mutex::new(avatar_cache)),
             runtime_cache: init,
         };
 
@@ -384,7 +383,7 @@ impl AsyncComponent for Client {
                         .await
                     {
                         let _ = sender.output(ClientOutput::Error {
-                            message: format!("Failed to pair with phone number: {e}"),
+                            message: i18n_f!("Failed to pair with phone number: {0}", e),
                         });
                     }
                 }
@@ -483,7 +482,7 @@ impl AsyncComponent for Client {
                         Err(e) => {
                             tracing::error!("Failed to initialize SQLite storage: {e}");
                             let _ = sender.output(ClientOutput::Error {
-                                message: format!("Database error: {e}"),
+                                message: i18n_f!("Database error: {0}", e),
                             });
 
                             return;
@@ -646,7 +645,7 @@ impl AsyncComponent for Client {
                         Err(e) => {
                             tracing::error!("Client failed to start: {e}");
 
-                            let message = format!("Connection failed: {e}");
+                            let message = i18n_f!("Connection failed: {0}", e);
                             self.update_state(ClientState::Error(message.clone()));
                             let _ = sender.output(ClientOutput::Error { message });
                         }
@@ -899,16 +898,15 @@ impl AsyncComponent for Client {
 
                                 synced_messages.push(SyncedMessage {
                                     id: msg_id,
+                                    unread: false,
+                                    content,
+                                    outgoing,
                                     sender_jid,
+                                    timestamp,
                                     sender_name: web_msg
                                         .push_name
                                         .clone()
                                         .filter(|n| !n.is_empty()),
-
-                                    unread: false,
-                                    content,
-                                    outgoing,
-                                    timestamp,
                                 });
                             }
                         }
