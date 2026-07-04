@@ -43,7 +43,7 @@ impl AvatarCache {
     }
 
     /// Save avatar bytes to cache.
-    pub fn save_avatar(&self, jid: &str, data: &[u8]) -> Result<String, std::io::Error> {
+    pub fn save_avatar(&self, jid: &str, data: &[u8]) -> Result<String, io::Error> {
         let path = self.get_avatar_path(jid);
         fs::write(&path, data)?;
 
@@ -51,7 +51,7 @@ impl AvatarCache {
     }
 
     /// Delete a cached avatar.
-    pub fn delete_avatar(&self, jid: &str) -> Result<(), std::io::Error> {
+    pub fn delete_avatar(&self, jid: &str) -> Result<(), io::Error> {
         let path = self.get_avatar_path(jid);
         if path.exists() {
             fs::remove_file(path)?;
@@ -61,7 +61,7 @@ impl AvatarCache {
     }
 
     /// Clear all cached avatars.
-    pub fn clear_cache(&self) -> Result<(), std::io::Error> {
+    pub fn clear_cache(&self) -> Result<(), io::Error> {
         if self.cache_dir.exists() {
             fs::remove_dir_all(&self.cache_dir)?;
             fs::create_dir_all(&self.cache_dir)?;
