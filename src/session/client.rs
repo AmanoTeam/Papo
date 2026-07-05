@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -281,11 +283,11 @@ fn clear_whatsapp_credentials() {
 
     for path in [
         db_path.as_path(),
-        std::path::Path::new(&wal_path),
-        std::path::Path::new(&shm_path),
+        Path::new(&wal_path),
+        Path::new(&shm_path),
     ] {
         if path.exists()
-            && let Err(e) = std::fs::remove_file(path)
+            && let Err(e) = fs::remove_file(path)
         {
             tracing::warn!("Failed to delete {}: {}", path.display(), e);
         }

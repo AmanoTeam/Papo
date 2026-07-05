@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use chrono::{Datelike, Local, NaiveDate};
 use fast_qr::{
     ECL, QRBuilder,
@@ -25,10 +27,7 @@ pub fn get_first_name(name: &str) -> String {
 }
 
 /// Generates a QR code texture.
-pub async fn generate_qr_code(
-    data: &str,
-    size: u32,
-) -> Result<gdk::Texture, Box<dyn std::error::Error>> {
+pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box<dyn Error>> {
     let data = data.to_string();
     let bytes = relm4::spawn_blocking(move || {
         let qr = QRBuilder::new(data.as_str())
