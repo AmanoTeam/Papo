@@ -330,7 +330,7 @@ impl Database {
                 r"
             INSERT OR IGNORE INTO messages (local_id, server_id, chat_jid, sender_jid, sender_name,
                                             content, outgoing, status, timestamp, media_type, media_data)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, NULLIF(?2, ''), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ",
                 libsql::params![
                     msg.local_id.to_string(),

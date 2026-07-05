@@ -201,6 +201,11 @@ impl SimpleAsyncComponent for ChatList {
                         .get_last_message()
                         .await
                         .expect("Failed to get chat last message");
+
+                    if last_message.is_none() {
+                        return;
+                    }
+
                     let unread_count = chat
                         .get_unread_count()
                         .await

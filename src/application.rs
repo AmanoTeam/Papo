@@ -1483,9 +1483,14 @@ impl AsyncComponent for Application {
                 // Spawn database operations in background task.
                 relm4::spawn(async move {
                     let mut saved_count = 0;
+                    let mut dup_count = 0;
+                    let mut skip_count = 0;
+                    let total = messages.len();
+
                     for synced_msg in messages {
                         // Skip messages without content for now.
                         let Some(content) = synced_msg.content else {
+                            skip_count += 1;
                             continue;
                         };
 
@@ -1521,12 +1526,19 @@ impl AsyncComponent for Application {
                         // Save the message, skipping duplicates on server_id.
                         match message.save_or_ignore().await {
                             Ok(true) => saved_count += 1,
-                            Ok(false) => {}
+                            Ok(false) => dup_count += 1,
                             Err(e) => tracing::error!("Failed to save synced message: {}", e),
                         }
                     }
 
-                    tracing::info!("Synced {} messages for chat: {}", saved_count, chat_jid);
+                    tracing::info!(
+                        "Synced {} messages for chat: {} (of {} received, {} duplicates, {} without content)",
+                        saved_count,
+                        chat_jid,
+                        total,
+                        dup_count,
+                        skip_count
+                    );
                 });
             }
         }
