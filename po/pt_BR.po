@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
 "POT-Creation-Date: 2026-07-05 00:08-0300\n"
-"PO-Revision-Date: 2026-07-05 03:57+0000\n"
+"PO-Revision-Date: 2026-07-05 04:05+0000\n"
 "Last-Translator: Alisson Lauffer <alissonvitortc@gmail.com>\n"
 "Language-Team: Portuguese (Brazil) <http://weblate.amanoteam.com/projects/"
 "papo/main/pt_BR/>\n"
@@ -137,7 +137,9 @@ msgstr "Selecione um chat para começar a conversar"
 #. Translators: Replace "translator-credits" with your names, one per line.
 #: src/modals/about.rs:36
 msgid "translator-credits"
-msgstr "Andriel Ferreira <andrielfr@proton.me>"
+msgstr ""
+"Andriel Ferreira <andrielfr@proton.me>\n"
+"Alisson Lauffer <me@alisson.sh>"
 
 #: src/modals/shortcuts.rs:28
 msgid "General"
