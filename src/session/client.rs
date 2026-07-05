@@ -240,6 +240,11 @@ pub enum ClientOutput {
         /// Path to the cached avatar image.
         path: String,
     },
+    /// Avatar removed for a chat.
+    AvatarRemoved {
+        /// Chat JID.
+        jid: String,
+    },
     /// Contact updated (from sync or individual update).
     ContactUpdate {
         /// Contact JID.
@@ -381,6 +386,13 @@ pub enum ClientCommand {
     ProcessHistorySync {
         /// History sync protobuf.
         history_sync: Box<waproto::whatsapp::HistorySync>,
+    },
+    /// Process a `PictureUpdate` event (avatar changed or removed).
+    PictureUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Whether the picture was removed.
+        removed: bool,
     },
 }
 
@@ -760,6 +772,14 @@ impl AsyncComponent for Client {
                                         });
                                     }
 
+                                    Event::PictureUpdate(update) => {
+                                        let jid = update.jid.to_string();
+                                        let removed = update.removed;
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::PictureUpdate { jid, removed }
+                                        });
+                                    }
+
                                     e => tracing::warn!("Unhandled event type: {e:#?}"),
                                 }
                             }
@@ -1095,6 +1115,25 @@ impl AsyncComponent for Client {
 
                     let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
+            }
+            ClientCommand::PictureUpdate { jid, removed } => {
+                // Invalidate the cached avatar.
+                {
+                    let cache_guard = self.avatar_cache.lock().await;
+                    if let Some(cache) = cache_guard.as_ref()
+                        && let Err(e) = cache.delete_avatar(&jid)
+                    {
+                        tracing::warn!("Failed to delete cached avatar for {jid}: {e}");
+                    }
+                }
+
+                if removed {
+                    tracing::info!("Avatar removed for {jid}");
+                    let _ = sender.output(ClientOutput::AvatarRemoved { jid });
+                } else {
+                    tracing::info!("Avatar updated for {jid}, re-fetching");
+                    sender.oneshot_command(async move { ClientCommand::FetchAvatar { jid } });
+                }
             }
         }
     }

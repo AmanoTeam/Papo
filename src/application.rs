@@ -147,6 +147,10 @@ pub enum AppMsg {
         jid: String,
         path: String,
     },
+    /// Avatar removed for a chat.
+    AvatarRemoved {
+        jid: String,
+    },
     /// Contact updated (from sync or individual update).
     ContactUpdate {
         jid: String,
@@ -725,6 +729,7 @@ impl AsyncComponent for Application {
                 },
 
                 ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
+                ClientOutput::AvatarRemoved { jid } => AppMsg::AvatarRemoved { jid },
 
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
@@ -919,6 +924,18 @@ impl AsyncComponent for Application {
                     });
 
                     tracing::info!("Updated avatar for chat: {}", jid);
+                }
+            }
+            AppMsg::AvatarRemoved { jid } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    chat.avatar_path = None;
+
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: chat.clone(),
+                        move_to_top: false,
+                    });
+
+                    tracing::info!("Removed avatar for chat: {}", jid);
                 }
             }
             AppMsg::ContactUpdate {
