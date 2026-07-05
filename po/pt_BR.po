@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
 "POT-Creation-Date: 2026-07-05 00:08-0300\n"
-"PO-Revision-Date: 2026-07-05 04:05+0000\n"
+"PO-Revision-Date: 2026-07-05 04:12+0000\n"
 "Last-Translator: Alisson Lauffer <alissonvitortc@gmail.com>\n"
 "Language-Team: Portuguese (Brazil) <http://weblate.amanoteam.com/projects/"
 "papo/main/pt_BR/>\n"
@@ -217,7 +217,7 @@ msgstr "Abra o WhatsApp no seu celular."
 
 #: src/components/login.rs:267 src/components/login.rs:438
 msgid "Go to: <i>Menu > Connected devices > Connect device</i>"
-msgstr "Acesse: <i>Menu > Dispositivos conectados > Conectar dispositivo </i>"
+msgstr "Acesse: <i>Menu > Dispositivos conectados > Conectar dispositivo</i>"
 
 #: src/components/login.rs:268
 msgid "Scan this QR code."
