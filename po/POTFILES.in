@@ -5,3 +5,9 @@ src/main.rs
 src/application.rs
 src/modals/about.rs
 src/modals/shortcuts.rs
+src/components/chat_list.rs
+src/components/chat_view.rs
+src/components/login.rs
+src/state/media.rs
+src/utils.rs
+src/session/client.rs

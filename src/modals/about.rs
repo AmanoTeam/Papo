@@ -32,6 +32,7 @@ impl SimpleComponent for AboutDialog {
                 "Andriel Ferreira <andrielfr@proton.me>",
                 "Eduardo Fonseca <me@eduu.xyz>",
             ])
+            // Translators: Replace "translator-credits" with your names, one per line.
             .translator_credits(i18n!("translator-credits"))
             .build()
     }
