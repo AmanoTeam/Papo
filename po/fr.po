@@ -1,4 +1,4 @@
-# Brazilian Portuguese translation for Papo
+# Papo translation template
 # Copyright (C) 2026 Andriel Ferreira
 # This file is distributed under the same license as the papo package.
 # Andriel Ferreira <andrielfr@proton.me>, 2026.
@@ -8,306 +8,296 @@ msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
 "POT-Creation-Date: 2026-07-05 00:08-0300\n"
-"PO-Revision-Date: 2026-07-05 04:12+0000\n"
-"Last-Translator: Alisson Lauffer <alissonvitortc@gmail.com>\n"
-"Language-Team: Portuguese (Brazil) <http://weblate.amanoteam.com/projects/"
-"papo/main/pt_BR/>\n"
-"Language: pt_BR\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: Automatically generated\n"
+"Language-Team: none\n"
+"Language: fr\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n > 1;\n"
-"X-Generator: Weblate 2026.6.1\n"
 
 #: data/com.amanoteam.Papo.desktop.in.in:2
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
 #: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
 msgid "Papo"
-msgstr "Papo"
+msgstr ""
 
 #: data/com.amanoteam.Papo.desktop.in.in:3
 msgid "WhatsApp"
-msgstr "WhatsApp"
+msgstr ""
 
 #: data/com.amanoteam.Papo.desktop.in.in:4
 msgid "A GTK WhatsApp client"
-msgstr "Cliente do WhatsApp em GTK"
+msgstr ""
 
 #. Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
 #: data/com.amanoteam.Papo.desktop.in.in:10
 msgid "GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;whatsapp.com;"
 msgstr ""
-"GTK;Gnome;Bate-"
-"papo;Comunicação;Conversa;wp;zap;mensagens;mensageiro;whatsapp;whatsapp.com;"
 
 #: data/com.amanoteam.Papo.gschema.xml.in:10
 msgid "Default window width"
-msgstr "Largura padrão da janela"
+msgstr ""
 
 #: data/com.amanoteam.Papo.gschema.xml.in:14
 msgid "Default window height"
-msgstr "Altura padrão da janela"
+msgstr ""
 
 #: data/com.amanoteam.Papo.gschema.xml.in:18
 msgid "Default window maximized state"
-msgstr "Estado padrão da janela maximizada"
+msgstr ""
 
 #: data/com.amanoteam.Papo.gschema.xml.in:27
 msgid "Color Scheme"
-msgstr "Esquema de cores"
+msgstr ""
 
 #: data/com.amanoteam.Papo.gschema.xml.in:28
 msgid "The color scheme to be used in the app"
-msgstr "O esquema de cores a ser usado no aplicativo"
+msgstr ""
 
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:8
 msgid "Chat on WhatsApp"
-msgstr "Converse pelo WhatsApp"
+msgstr ""
 
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:10
 msgid ""
 "Papo is a WhatsApp messaging app for GNOME written in Rust. Its interface "
 "will fit all screens, big or small."
 msgstr ""
-"Papo é um aplicativo de mensagens do WhatsApp escrito em Rust para o GNOME. "
-"Sua interface se adapta a todas as telas, grandes ou pequenas."
 
 #: src/application.rs:292 src/application.rs:1386
 msgid "Group"
-msgstr "Grupo"
+msgstr ""
 
 #: src/application.rs:294 src/application.rs:519 src/application.rs:1388
 #: src/components/chat_list.rs:589 src/components/chat_list.rs:590
 msgid "You"
-msgstr "Você"
+msgstr ""
 
 #: src/application.rs:334 src/application.rs:962 src/application.rs:1402
 #: src/application.rs:1477
 msgid "Unknown"
-msgstr "Desconhecido"
+msgstr ""
 
 #: src/application.rs:422
 msgid "_Contacts"
-msgstr "_Contatos"
+msgstr ""
 
 #: src/application.rs:425
 msgid "_Preferences"
-msgstr "_Preferências"
+msgstr ""
 
 #: src/application.rs:426
 msgid "_Keyboard Shortcuts"
-msgstr "_Atalhos do Teclado"
+msgstr ""
 
 #: src/application.rs:427
 msgid "_About Papo"
-msgstr "_Sobre o Papo"
+msgstr ""
 
 #: src/application.rs:460 src/components/login.rs:154
 msgid "About Papo"
-msgstr "Sobre o Papo"
+msgstr ""
 
 #: src/application.rs:473
 msgid "Fetching account data..."
-msgstr "Obtendo dados da conta..."
+msgstr ""
 
 #: src/application.rs:515
 msgid "Your profile"
-msgstr "Seu perfil"
+msgstr ""
 
 #: src/application.rs:527
 msgid "Menu"
-msgstr "Menu"
+msgstr ""
 
 #: src/application.rs:535
 msgid "Chats"
-msgstr "Chats"
+msgstr ""
 
 #: src/application.rs:554
 msgid "Chat"
-msgstr "Chat"
+msgstr ""
 
 #: src/application.rs:562
 msgid "No Chat Selected"
-msgstr "Nenhum Chat Selecionado"
+msgstr ""
 
 #: src/application.rs:567
 msgid "Select a chat to start chatting"
-msgstr "Selecione um chat para começar a conversar"
+msgstr ""
 
 #. Translators: Replace "translator-credits" with your names, one per line.
 #: src/modals/about.rs:36
 msgid "translator-credits"
 msgstr ""
-"Andriel Ferreira <andrielfr@proton.me>\n"
-"Alisson Lauffer <me@alisson.sh>"
 
 #: src/modals/shortcuts.rs:28
 msgid "General"
-msgstr "Geral"
+msgstr ""
 
 #: src/modals/shortcuts.rs:29
 msgid "Quit"
-msgstr "Sair"
+msgstr ""
 
 #: src/components/chat_list.rs:109
 msgid "All"
-msgstr "Todos"
+msgstr ""
 
 #: src/components/chat_list.rs:114
 msgid "Unreads"
-msgstr "Não lidas"
+msgstr ""
 
 #: src/components/chat_list.rs:119
 msgid "Groups"
-msgstr "Grupos"
+msgstr ""
 
 #: src/components/chat_view.rs:209
 msgid "Loading messages..."
-msgstr "Carregando mensagens..."
+msgstr ""
 
 #: src/components/chat_view.rs:241
 msgid "Type a message..."
-msgstr "Digite uma mensagem..."
+msgstr ""
 
 #: src/components/chat_view.rs:789
 msgid "online"
-msgstr "online"
+msgstr ""
 
 #: src/components/chat_view.rs:797 src/components/chat_view.rs:807
 #: src/components/chat_view.rs:815
 msgid "Last seen"
-msgstr "Visto por último"
+msgstr ""
 
 #: src/components/chat_view.rs:798
 msgid "today"
-msgstr "hoje"
+msgstr ""
 
 #: src/components/chat_view.rs:799 src/components/chat_view.rs:809
 #: src/components/chat_view.rs:817
 msgid "at"
-msgstr "em"
+msgstr ""
 
 #: src/components/chat_view.rs:808
 msgid "yesterday"
-msgstr "ontem"
+msgstr ""
 
 #: src/components/chat_view.rs:1088
 msgid "The message could not be sent."
-msgstr "A mensagem não pôde ser enviada."
+msgstr ""
 
 #: src/components/login.rs:160
 msgid "Link your phone"
-msgstr "Vincular seu telefone"
+msgstr ""
 
 #: src/components/login.rs:209
 msgid "All QR codes for this session were expired."
-msgstr "Todos os códigos QR desta sessão expiraram."
+msgstr ""
 
 #: src/components/login.rs:211
 msgid "Waiting QR code..."
-msgstr "Aguardando QR code..."
+msgstr ""
 
 #: src/components/login.rs:229
 msgid "Reset Session"
-msgstr "Redefinir Sessão"
+msgstr ""
 
 #: src/components/login.rs:266 src/components/login.rs:437
 msgid "Open WhatsApp on your phone."
-msgstr "Abra o WhatsApp no seu celular."
+msgstr ""
 
 #: src/components/login.rs:267 src/components/login.rs:438
 msgid "Go to: <i>Menu > Connected devices > Connect device</i>"
-msgstr "Acesse: <i>Menu > Dispositivos conectados > Conectar dispositivo</i>"
+msgstr ""
 
 #: src/components/login.rs:268
 msgid "Scan this QR code."
-msgstr "Escaneie este QR code."
+msgstr ""
 
 #: src/components/login.rs:272
 msgid "Link with Phone Number"
-msgstr "Vincular com Número de Telefone"
+msgstr ""
 
 #: src/components/login.rs:320
 msgid "Please enter your phone number."
-msgstr "Insira seu número de telefone."
+msgstr ""
 
 #: src/components/login.rs:338
 msgid "Phone Number"
-msgstr "Número de Telefone"
+msgstr ""
 
 #: src/components/login.rs:352
 msgid "Next"
-msgstr "Próximo"
+msgstr ""
 
 #: src/components/login.rs:367
 msgid "Link with QR Code"
-msgstr "Vincular com QR Code"
+msgstr ""
 
 #: src/components/login.rs:409
 msgid "Linking WhatsApp account <b>${phone-number}</b>"
-msgstr "Vinculando conta do WhatsApp <b>${phone-number}</b>"
+msgstr ""
 
 #: src/components/login.rs:409
 msgid "edit"
-msgstr "editar"
+msgstr ""
 
 #: src/components/login.rs:439
 msgid "Tap <i>Connect with phone number</i> and enter this code on your phone."
 msgstr ""
-"Toque em <i>Conectar com número de telefone</i> e digite este código no seu "
-"celular."
 
 #: src/components/login.rs:460
 msgid "An error occurred"
-msgstr "Ocorreu um erro"
+msgstr ""
 
 #: src/components/login.rs:463
 msgid "Ok"
-msgstr "Ok"
+msgstr ""
 
 #: src/state/media.rs:67
 msgid "Voice message"
-msgstr "Mensagem de voz"
+msgstr ""
 
 #: src/state/media.rs:68
 msgid "Photo"
-msgstr "Foto"
+msgstr ""
 
 #: src/state/media.rs:69
 msgid "Video"
-msgstr "Vídeo"
+msgstr ""
 
 #: src/state/media.rs:70
 msgid "Sticker"
-msgstr "Figurinha"
+msgstr ""
 
 #: src/state/media.rs:71
 msgid "Document"
-msgstr "Documento"
+msgstr ""
 
 #: src/utils.rs:61
 msgid "Today"
-msgstr "Hoje"
+msgstr ""
 
 #: src/utils.rs:67
 msgid "Yesterday"
-msgstr "Ontem"
+msgstr ""
 
 #: src/session/client.rs:480
 #, rust-format
 msgid "Failed to pair with phone number: {0}"
-msgstr "Falha ao parear com o número de telefone: {0}"
+msgstr ""
 
 #: src/session/client.rs:579
 #, rust-format
 msgid "Database error: {0}"
-msgstr "Erro no banco de dados: {0}"
+msgstr ""
 
 #: src/session/client.rs:788
 #, rust-format
 msgid "Connection failed: {0}"
-msgstr "Falha na conexão: {0}"
+msgstr ""
 
 #: src/session/client.rs:843
 msgid "You!"
-msgstr "Você!"
+msgstr ""
