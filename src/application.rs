@@ -26,7 +26,7 @@ use crate::{
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{Client, ClientInput, ClientOutput, RuntimeCache, SyncedMessage},
-    state::{Chat, ChatMessage, MessageStatus},
+    state::{Chat, ChatMessage, MessageStatus, unsupported_label},
     store::{Contact, Database},
     utils::format_lid_as_number,
 };
@@ -1079,7 +1079,8 @@ impl AsyncComponent for Application {
                             .extended_text_message
                             .as_ref()
                             .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                    });
+                    })
+                    .or_else(|| unsupported_label(&message));
 
                 if let Some(content) = content {
                     if content == "status@broadcast" {

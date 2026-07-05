@@ -4,4 +4,4 @@ mod message;
 
 pub use chat::Chat;
 pub use media::{Media, MediaType};
-pub use message::{Message as ChatMessage, Status as MessageStatus};
+pub use message::{Message as ChatMessage, Status as MessageStatus, unsupported_label};

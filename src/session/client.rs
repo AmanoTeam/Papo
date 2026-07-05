@@ -30,7 +30,7 @@ use whatsapp_rust_ureq_http_client::UreqHttpClient;
 use crate::{
     DATA_DIR, i18n, i18n_f,
     session::{AvatarCache, RuntimeCache},
-    state::ChatMessage,
+    state::{ChatMessage, unsupported_label},
 };
 
 /// Shared client handle for accessing the `WhatsApp` client.
@@ -327,7 +327,8 @@ fn extract_synced_messages(
                     msg.extended_text_message
                         .as_ref()
                         .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                });
+                })
+                .or_else(|| unsupported_label(msg));
 
             synced_messages.push(SyncedMessage {
                 id: msg_id,

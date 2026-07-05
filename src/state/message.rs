@@ -7,7 +7,8 @@ use wacore::types::presence::ReceiptType;
 use waproto::whatsapp as wa;
 
 use crate::{
-    state::{Chat, Media},
+    i18n,
+    state::{Chat, Media, MediaType},
     store::Database,
 };
 
@@ -154,4 +155,50 @@ impl TryFrom<ReceiptType> for Status {
             r => Err(format!("Message status doesn't have a {r:?} equivalent")),
         }
     }
+}
+
+/// Returns a fallback display label for a `WhatsApp` message that has no
+/// renderable text content.
+///
+/// Media types (image, video, audio, sticker, document) get a descriptive
+/// label via [`MediaType::display_label`]. Other user-facing message types
+/// (contacts, location, polls, calls, etc.) get a generic "Unsupported
+/// message" string. Internal/protocol messages and wrapper types that are
+/// handled separately by the caller return `None` so they can be silently
+/// skipped.
+pub fn unsupported_label(msg: &wa::Message) -> Option<String> {
+    if msg.image_message.is_some() {
+        return Some(MediaType::Image.display_label());
+    }
+    if msg.video_message.is_some() || msg.ptv_message.is_some() {
+        return Some(MediaType::Video.display_label());
+    }
+    if msg.audio_message.is_some() {
+        return Some(MediaType::Audio.display_label());
+    }
+    if msg.sticker_message.is_some() {
+        return Some(MediaType::Sticker.display_label());
+    }
+    if msg.document_message.is_some() || msg.document_with_caption_message.is_some() {
+        return Some(MediaType::Document.display_label());
+    }
+
+    if msg.sender_key_distribution_message.is_some()
+        || msg
+            .fast_ratchet_key_sender_key_distribution_message
+            .is_some()
+        || msg.protocol_message.is_some()
+        || msg.sticker_sync_rmr_message.is_some()
+        || msg.keep_in_chat_message.is_some()
+        || msg.pin_in_chat_message.is_some()
+        || msg.message_history_bundle.is_some()
+        || msg.enc_reaction_message.is_some()
+        || msg.reaction_message.is_some()
+        || msg.poll_update_message.is_some()
+        || msg.device_sent_message.is_some()
+    {
+        return None;
+    }
+
+    Some(i18n!("Unsupported message"))
 }
