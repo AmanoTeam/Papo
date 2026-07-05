@@ -17,6 +17,8 @@ pub struct Chat {
     pub muted: bool,
     /// Whether this chat is pinned.
     pub pinned: bool,
+    /// Whether this chat is archived.
+    pub archived: bool,
     /// Whether the user is currently online.
     pub available: Option<bool>,
     /// Last time the user has been seen.

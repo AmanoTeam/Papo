@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -26,7 +28,7 @@ use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
 use crate::{
-    DATA_DIR, i18n,
+    DATA_DIR, i18n, i18n_f,
     session::{AvatarCache, RuntimeCache},
     state::ChatMessage,
 };
@@ -46,7 +48,7 @@ pub struct Client {
     os_type: String,
 
     /// Avatar cache for downloading and storing profile pictures.
-    avatar_cache: Arc<tokio::sync::Mutex<Option<AvatarCache>>>,
+    avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
     /// Runtime cache shared with Application.
     runtime_cache: Arc<RuntimeCache>,
 }
@@ -86,7 +88,6 @@ impl ClientState {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum ClientInput {
     /// Start the client connection.
     Start,
@@ -117,7 +118,7 @@ pub enum ClientInput {
         message_ids: Vec<String>,
     },
     /// Send a message.
-    SendMessage { message: ChatMessage },
+    SendMessage { message: Box<ChatMessage> },
     /// Fetch avatar for a chat.
     FetchAvatar {
         /// Chat JID.
@@ -140,6 +141,9 @@ pub enum ClientOutput {
     Connecting,
     /// Client has been disconnected.
     Disconnected,
+
+    /// Self push name updated.
+    SelfPushNameUpdated { push_name: String },
 
     /// 8-character pairing code or qr code received.
     PairCode {
@@ -212,6 +216,23 @@ pub enum ClientOutput {
         messages: Vec<SyncedMessage>,
     },
 
+    /// Chat property updated (pin, mute, archive).
+    ChatPropertyUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Whether the chat is pinned.
+        pinned: Option<bool>,
+        /// Whether the chat is muted.
+        muted: Option<bool>,
+        /// Whether the chat is archived.
+        archived: Option<bool>,
+    },
+
+    /// History sync completed.
+    HistorySyncCompleted,
+    /// Offline sync completed.
+    OfflineSyncCompleted,
+
     /// Avatar updated for a chat.
     AvatarUpdate {
         /// Chat JID.
@@ -240,11 +261,6 @@ pub enum ClientOutput {
 pub struct SyncedMessage {
     /// Message ID.
     pub id: String,
-    /// Sender JID.
-    pub sender_jid: String,
-    /// Sender push name.
-    pub sender_name: Option<String>,
-
     /// Whether message is unread.
     pub unread: bool,
     /// Message content (text).
@@ -253,6 +269,78 @@ pub struct SyncedMessage {
     pub outgoing: bool,
     /// Message timestamp.
     pub timestamp: u64,
+    /// Sender JID.
+    pub sender_jid: String,
+    /// Sender push name.
+    pub sender_name: Option<String>,
+}
+
+/// Delete the `WhatsApp` database files to clear stored credentials.
+fn clear_whatsapp_credentials() {
+    let db_path = DATA_DIR.join("whatsapp.db");
+    let wal_path = format!("{}-wal", db_path.display());
+    let shm_path = format!("{}-shm", db_path.display());
+
+    for path in [
+        db_path.as_path(),
+        Path::new(&wal_path),
+        Path::new(&shm_path),
+    ] {
+        if path.exists()
+            && let Err(e) = fs::remove_file(path)
+        {
+            tracing::warn!("Failed to delete {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Extract synced messages from a conversation's message list.
+/// Shared between `ProcessJoinedGroup` and `ProcessHistorySync`.
+fn extract_synced_messages(
+    conv: &waproto::whatsapp::Conversation,
+    chat_jid: &str,
+) -> Vec<SyncedMessage> {
+    let mut synced_messages = Vec::new();
+    for hist_msg in &conv.messages {
+        if let Some(web_msg) = &hist_msg.message
+            && let Some(msg) = &web_msg.message
+        {
+            let msg_id = web_msg.key.id.clone().unwrap_or_default();
+            let sender_jid = web_msg
+                .key
+                .participant
+                .clone()
+                .unwrap_or_else(|| chat_jid.to_string());
+            let outgoing = web_msg.key.from_me.unwrap_or(false);
+            let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            });
+
+            let content = msg
+                .conversation
+                .clone()
+                .filter(|c| !c.is_empty())
+                .or_else(|| {
+                    msg.extended_text_message
+                        .as_ref()
+                        .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
+                });
+
+            synced_messages.push(SyncedMessage {
+                id: msg_id,
+                unread: false,
+                content,
+                outgoing,
+                timestamp,
+                sender_jid,
+                sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
+            });
+        }
+    }
+    synced_messages
 }
 
 #[derive(Debug)]
@@ -287,7 +375,12 @@ pub enum ClientCommand {
     /// Process a `JoinedGroup` event (conversation sync) in background.
     ProcessJoinedGroup {
         /// Lazy conversation to parse.
-        lazy_conv: LazyConversation,
+        lazy_conv: Box<LazyConversation>,
+    },
+    /// Process a `HistorySync` event in background.
+    ProcessHistorySync {
+        /// History sync protobuf.
+        history_sync: Box<waproto::whatsapp::HistorySync>,
     },
 }
 
@@ -335,7 +428,7 @@ impl AsyncComponent for Client {
             state: ClientState::Loading,
             handle: Arc::new(Mutex::new(None)),
             os_type,
-            avatar_cache: Arc::new(tokio::sync::Mutex::new(avatar_cache)),
+            avatar_cache: Arc::new(Mutex::new(avatar_cache)),
             runtime_cache: init,
         };
 
@@ -384,7 +477,7 @@ impl AsyncComponent for Client {
                         .await
                     {
                         let _ = sender.output(ClientOutput::Error {
-                            message: format!("Failed to pair with phone number: {e}"),
+                            message: i18n_f!("Failed to pair with phone number: {0}", e),
                         });
                     }
                 }
@@ -429,7 +522,7 @@ impl AsyncComponent for Client {
                         return;
                     };
 
-                    match Box::pin(client.send_message(jid, message.clone().into())).await {
+                    match Box::pin(client.send_message(jid, (*message).clone().into())).await {
                         Ok(msg_id) => {
                             // Update the message server id in-place.
                             message.server_id = msg_id;
@@ -483,7 +576,7 @@ impl AsyncComponent for Client {
                         Err(e) => {
                             tracing::error!("Failed to initialize SQLite storage: {e}");
                             let _ = sender.output(ClientOutput::Error {
-                                message: format!("Database error: {e}"),
+                                message: i18n_f!("Database error: {0}", e),
                             });
 
                             return;
@@ -589,20 +682,62 @@ impl AsyncComponent for Client {
                                         // Offload conversation parsing to background task
                                         // to avoid blocking the UI thread
                                         sender.oneshot_command(async move {
-                                            ClientCommand::ProcessJoinedGroup { lazy_conv }
+                                            ClientCommand::ProcessJoinedGroup {
+                                                lazy_conv: Box::new(lazy_conv),
+                                            }
                                         });
                                     }
 
-                                    Event::HistorySync(_)
-                                    | Event::OfflineSyncPreview(_)
-                                    | Event::OfflineSyncCompleted(_) => {
-                                        // History sync events - already handled via JoinedGroup
-                                        tracing::debug!("History sync event received");
+                                    Event::HistorySync(history_sync) => {
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::ProcessHistorySync {
+                                                history_sync: Box::new(history_sync),
+                                            }
+                                        });
+                                    }
+                                    Event::OfflineSyncPreview(_) => {
+                                        tracing::debug!("Offline sync preview received");
+                                    }
+                                    Event::OfflineSyncCompleted(_) => {
+                                        let _ = sender.output(ClientOutput::OfflineSyncCompleted);
                                     }
 
                                     Event::DeviceListUpdate(_) => {
                                         // Device list updates - not critical for chat sync
                                         tracing::debug!("Device list update received");
+                                    }
+
+                                    Event::PinUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: update.action.pinned,
+                                            muted: None,
+                                            archived: None,
+                                        });
+                                    }
+                                    Event::MuteUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: None,
+                                            muted: update.action.muted,
+                                            archived: None,
+                                        });
+                                    }
+                                    Event::ArchiveUpdate(update) => {
+                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                            jid: update.jid.to_string(),
+                                            pinned: None,
+                                            muted: None,
+                                            archived: update.action.archived,
+                                        });
+                                    }
+                                    Event::MarkChatAsReadUpdate(update) => {
+                                        // Ignore for now - read state is managed locally.
+                                        tracing::debug!(
+                                            "Mark chat as read update: {} = {:?}",
+                                            update.jid,
+                                            update.action
+                                        );
                                     }
 
                                     Event::ContactUpdate(contact_update) => {
@@ -616,6 +751,12 @@ impl AsyncComponent for Client {
                                             name,
                                             push_name,
                                             phone_number,
+                                        });
+                                    }
+
+                                    Event::SelfPushNameUpdated(update) => {
+                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
+                                            push_name: update.new_name,
                                         });
                                     }
 
@@ -644,7 +785,7 @@ impl AsyncComponent for Client {
                         Err(e) => {
                             tracing::error!("Client failed to start: {e}");
 
-                            let message = format!("Connection failed: {e}");
+                            let message = i18n_f!("Connection failed: {0}", e);
                             self.update_state(ClientState::Error(message.clone()));
                             let _ = sender.output(ClientOutput::Error { message });
                         }
@@ -669,7 +810,17 @@ impl AsyncComponent for Client {
             }
             ClientCommand::Restart => {
                 // Stop the client.
-                sender.oneshot_command(async { ClientCommand::Stop });
+                {
+                    let mut handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        client.disconnect().await;
+                        *handle = None;
+                    }
+                }
+                tracing::info!("Disconnected from WhatsApp");
+
+                // Clear credentials for a fresh start.
+                clear_whatsapp_credentials();
 
                 // Reset the client state.
                 self.update_state(ClientState::Loading);
@@ -699,14 +850,34 @@ impl AsyncComponent for Client {
             ClientCommand::LoggedOut => {
                 tracing::info!("Logged out from WhatsApp");
 
+                // Disconnect and clear client reference.
+                {
+                    let mut handle = self.handle.lock().await;
+                    if let Some(client) = handle.as_ref() {
+                        client.disconnect().await;
+                        *handle = None;
+                    }
+                }
+
+                // Clear stale credentials so the next start begins fresh pairing.
+                clear_whatsapp_credentials();
+
                 self.update_state(ClientState::LoggedOut);
                 let _ = sender.output(ClientOutput::LoggedOut);
             }
             ClientCommand::Disconnected => {
                 tracing::info!("Disconnected from WhatsApp");
 
-                self.update_state(ClientState::Disconnected);
-                let _ = sender.output(ClientOutput::Disconnected);
+                // Don't overwrite active connection states from stale disconnect
+                // events (e.g. when a previous connection's Disconnected event
+                // arrives after a new connection has started).
+                if !matches!(
+                    self.state,
+                    ClientState::Connected | ClientState::Connecting | ClientState::Syncing
+                ) {
+                    self.update_state(ClientState::Disconnected);
+                    let _ = sender.output(ClientOutput::Disconnected);
+                }
             }
 
             ClientCommand::Pair {
@@ -848,7 +1019,8 @@ impl AsyncComponent for Client {
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
                     // Parse the lazy conversation (this does protobuf decoding - CPU intensive).
-                    if let Some(conv) = lazy_conv.get() {
+                    // Use get_with_messages() because get() strips messages to save memory.
+                    if let Some(conv) = lazy_conv.get_with_messages() {
                         let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
                         let is_group = chat_jid.ends_with("@g.us");
 
@@ -873,43 +1045,7 @@ impl AsyncComponent for Client {
                         });
 
                         // Process messages from the conversation.
-                        let mut synced_messages = Vec::new();
-                        for hist_msg in &conv.messages {
-                            if let Some(web_msg) = &hist_msg.message
-                                && let Some(msg) = &web_msg.message
-                            {
-                                let msg_id = web_msg.key.id.clone().unwrap_or_default();
-                                let sender_jid = web_msg
-                                    .key
-                                    .participant
-                                    .clone()
-                                    .unwrap_or_else(|| chat_jid.clone());
-                                let outgoing = web_msg.key.from_me.unwrap_or(false);
-                                let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
-                                    SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs()
-                                });
-
-                                // Extract message content.
-                                let content = msg.conversation.clone().filter(|c| !c.is_empty());
-
-                                synced_messages.push(SyncedMessage {
-                                    id: msg_id,
-                                    sender_jid,
-                                    sender_name: web_msg
-                                        .push_name
-                                        .clone()
-                                        .filter(|n| !n.is_empty()),
-
-                                    unread: false,
-                                    content,
-                                    outgoing,
-                                    timestamp,
-                                });
-                            }
-                        }
+                        let synced_messages = extract_synced_messages(&conv, &chat_jid);
 
                         // Emit messages synced event if we have messages.
                         if !synced_messages.is_empty() {
@@ -919,6 +1055,45 @@ impl AsyncComponent for Client {
                             });
                         }
                     }
+                });
+            }
+            ClientCommand::ProcessHistorySync { history_sync } => {
+                let sender_clone = sender.clone();
+                relm4::spawn_blocking(move || {
+                    for conv in &history_sync.conversations {
+                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
+                        let is_group = chat_jid.ends_with("@g.us");
+
+                        // Extract participants for groups.
+                        let mut participants = Vec::new();
+                        if is_group {
+                            for p in &conv.participant {
+                                participants.push((p.user_jid.clone(), None::<String>));
+                            }
+                        }
+
+                        let _ = sender_clone.output(ClientOutput::ChatSynced {
+                            jid: chat_jid.clone(),
+                            name: conv.name.clone(),
+                            pinned: conv.pinned.is_some_and(|p| p > 0),
+                            archived: conv.archived.unwrap_or(false),
+                            unread_count: conv.unread_count,
+                            participants,
+                            mute_end_time: conv.mute_end_time,
+                            last_message_time: conv.last_msg_timestamp,
+                        });
+
+                        let synced_messages = extract_synced_messages(conv, &chat_jid);
+
+                        if !synced_messages.is_empty() {
+                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
+                                chat_jid,
+                                messages: synced_messages,
+                            });
+                        }
+                    }
+
+                    let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
             }
         }

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use adw::prelude::*;
+use adw::{NavigationSplitView, prelude::*};
 use chrono::{DateTime, Utc};
 use gtk::{gio, glib, pango};
 use indexmap::IndexMap;
@@ -32,8 +32,12 @@ use crate::{
 };
 
 pub struct Application {
+    /// Papo's own database.
+    db: Arc<Database>,
     /// Page main stack is displaying.
     page: AppPage,
+    /// Current chats data.
+    chats: Vec<Chat>,
     /// User login component.
     login: AsyncController<Login>,
     /// Current app state.
@@ -42,26 +46,20 @@ pub struct Application {
     client: AsyncController<Client>,
     /// Toaster overlay.
     toaster: Toaster,
+    /// JID from the connected user.
+    user_jid: Option<String>,
     /// Chat list component.
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
     chat_view: AsyncController<ChatView>,
     /// The `SplitView` widget from the session page.
-    split_view: adw::NavigationSplitView,
+    split_view: NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
-
-    /// JID from the connected user.
-    user_jid: Option<String>,
-    /// Push name from the connected user.
-    user_push_name: Option<String>,
-
-    /// Papo's own database.
-    db: Arc<Database>,
-    /// Current chats data.
-    chats: Vec<Chat>,
     /// Runtime cache for `WhatsApp` data.
     runtime_cache: Arc<RuntimeCache>,
+    /// Push name from the connected user.
+    user_push_name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -117,6 +115,10 @@ pub enum AppMsg {
     ResetSession,
     /// Client has been disconnected.
     Disconnected,
+    /// Self push name updated.
+    SelfPushNameUpdated {
+        push_name: String,
+    },
 
     /// Pair device.
     PairDevice {
@@ -203,9 +205,27 @@ pub enum AppMsg {
     },
     /// Messages synced from history for a chat.
     MessagesSynced {
+        /// Chat JID.
         chat_jid: String,
+        /// Synced messages.
         messages: Vec<SyncedMessage>,
     },
+
+    /// Chat property updated (pin, mute, archive).
+    ChatPropertyUpdate {
+        /// Chat JID.
+        jid: String,
+        /// Whether the chat is pinned.
+        pinned: Option<bool>,
+        /// Whether the chat is muted.
+        muted: Option<bool>,
+        /// Whether the chat is archived.
+        archived: Option<bool>,
+    },
+    /// History sync completed.
+    HistorySyncCompleted,
+    /// Offline sync completed.
+    OfflineSyncCompleted,
 
     Unknown,
     /// Error occurred.
@@ -238,7 +258,7 @@ pub enum AppCmd {
 }
 
 impl Application {
-    async fn add_chat(&mut self, chat: Chat) {
+    fn add_chat(&mut self, chat: Chat) {
         // Insert the chat into our cached list.
         self.chats.push(chat.clone());
 
@@ -250,16 +270,19 @@ impl Application {
         });
 
         // Save the chat in the database.
-        if let Err(e) = chat.save().await {
-            tracing::error!("Failed to save chat: {}", e);
-        }
+        let chat_clone = chat.clone();
+        relm4::spawn(async move {
+            if let Err(e) = chat_clone.save().await {
+                tracing::error!("Failed to save chat: {}", e);
+            }
+        });
 
         // Add the chat in the chat list.
         self.chat_list
             .emit(ChatListInput::AddChat { chat, at_top: true });
     }
 
-    async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
+    fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
         // Check if the message's chat is a group.
         let is_group = chat_jid.ends_with("@g.us");
 
@@ -281,6 +304,7 @@ impl Application {
                 name,
                 muted: false,
                 pinned: false,
+                archived: false,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
@@ -288,8 +312,7 @@ impl Application {
                 last_message_time: message.timestamp,
 
                 db: Arc::clone(&self.db),
-            })
-            .await;
+            });
 
             self.client.emit(ClientInput::FetchAvatar {
                 jid: chat_jid.to_string(),
@@ -308,19 +331,24 @@ impl Application {
                 message
                     .sender_name
                     .clone()
-                    .unwrap_or_else(|| "Unknown".to_string()),
+                    .unwrap_or_else(|| i18n!("Unknown")),
             );
         }
 
         // Save the chat in the database.
-        if let Err(e) = chat.save().await {
-            tracing::error!("Failed to update chat: {}", e);
-        }
+        let chat_clone = chat.clone();
+        relm4::spawn(async move {
+            if let Err(e) = chat_clone.save().await {
+                tracing::error!("Failed to update chat: {}", e);
+            }
+        });
 
         // Save the message in the database.
-        if let Err(e) = message.save().await {
-            tracing::error!("Failed to save message: {}", e);
-        }
+        relm4::spawn(async move {
+            if let Err(e) = message.save().await {
+                tracing::error!("Failed to save message: {}", e);
+            }
+        });
 
         // Update the chat in the chat list.
         self.chat_list.emit(ChatListInput::UpdateChat {
@@ -357,9 +385,12 @@ impl Application {
             }
 
             // Mark chat as read locally.
-            if let Err(e) = chat.mark_read().await {
-                tracing::error!("Failed to mark a chat as read: {e}");
-            }
+            let chat_clone = chat.clone();
+            relm4::spawn(async move {
+                if let Err(e) = chat_clone.mark_read().await {
+                    tracing::error!("Failed to mark a chat as read: {e}");
+                }
+            });
 
             // Update the chat in the chat list.
             self.chat_list.emit(ChatListInput::UpdateChat {
@@ -388,12 +419,12 @@ impl AsyncComponent for Application {
     menu! {
         primary_menu: {
             section! {
-                "_Contacts" => ContactsAction,
+                &i18n!("_Contacts") => ContactsAction,
             },
             section! {
-                "_Preferences" => PreferencesAction,
-                "_Keyboard Shortcuts" => ShortcutsAction,
-                "_About Papo" => AboutAction,
+                &i18n!("_Preferences") => PreferencesAction,
+                &i18n!("_Keyboard Shortcuts") => ShortcutsAction,
+                &i18n!("_About Papo") => AboutAction,
             }
         }
     }
@@ -401,7 +432,7 @@ impl AsyncComponent for Application {
     view! {
         #[root]
         main_window = adw::ApplicationWindow::new(&main_application()) {
-            set_title: Some("Papo"),
+            set_title: Some(&i18n!("Papo")),
             set_visible: true,
             set_width_request: 360,
             set_height_request: 440,
@@ -471,7 +502,7 @@ impl AsyncComponent for Application {
                             #[name = "sidebar"]
                             #[wrap(Some)]
                             set_sidebar = &adw::NavigationPage {
-                                set_title: "Papo",
+                                set_title: &i18n!("Papo"),
                                 set_css_classes: &["background"],
 
                                 #[wrap(Some)]
@@ -520,7 +551,7 @@ impl AsyncComponent for Application {
                             #[name = "content"]
                             #[wrap(Some)]
                             set_content = &adw::NavigationPage {
-                                set_title: "Chat",
+                                set_title: &i18n!("Chat"),
                                 set_css_classes: &["view"],
 
                                 #[wrap(Some)]
@@ -594,6 +625,9 @@ impl AsyncComponent for Application {
                 ClientOutput::Connected { jid, push_name } => AppMsg::Connected { jid, push_name },
                 ClientOutput::LoggedOut => AppMsg::LoggedOut,
                 ClientOutput::Disconnected => AppMsg::Disconnected,
+                ClientOutput::SelfPushNameUpdated { push_name } => {
+                    AppMsg::SelfPushNameUpdated { push_name }
+                }
 
                 ClientOutput::PairCode {
                     code,
@@ -663,6 +697,21 @@ impl AsyncComponent for Application {
                     AppMsg::MessagesSynced { chat_jid, messages }
                 }
 
+                ClientOutput::ChatPropertyUpdate {
+                    jid,
+                    pinned,
+                    muted,
+                    archived,
+                } => AppMsg::ChatPropertyUpdate {
+                    jid,
+                    pinned,
+                    muted,
+                    archived,
+                },
+
+                ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
+                ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
+
                 ClientOutput::ContactUpdate {
                     jid,
                     name,
@@ -699,22 +748,20 @@ impl AsyncComponent for Application {
             });
 
         let model = Self {
+            db,
             page: AppPage::Fetching,
+            chats: Vec::new(),
             login,
             state: AppState::Loading,
             client,
             toaster: Toaster::default(),
+            user_jid: None,
             chat_list,
             chat_view,
-            split_view: adw::NavigationSplitView::new(),
+            split_view: NavigationSplitView::new(),
             session_page: AppSessionPage::Empty,
-
-            user_jid: None,
-            user_push_name: None,
-
-            db,
-            chats: Vec::new(),
             runtime_cache,
+            user_push_name: None,
         };
 
         let split_view = &model.split_view;
@@ -793,7 +840,9 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Fetching;
                 self.state = AppState::Pairing;
 
-                sender.input(AppMsg::ResetSession);
+                // Start a fresh client — the old credentials have been cleared
+                // by the ClientCommand::LoggedOut handler.
+                self.client.emit(ClientInput::Start);
 
                 let db = self.db.clone();
                 let chats = std::mem::take(&mut self.chats);
@@ -805,6 +854,9 @@ impl AsyncComponent for Application {
             }
             AppMsg::Disconnected => {
                 self.state = AppState::Disconnected;
+            }
+            AppMsg::SelfPushNameUpdated { push_name } => {
+                self.user_push_name = Some(push_name);
             }
             AppMsg::ResetSession => {
                 self.client.emit(ClientInput::Restart);
@@ -951,9 +1003,12 @@ impl AsyncComponent for Application {
                                     message.status = status;
 
                                     // Update the message in the database.
-                                    if let Err(e) = message.save().await {
-                                        tracing::error!("Failed to update message: {}", e);
-                                    }
+                                    let msg_clone = message.clone();
+                                    relm4::spawn(async move {
+                                        if let Err(e) = msg_clone.save().await {
+                                            tracing::error!("Failed to update message: {}", e);
+                                        }
+                                    });
                                 }
                             }
 
@@ -1000,9 +1055,12 @@ impl AsyncComponent for Application {
                     message.status = status;
 
                     // Update the message in the database.
-                    if let Err(e) = message.save().await {
-                        tracing::error!("Failed to update message: {}", e);
-                    }
+                    let msg_clone = message.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = msg_clone.save().await {
+                            tracing::error!("Failed to update message: {}", e);
+                        }
+                    });
 
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
                         msg_id: message.server_id,
@@ -1012,46 +1070,47 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::MessageReceived { info, message } => {
-                if let Some(content) = message.conversation.clone() {
-                    match content.as_str() {
-                        "status@broadcast" => {
-                            // TODO: handle status events
-                        }
-                        _ if !content.is_empty() => {
-                            let chat_jid = info.source.chat.to_string();
-                            let outgoing = info.source.is_from_me;
+                let content = message
+                    .conversation
+                    .clone()
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| {
+                        message
+                            .extended_text_message
+                            .as_ref()
+                            .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
+                    });
 
-                            let status = if outgoing {
-                                MessageStatus::Read
-                            } else {
-                                MessageStatus::Sent
-                            };
-                            let chat_message = ChatMessage {
-                                local_id: Uuid::new_v4(),
-                                server_id: info.id.clone(),
-                                chat_jid: chat_jid.clone(),
-                                sender_jid: info.source.sender.to_string(),
-                                sender_name: Some(info.push_name.clone()),
+                if let Some(content) = content {
+                    if content == "status@broadcast" {
+                        // TODO: handle status events
+                    } else {
+                        let chat_jid = info.source.chat.to_string();
+                        let outgoing = info.source.is_from_me;
 
-                                media: None,
-                                status,
-                                content,
-                                outgoing,
-                                reactions: IndexMap::new(),
-                                timestamp: info.timestamp,
+                        let status = if outgoing {
+                            MessageStatus::Read
+                        } else {
+                            MessageStatus::Sent
+                        };
+                        let chat_message = ChatMessage {
+                            local_id: Uuid::new_v4(),
+                            server_id: info.id.clone(),
+                            chat_jid: chat_jid.clone(),
+                            sender_jid: info.source.sender.to_string(),
+                            sender_name: Some(info.push_name.clone()),
 
-                                db: Arc::clone(&self.db),
-                            };
+                            media: None,
+                            status,
+                            content,
+                            outgoing,
+                            reactions: IndexMap::new(),
+                            timestamp: info.timestamp,
 
-                            self.add_message(&chat_jid, chat_message).await;
-                        }
-                        _ => {
-                            tracing::trace!(
-                                "Message received: info = {:#?}, message = {:#?}",
-                                info,
-                                message
-                            );
-                        }
+                            db: Arc::clone(&self.db),
+                        };
+
+                        self.add_message(&chat_jid, chat_message);
                     }
                 } else if let Some(sent_message) = message.device_sent_message {
                     if let Some(_chat_jid) = sent_message.destination_jid {
@@ -1096,14 +1155,18 @@ impl AsyncComponent for Application {
                     };
 
                     // Save the message in the database.
-                    if let Err(e) = message.save().await {
-                        tracing::error!("Failed to save message: {}", e);
-                    }
+                    let msg_clone = message.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = msg_clone.save().await {
+                            tracing::error!("Failed to save message: {}", e);
+                        }
+                    });
 
                     self.client.emit(ClientInput::SendMessage {
-                        message: message.clone(),
+                        message: Box::new(message.clone()),
                     });
-                    self.chat_view.emit(ChatViewInput::MessageReceived(message));
+                    self.chat_view
+                        .emit(ChatViewInput::MessageReceived(Box::new(message)));
                     self.chat_list.emit(ChatListInput::UpdateChat {
                         chat,
                         move_to_top: true,
@@ -1146,12 +1209,6 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::MessagesSynced { chat_jid, messages } => {
-                // Check if chat exists (quick check, non-blocking).
-                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
-                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
-                    return;
-                }
-
                 let is_group = chat_jid.ends_with("@g.us");
 
                 // Update chat in the list (lightweight UI update) before moving values.
@@ -1170,6 +1227,67 @@ impl AsyncComponent for Application {
                         messages,
                     }
                 });
+            }
+
+            AppMsg::ChatPropertyUpdate {
+                jid,
+                pinned,
+                muted,
+                archived,
+            } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    if let Some(pinned) = pinned {
+                        chat.pinned = pinned;
+                    }
+                    if let Some(muted) = muted {
+                        chat.muted = muted;
+                    }
+                    if let Some(archived) = archived {
+                        chat.archived = archived;
+                    }
+
+                    // Always save the chat to the database (including archive state).
+                    let chat_clone = chat.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = chat_clone.save().await {
+                            tracing::error!("Failed to save chat property update: {}", e);
+                        }
+                    });
+
+                    // Handle UI updates based on archive state.
+                    if let Some(archived) = archived {
+                        if archived {
+                            // Remove from chat list UI.
+                            self.chat_list
+                                .emit(ChatListInput::RemoveChat { jid: jid.clone() });
+                        } else {
+                            // Unarchive: add back to chat list (AddChat handles both
+                            // new and existing entries).
+                            self.chat_list.emit(ChatListInput::AddChat {
+                                chat: chat.clone(),
+                                at_top: false,
+                            });
+                        }
+                    } else {
+                        // Pin/mute only — update in place.
+                        self.chat_list.emit(ChatListInput::UpdateChat {
+                            chat: chat.clone(),
+                            move_to_top: false,
+                        });
+                    }
+                }
+            }
+            AppMsg::HistorySyncCompleted => {
+                tracing::info!("History sync completed");
+                if self.state == AppState::Syncing {
+                    self.state = AppState::Ready;
+                }
+            }
+            AppMsg::OfflineSyncCompleted => {
+                tracing::info!("Offline sync completed");
+                if self.state == AppState::Syncing {
+                    self.state = AppState::Ready;
+                }
             }
 
             AppMsg::Unknown => {}
@@ -1289,6 +1407,7 @@ impl AsyncComponent for Application {
                     name: chat_name,
                     muted: false, // TODO: handle mute_end_time
                     pinned,
+                    archived,
                     available: None,
                     last_seen: None,
                     avatar_path: None,
@@ -1298,7 +1417,7 @@ impl AsyncComponent for Application {
                     db: Arc::clone(&self.db),
                 };
 
-                // Add to cached list and UI immediately (don't wait for DB).
+                // Add to cached list (keep in memory for property updates even if archived).
                 self.chats.push(chat.clone());
 
                 // Sort chats.
@@ -1308,11 +1427,13 @@ impl AsyncComponent for Application {
                         .then_with(|| b.last_message_time.cmp(&a.last_message_time))
                 });
 
-                // Add to chat list UI.
-                self.chat_list.emit(ChatListInput::AddChat {
-                    chat: chat.clone(),
-                    at_top: true,
-                });
+                // Add to chat list UI only if not archived.
+                if !archived {
+                    self.chat_list.emit(ChatListInput::AddChat {
+                        chat: chat.clone(),
+                        at_top: true,
+                    });
+                }
 
                 // Save the chat to database in blocking thread (fire and forget).
                 relm4::spawn(async move {
@@ -1334,12 +1455,6 @@ impl AsyncComponent for Application {
                 is_group,
                 messages,
             } => {
-                // Check if chat exists.
-                if self.chats.iter().find(|c| c.jid == chat_jid).is_none() {
-                    tracing::warn!("Received synced messages for unknown chat: {}", chat_jid);
-                    return;
-                }
-
                 let db = Arc::clone(&self.db);
 
                 // Collect sender info for participant updates.
@@ -1368,9 +1483,14 @@ impl AsyncComponent for Application {
                 // Spawn database operations in background task.
                 relm4::spawn(async move {
                     let mut saved_count = 0;
+                    let mut dup_count = 0;
+                    let mut skip_count = 0;
+                    let total = messages.len();
+
                     for synced_msg in messages {
                         // Skip messages without content for now.
                         let Some(content) = synced_msg.content else {
+                            skip_count += 1;
                             continue;
                         };
 
@@ -1403,15 +1523,22 @@ impl AsyncComponent for Application {
                             db: Arc::clone(&db),
                         };
 
-                        // Save the message to database.
-                        if let Err(e) = message.save().await {
-                            tracing::error!("Failed to save synced message: {}", e);
-                        } else {
-                            saved_count += 1;
+                        // Save the message, skipping duplicates on server_id.
+                        match message.save_or_ignore().await {
+                            Ok(true) => saved_count += 1,
+                            Ok(false) => dup_count += 1,
+                            Err(e) => tracing::error!("Failed to save synced message: {}", e),
                         }
                     }
 
-                    tracing::info!("Synced {} messages for chat: {}", saved_count, chat_jid);
+                    tracing::info!(
+                        "Synced {} messages for chat: {} (of {} received, {} duplicates, {} without content)",
+                        saved_count,
+                        chat_jid,
+                        total,
+                        dup_count,
+                        skip_count
+                    );
                 });
             }
         }

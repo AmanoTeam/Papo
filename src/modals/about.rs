@@ -17,7 +17,7 @@ impl SimpleComponent for AboutDialog {
 
     fn init_root() -> Self::Root {
         adw::AboutDialog::builder()
-            .application_name("Papo")
+            .application_name(i18n!("Papo"))
             .application_icon(APP_ID)
             .license_type(gtk::License::Apache20)
             .website("https://github.com/AmanoTeam/Papo")
@@ -32,6 +32,7 @@ impl SimpleComponent for AboutDialog {
                 "Andriel Ferreira <andrielfr@proton.me>",
                 "Eduardo Fonseca <me@eduu.xyz>",
             ])
+            // Translators: Replace "translator-credits" with your names, one per line.
             .translator_credits(i18n!("translator-credits"))
             .build()
     }

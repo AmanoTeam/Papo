@@ -17,10 +17,10 @@ codegen-units = 1
 
 [dependencies]
 # GTK
-adw = { version = "0.8", package = "libadwaita", features = ["v1_8"] }
-relm4 = { version = "0.10", features = ["libadwaita", "gnome_48"] }
-relm4-icons = "0.10"
-relm4-components = { version = "0.10", features = ["libadwaita"] }
+adw = { version = "0.9", package = "libadwaita", features = ["v1_8"] }
+relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
+relm4-icons = "0.11"
+relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
 libsql = { version = "0.9", features = ["encryption"] }
@@ -29,14 +29,14 @@ libsql = { version = "0.9", features = ["encryption"] }
 rand = "0.10"
 moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1.22", features = ["v4"] }
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = [
   "std",
   "clock",
 ] }
 os_info = "3.14"
-indexmap = "2.13"
-rlibphonenumber = "0.3"
+indexmap = "2.14"
+rlibphonenumber = "1.1"
 
 # Logging
 tracing = "0.1"
@@ -52,7 +52,7 @@ gettext-rs = { version = "0.7", features = ["gettext-system"] }
 #   "webp",
 #   "rayon",
 # ] }
-glycin = { version = "3.0", features = ["gdk4"] }
+glycin = { version = "3.1", features = ["gdk4"] }
 fast_qr = { version = "0.13", features = ["image"] }
 
 # Futures
@@ -63,25 +63,11 @@ futures-util = { version = "0.3", default-features = false, features = [
 ] }
 
 # WhatsApp
-[dependencies.wacore]
-git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "320fe331603171a1cb21c88c8957c366590e08a7"
-
-[dependencies.waproto]
-git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "320fe331603171a1cb21c88c8957c366590e08a7"
-
-[dependencies.whatsapp-rust]
-git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "320fe331603171a1cb21c88c8957c366590e08a7"
-
-[dependencies.whatsapp-rust-tokio-transport]
-git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "320fe331603171a1cb21c88c8957c366590e08a7"
-
-[dependencies.whatsapp-rust-ureq-http-client]
-git = "https://github.com/jlucaso1/whatsapp-rust"
-rev = "320fe331603171a1cb21c88c8957c366590e08a7"
+whatsapp-rust = "0.5"
+whatsapp-rust-tokio-transport = "0.5"
+whatsapp-rust-ureq-http-client = "0.5"
+wacore = "0.5"
+waproto = "0.5"
 
 [build-dependencies]
-relm4-icons-build = "0.10"
+relm4-icons-build = "0.11"

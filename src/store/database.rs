@@ -32,7 +32,12 @@ impl Database {
                 .build()
                 .await?,
         );
-        let conn = Arc::new(db.connect()?);
+        let db_clone = Arc::clone(&db);
+        let conn = Arc::new(
+            relm4::spawn_blocking(move || db_clone.connect())
+                .await
+                .expect("Database connection task panicked")?,
+        );
 
         let this = Self { db, conn };
         this.init_tables().await?;
@@ -152,11 +157,23 @@ impl Database {
                     i32::from(chat.muted),
                     i32::from(chat.pinned),
                     last_msg_time,
-                    0i32 // archived
+                    i32::from(chat.archived)
                 ],
             )
             .await?;
 
+        Ok(())
+    }
+
+    /// Ensure a chat row exists in the database to satisfy foreign key constraints.
+    /// Uses `INSERT OR IGNORE` so it won't overwrite an existing chat with proper data.
+    pub async fn ensure_chat_exists(&self, jid: &str) -> Result<(), libsql::Error> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO chats (jid, name, muted, pinned, last_message_time, archived) VALUES (?1, ?1, 0, 0, 0, 0)",
+                [jid],
+            )
+            .await?;
         Ok(())
     }
 
@@ -165,7 +182,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time, archived
             FROM chats
             WHERE jid = ?1 AND archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -183,6 +200,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
+                archived: row.get::<i32>(5)? != 0,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
@@ -202,7 +220,7 @@ impl Database {
             .conn
             .query(
                 r"
-            SELECT jid, name, muted, pinned, last_message_time
+            SELECT jid, name, muted, pinned, last_message_time, archived
             FROM chats
             WHERE archived = 0
             ORDER BY pinned DESC, last_message_time DESC
@@ -220,6 +238,7 @@ impl Database {
                 name: row.get(1)?,
                 muted: row.get::<i32>(2)? != 0,
                 pinned: row.get::<i32>(3)? != 0,
+                archived: row.get::<i32>(5)? != 0,
                 available: None,
                 last_seen: None,
                 avatar_path: None,
@@ -290,6 +309,55 @@ impl Database {
             .await?;
 
         Ok(())
+    }
+
+    /// Save a synced message, skipping duplicates on both `local_id` and `server_id`.
+    /// Also ensures the chat exists to satisfy the foreign key constraint.
+    /// Returns `true` if the message was inserted, `false` if it was a duplicate.
+    pub async fn save_synced_message(
+        &self,
+        chat_jid: &str,
+        msg: &ChatMessage,
+    ) -> Result<bool, libsql::Error> {
+        self.ensure_chat_exists(chat_jid).await?;
+
+        let media_type = msg.media.as_ref().map(|m| format!("{:?}", m.r#type));
+        let media_data = msg.media.as_ref().map(|m| m.data.as_ref().clone());
+
+        let rows = self
+            .conn
+            .execute(
+                r"
+            INSERT OR IGNORE INTO messages (local_id, server_id, chat_jid, sender_jid, sender_name,
+                                            content, outgoing, status, timestamp, media_type, media_data)
+            VALUES (?1, NULLIF(?2, ''), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ",
+                libsql::params![
+                    msg.local_id.to_string(),
+                    msg.server_id.clone(),
+                    chat_jid,
+                    msg.sender_jid.clone(),
+                    msg.sender_name.clone(),
+                    msg.content.clone(),
+                    i32::from(msg.outgoing),
+                    msg.status as i32,
+                    msg.timestamp.timestamp(),
+                    media_type,
+                    media_data
+                ],
+            )
+            .await?;
+
+        if rows > 0 {
+            self.conn
+                .execute(
+                    "UPDATE chats SET last_message_time = ?1 WHERE jid = ?2",
+                    libsql::params![msg.timestamp.timestamp(), chat_jid],
+                )
+                .await?;
+        }
+
+        Ok(rows > 0)
     }
 
     pub async fn load_message_by_local_id(
@@ -743,7 +811,7 @@ impl Database {
 
         let mut results = Vec::new();
         while let Some(row) = rows.next().await? {
-            let chat_jid: String = row.get(1)?;
+            let chat_jid: String = row.get(2)?;
             let message = ChatMessage {
                 local_id: Uuid::parse_str(row.get_str(0)?).unwrap(),
                 server_id: row.get(1)?,

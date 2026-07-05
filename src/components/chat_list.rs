@@ -65,6 +65,11 @@ pub enum ChatListInput {
     Select(String),
     /// Select a chat by its position.
     SelectPosition(u32),
+    /// Remove a chat from the list.
+    RemoveChat {
+        /// Chat JID.
+        jid: String,
+    },
     /// Clear the chat selection.
     ClearSelection,
 }
@@ -196,6 +201,11 @@ impl SimpleAsyncComponent for ChatList {
                         .get_last_message()
                         .await
                         .expect("Failed to get chat last message");
+
+                    if last_message.is_none() {
+                        return;
+                    }
+
                     let unread_count = chat
                         .get_unread_count()
                         .await
@@ -325,6 +335,14 @@ impl SimpleAsyncComponent for ChatList {
                     sender.input(ChatListInput::Select(jid));
                 }
             }
+            ChatListInput::RemoveChat { jid } => {
+                if let Some(index) = self.get_index_by_jid(&jid) {
+                    self.list_view_wrapper.remove(index);
+                    if self.chat_jid.as_deref() == Some(&jid) {
+                        self.chat_jid = None;
+                    }
+                }
+            }
             ChatListInput::ClearSelection => {
                 if self.chat_jid.is_some()
                     || self
@@ -368,18 +386,18 @@ pub struct ChatRow {
 pub struct ChatRowWidgets {
     /// Chat avatar.
     avatar: adw::Avatar,
-    /// Chat title.
-    title_label: gtk::Label,
-    /// Chat last message's content.
-    subtitle_label: gtk::Label,
-    /// Message status icon (e.g. "Sending", "Sent").
-    status_icon: gtk::Image,
-    /// Timestamp label (e.g. "14:30").
-    timestamp_label: gtk::Label,
     /// Muted icon.
     muted_icon: gtk::Image,
     /// Pinned icon.
     pinned_icon: gtk::Image,
+    /// Message status icon (e.g. "Sending", "Sent").
+    status_icon: gtk::Image,
+    /// Chat title.
+    title_label: gtk::Label,
+    /// Chat last message's content.
+    subtitle_label: gtk::Label,
+    /// Timestamp label (e.g. "14:30").
+    timestamp_label: gtk::Label,
     /// Unread count badge.
     unread_count_badge: gtk::Label,
 }
@@ -493,12 +511,12 @@ impl RelmListItem for ChatRow {
 
         let widgets = ChatRowWidgets {
             avatar,
-            title_label,
-            subtitle_label,
-            status_icon,
-            timestamp_label,
             muted_icon,
             pinned_icon,
+            status_icon,
+            title_label,
+            subtitle_label,
+            timestamp_label,
             unread_count_badge,
         };
 

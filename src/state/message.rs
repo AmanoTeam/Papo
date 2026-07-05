@@ -17,37 +17,42 @@ const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 /// Represents a chat message.
 #[derive(Clone, Debug)]
 pub struct Message {
-    /// Local unique message identifier.
-    pub local_id: Uuid,
-    /// Server unique message identifier.
-    pub server_id: String,
-    /// JID (Jabbed ID) - unique chat identifier.
-    pub chat_jid: String,
-    /// Sender identifier.
-    pub sender_jid: String,
-    /// Sender's display name (push name, for group chats).
-    pub sender_name: Option<String>,
-
+    pub db: Arc<Database>,
     /// Media attached to this message.
     pub media: Option<Media>,
     /// Actual state of the message.
     pub status: Status,
     /// Message text.
     pub content: String,
+    /// JID (Jabbed ID) - unique chat identifier.
+    pub chat_jid: String,
+    /// Local unique message identifier.
+    pub local_id: Uuid,
     /// Whether the message was sent by the current user.
     pub outgoing: bool,
     /// Reactions on this message (emoji -> [sender JID]).
     pub reactions: IndexMap<String, Vec<String>>,
+    /// Sender identifier.
+    pub sender_jid: String,
+    /// Server unique message identifier.
+    pub server_id: String,
     /// When the message was sent/received.
     pub timestamp: DateTime<Utc>,
-
-    pub db: Arc<Database>,
+    /// Sender's display name (push name, for group chats).
+    pub sender_name: Option<String>,
 }
 
 impl Message {
     /// Insert or update the current message in the database.
     pub async fn save(&self) -> Result<(), libsql::Error> {
         self.db.save_message(&self.chat_jid, self).await
+    }
+
+    /// Insert the message, skipping if a duplicate `server_id` already exists.
+    /// Also ensures the chat exists for foreign key satisfaction.
+    /// Returns `true` if inserted, `false` if skipped as duplicate.
+    pub async fn save_or_ignore(&self) -> Result<bool, libsql::Error> {
+        self.db.save_synced_message(&self.chat_jid, self).await
     }
 
     /// Load the chat this message is attached to.

@@ -29,16 +29,16 @@ pub struct Login {
     state: LoginState,
     /// Current QR code texture.
     qr_code: Option<gdk::Paintable>,
+    /// Error dialog (TODO: use a custom alert dialog).
+    error_dialog: Connector<Alert>,
     /// Pairing box containing all pair cells.
     pairing_box: gtk::Box,
     /// Pair code character.
     pairing_cells: Option<[PairingCell; 8]>,
-    /// Current pair phone number view.
-    phone_number_view: LoginPhoneNumberView,
     /// Input entry containing the user phone number.
     phone_number_entry: adw::EntryRow,
-
-    error_dialog: Connector<Alert>, // TODO: use a custom alert dialog
+    /// Current pair phone number view.
+    phone_number_view: LoginPhoneNumberView,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -474,12 +474,11 @@ impl AsyncComponent for Login {
             page: LoginPage::QrCode,
             state: LoginState::default(),
             qr_code: None,
+            error_dialog,
             pairing_box,
             pairing_cells: None,
-            phone_number_view: LoginPhoneNumberView::EnterPhoneNumber,
             phone_number_entry: phone_number_entry.clone(),
-
-            error_dialog,
+            phone_number_view: LoginPhoneNumberView::EnterPhoneNumber,
         };
 
         let pairing_box = &model.pairing_box;
