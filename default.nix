@@ -72,6 +72,7 @@ pkgs.stdenv.mkDerivation {
     sqlite
     libwebp
     openssl
+    bubblewrap
     gnome-desktop
     desktop-file-utils
   ];

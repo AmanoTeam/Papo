@@ -34,6 +34,7 @@ pkgs.stdenv.mkDerivation {
     libwebp
     openssl
     appstream
+    bubblewrap
     pkg-config
     grass-sass
     gnome-desktop
