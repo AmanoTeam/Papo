@@ -18,7 +18,7 @@
         "--env=RUST_BACKTRACE=1"
     ],
     "build-options": {
-        "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin",
+        "append-path": "/usr/lib/sdk/rust-nightly/bin:/usr/lib/sdk/llvm21/bin",
         "build-args": ["--share=network"],
         "env": {
             "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
