@@ -50,6 +50,7 @@ pkgs.stdenv.mkDerivation {
     pkg-config
     desktop-file-utils
   ];
+  dontUseCmakeConfigure = true;
 
   # Runtime dependencies which will be shipped
   # with nix package
