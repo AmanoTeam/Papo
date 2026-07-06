@@ -23,9 +23,6 @@ pkgs.stdenv.mkDerivation {
   src = pkgs.lib.cleanSource ./.;
   cargoDeps = pkgs.rustPlatform.importCargoLock {
     lockFile = ./Cargo.lock;
-    outputHashes = {
-      "wacore-0.5.0" = "sha256-uG4DNkmQ2ID7gJnLgRf75hytadcGX84Wm/ynSLxThVE=";
-    };
   };
 
   meta = with pkgs.lib; {
@@ -66,8 +63,8 @@ pkgs.stdenv.mkDerivation {
     libglycin
     gdk-pixbuf
     libadwaita
-    glycin-loaders
     libglycin-gtk4
+    glycin-loaders
     adwaita-icon-theme
 
     # Build
