@@ -25,7 +25,7 @@ use crate::{
     config::{APP_ID, PROFILE},
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
-    session::{Client, ClientInput, ClientOutput, RuntimeCache, SyncedMessage},
+    session::{Client, ClientInput, ClientOutput, SyncedMessage},
     state::{Chat, ChatMessage, MessageStatus},
     store::{Contact, Database},
     utils::format_lid_as_number,
@@ -56,8 +56,6 @@ pub struct Application {
     split_view: NavigationSplitView,
     /// Page session view is displaying.
     session_page: AppSessionPage,
-    /// Runtime cache for `WhatsApp` data.
-    runtime_cache: Arc<RuntimeCache>,
     /// Push name from the connected user.
     user_push_name: Option<String>,
 }
@@ -606,8 +604,6 @@ impl AsyncComponent for Application {
                 .await
                 .expect("Failed to initialize database"),
         );
-        let runtime_cache = Arc::new(RuntimeCache::new());
-
         let login =
             Login::builder()
                 .launch(())
@@ -620,7 +616,7 @@ impl AsyncComponent for Application {
                 });
 
         let client = Client::builder()
-            .launch(Arc::clone(&runtime_cache))
+            .launch(())
             .forward(sender.input_sender(), |output| match output {
                 ClientOutput::Connected { jid, push_name } => AppMsg::Connected { jid, push_name },
                 ClientOutput::LoggedOut => AppMsg::LoggedOut,
@@ -760,7 +756,6 @@ impl AsyncComponent for Application {
             chat_view,
             split_view: NavigationSplitView::new(),
             session_page: AppSessionPage::Empty,
-            runtime_cache,
             user_push_name: None,
         };
 

@@ -27,11 +27,7 @@ use whatsapp_rust::{Jid, TokioRuntime, bot::Bot, store::SqliteStore};
 use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
 use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
-use crate::{
-    DATA_DIR, i18n, i18n_f,
-    session::{AvatarCache, RuntimeCache},
-    state::ChatMessage,
-};
+use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
 
 /// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -49,8 +45,6 @@ pub struct Client {
 
     /// Avatar cache for downloading and storing profile pictures.
     avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
-    /// Runtime cache shared with Application.
-    runtime_cache: Arc<RuntimeCache>,
 }
 
 /// Current state of the client connection.
@@ -393,7 +387,7 @@ impl Client {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for Client {
-    type Init = Arc<RuntimeCache>;
+    type Init = ();
     type Input = ClientInput;
     type Output = ClientOutput;
     type CommandOutput = ClientCommand;
@@ -429,7 +423,6 @@ impl AsyncComponent for Client {
             handle: Arc::new(Mutex::new(None)),
             os_type,
             avatar_cache: Arc::new(Mutex::new(avatar_cache)),
-            runtime_cache: init,
         };
 
         let widgets = view_output!();
