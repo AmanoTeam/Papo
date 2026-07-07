@@ -3,11 +3,8 @@
   rustToolchain,
   ...
 }:
-let
-  manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
-in
 pkgs.stdenv.mkDerivation {
-  name = "${manifest.name}";
+  name = "papo-dev";
 
   # Compile time dependencies
   nativeBuildInputs = with pkgs; [

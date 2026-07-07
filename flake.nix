@@ -25,7 +25,7 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         # Rust (nightly required for wacore-binary portable_simd)
-        rustToolchain = pkgs.rust-bin.nightly."2026-01-30".default.override {
+        rustToolchain = pkgs.rust-bin.nightly."2026-06-30".default.override {
           extensions = [
             "clippy"
             "rustfmt"
