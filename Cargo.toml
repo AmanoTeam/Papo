@@ -1,3 +1,5 @@
+# tombi: format.rules.table-keys-order.disabled = true
+
 [package]
 name = "papo"
 version = "0.1.0"
@@ -9,16 +11,18 @@ repository = "https://github.com/AmanoTeam/Papo"
 description = "GTK client for WhatsApp Web"
 
 [profile.release]
+opt-level = "z"
+strip = true
 lto = true
 panic = "abort"
-strip = true
-opt-level = "z"
 codegen-units = 1
 
 [dependencies]
+# tombi: format.rules.table-keys-order.disabled = true
+
 # GTK
-adw = { version = "0.9", package = "libadwaita", features = ["v1_8"] }
-relm4 = { version = "0.11", features = ["libadwaita", "gnome_49"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
+relm4 = { version = "0.11", features = ["gnome_49", "libadwaita"] }
 relm4-icons = "0.11"
 relm4-components = { version = "0.11", features = ["libadwaita"] }
 
@@ -30,10 +34,14 @@ rand = "0.10"
 moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1.22", features = ["v4"] }
 strum = { version = "0.28", features = ["derive"] }
-chrono = { version = "0.4", default-features = false, features = [
-  "std",
-  "clock",
-] }
+chrono = {
+  version = "0.4",
+  default-features = false,
+  features = [
+    "clock",
+    "std",
+  ]
+}
 os_info = "3.14"
 indexmap = "2.14"
 rlibphonenumber = "1.1"
@@ -57,10 +65,14 @@ fast_qr = { version = "0.13", features = ["image"] }
 
 # Futures
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "sync"] }
-futures-util = { version = "0.3", default-features = false, features = [
-  "std",
-  "async-await",
-] }
+futures-util = {
+  version = "0.3",
+  default-features = false,
+  features = [
+    "async-await",
+    "std",
+  ]
+}
 
 # WhatsApp
 whatsapp-rust = "0.5"
