@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-07-05 00:08-0300\n"
+"POT-Creation-Date: 2026-07-06 22:21-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -17,6 +17,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
+#. Set app name and initialize libadwaita.
 #: data/com.amanoteam.Papo.desktop.in.in:2
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
 #: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
@@ -133,6 +134,7 @@ msgstr ""
 msgid "translator-credits"
 msgstr ""
 
+#. General section
 #: src/modals/shortcuts.rs:28
 msgid "General"
 msgstr ""
@@ -208,7 +210,7 @@ msgid "Open WhatsApp on your phone."
 msgstr ""
 
 #: src/components/login.rs:267 src/components/login.rs:438
-msgid "Go to: <i>Menu > Connected devices > Connect device</i>"
+msgid "Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>"
 msgstr ""
 
 #: src/components/login.rs:268
@@ -244,7 +246,7 @@ msgid "edit"
 msgstr ""
 
 #: src/components/login.rs:439
-msgid "Tap <i>Connect with phone number</i> and enter this code on your phone."
+msgid "Tap <i>Link with phone number</i> and enter this code on your phone."
 msgstr ""
 
 #: src/components/login.rs:460

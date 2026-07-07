@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-07-05 00:08-0300\n"
+"POT-Creation-Date: 2026-07-06 22:21-0300\n"
 "PO-Revision-Date: 2026-07-05 23:10-0600\n"
 "Last-Translator: SrTortugardo <srtortugardo@disroot.org>\n"
 "Language-Team: none\n"
@@ -17,6 +17,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
+#. Set app name and initialize libadwaita.
 #: data/com.amanoteam.Papo.desktop.in.in:2
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
 #: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
@@ -65,8 +66,8 @@ msgid ""
 "Papo is a WhatsApp messaging app for GNOME written in Rust. Its interface "
 "will fit all screens, big or small."
 msgstr ""
-"Papo es una aplicación de mensajería para WhatsApp en GNOME escrita en "
-"Rust. Su interfaz se adapta tanto a pantallas grandes como pequeñas."
+"Papo es una aplicación de mensajería para WhatsApp en GNOME escrita en Rust. "
+"Su interfaz se adapta tanto a pantallas grandes como pequeñas."
 
 #: src/application.rs:292 src/application.rs:1386
 msgid "Group"
@@ -135,6 +136,7 @@ msgstr "Selecciona un chat para comenzar a chatear"
 msgid "translator-credits"
 msgstr "SrTortugardo <srtortugardo@disroot.org>"
 
+#. General section
 #: src/modals/shortcuts.rs:28
 msgid "General"
 msgstr "General"
@@ -210,8 +212,8 @@ msgid "Open WhatsApp on your phone."
 msgstr "Abre WhatsApp en tu teléfono"
 
 #: src/components/login.rs:267 src/components/login.rs:438
-msgid "Go to: <i>Menu > Connected devices > Connect device</i>"
-msgstr "Ve a: <i>Menú > Dispositivos conectados > Conectar dispositivo</i>"
+msgid "Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>"
+msgstr "Ve a: <i>Menú &gt; Dispositivos conectados &gt; Conectar dispositivo</i>"
 
 #: src/components/login.rs:268
 msgid "Scan this QR code."
@@ -246,8 +248,10 @@ msgid "edit"
 msgstr "Editar"
 
 #: src/components/login.rs:439
-msgid "Tap <i>Connect with phone number</i> and enter this code on your phone."
-msgstr "Pulsa <i>Conectar con número de teléfono</i> e introduce este código en tu teléfono."
+msgid "Tap <i>Link with phone number</i> and enter this code on your phone."
+msgstr ""
+"Pulsa <i>Conectar con número de teléfono</i> e introduce este código en tu "
+"teléfono."
 
 #: src/components/login.rs:460
 msgid "An error occurred"

@@ -264,7 +264,7 @@ impl AsyncComponent for Login {
                             set_margin_bottom: 15,
 
                             PairStep::new(1, &i18n!("Open WhatsApp on your phone.")).main_box {},
-                            PairStep::new(2, &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")) .main_box {},
+                            PairStep::new(2, &i18n!("Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>")) .main_box {},
                             PairStep::new(3, &i18n!("Scan this QR code.")).main_box {}
                         },
 
@@ -435,8 +435,8 @@ impl AsyncComponent for Login {
                                 set_orientation: gtk::Orientation::Vertical,
 
                                 PairStep::new(1, &i18n!("Open WhatsApp on your phone.")).main_box {},
-                                PairStep::new(2, &i18n!("Go to: <i>Menu > Connected devices > Connect device</i>")) .main_box {},
-                                PairStep::new(3, &i18n!("Tap <i>Connect with phone number</i> and enter this code on your phone.")).main_box {}
+                                PairStep::new(2, &i18n!("Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>")) .main_box {},
+                                PairStep::new(3, &i18n!("Tap <i>Link with phone number</i> and enter this code on your phone.")).main_box {}
                             }
                         },
 

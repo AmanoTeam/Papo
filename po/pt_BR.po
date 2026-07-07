@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-07-05 00:08-0300\n"
+"POT-Creation-Date: 2026-07-06 22:21-0300\n"
 "PO-Revision-Date: 2026-07-05 04:12+0000\n"
 "Last-Translator: Alisson Lauffer <alissonvitortc@gmail.com>\n"
 "Language-Team: Portuguese (Brazil) <http://weblate.amanoteam.com/projects/"
@@ -19,6 +19,7 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=n > 1;\n"
 "X-Generator: Weblate 2026.6.1\n"
 
+#. Set app name and initialize libadwaita.
 #: data/com.amanoteam.Papo.desktop.in.in:2
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
 #: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
@@ -141,6 +142,7 @@ msgstr ""
 "Andriel Ferreira <andrielfr@proton.me>\n"
 "Alisson Lauffer <me@alisson.sh>"
 
+#. General section
 #: src/modals/shortcuts.rs:28
 msgid "General"
 msgstr "Geral"
@@ -216,8 +218,8 @@ msgid "Open WhatsApp on your phone."
 msgstr "Abra o WhatsApp no seu celular."
 
 #: src/components/login.rs:267 src/components/login.rs:438
-msgid "Go to: <i>Menu > Connected devices > Connect device</i>"
-msgstr "Acesse: <i>Menu > Dispositivos conectados > Conectar dispositivo</i>"
+msgid "Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>"
+msgstr "Acesse: <i>Menu &gt; Dispositivos conectados &gt; Conectar dispositivo</i>"
 
 #: src/components/login.rs:268
 msgid "Scan this QR code."
@@ -252,7 +254,7 @@ msgid "edit"
 msgstr "editar"
 
 #: src/components/login.rs:439
-msgid "Tap <i>Connect with phone number</i> and enter this code on your phone."
+msgid "Tap <i>Link with phone number</i> and enter this code on your phone."
 msgstr ""
 "Toque em <i>Conectar com número de telefone</i> e digite este código no seu "
 "celular."
