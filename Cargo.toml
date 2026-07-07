@@ -31,16 +31,12 @@ libsql = { version = "0.9", features = ["encryption"] }
 
 # Utilities
 rand = "0.10"
-moka = { version = "0.12", features = ["future"] }
 uuid = { version = "1.22", features = ["v4"] }
 strum = { version = "0.28", features = ["derive"] }
 chrono = {
   version = "0.4",
   default-features = false,
-  features = [
-    "clock",
-    "std",
-  ]
+  features = ["clock", "std"]
 }
 os_info = "3.14"
 indexmap = "2.14"
@@ -68,10 +64,7 @@ tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "sync"] }
 futures-util = {
   version = "0.3",
   default-features = false,
-  features = [
-    "async-await",
-    "std",
-  ]
+  features = ["async-await", "std"]
 }
 
 # WhatsApp
