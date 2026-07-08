@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use adw::{NavigationSplitView, prelude::*};
 use chrono::{DateTime, Utc};
-use gtk::{gio, glib, pango};
+use gtk::{gio, glib};
 use indexmap::IndexMap;
 use relm4::{
     abstractions::Toaster,
@@ -67,8 +67,6 @@ enum AppPage {
     Login,
     /// Session view.
     Session,
-    /// Loading/fetching page.
-    Fetching,
     /// Error page.
     Error,
 }
@@ -449,40 +447,6 @@ impl AsyncComponent for Application {
                 gtk::Stack {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
 
-                    add_named[Some("fetching")] = &adw::ToolbarView {
-                        add_top_bar = &adw::HeaderBar {
-                            pack_end = &gtk::Button {
-                                set_icon_name: "info-outline-symbolic",
-                                set_action_name: Some("win.about"),
-                                set_tooltip_text: Some(&i18n!("About Papo")),
-                            }
-                        },
-
-                        #[wrap(Some)]
-                        set_content = &gtk::Box {
-                            set_halign: gtk::Align::Center,
-                            set_valign: gtk::Align::Center,
-                            set_vexpand: true,
-                            set_spacing: 24,
-                            set_orientation: gtk::Orientation::Vertical,
-
-                            gtk::Label {
-                                set_label: &i18n!("Fetching account data..."),
-                                set_halign: gtk::Align::Center,
-                                set_justify: gtk::Justification::Center,
-                                set_css_classes: &["title-2"],
-
-                                set_wrap: true,
-                                set_wrap_mode: pango::WrapMode::WordChar
-                            },
-
-                            adw::Spinner {
-                                set_width_request: 48,
-                                set_height_request: 48
-                            }
-                        }
-                    },
-
                     #[local_ref]
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
 
@@ -742,7 +706,7 @@ impl AsyncComponent for Application {
 
         let model = Self {
             db,
-            page: AppPage::Fetching,
+            page: AppPage::Login,
             chats: Vec::new(),
             login,
             state: AppState::Loading,
@@ -829,7 +793,7 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::LoggedOut => {
-                self.page = AppPage::Fetching;
+                self.page = AppPage::Login;
                 self.state = AppState::Pairing;
 
                 // Start a fresh client — the old credentials have been cleared
@@ -859,10 +823,6 @@ impl AsyncComponent for Application {
                 qr_code,
                 timeout,
             } => {
-                if self.page == AppPage::Fetching {
-                    self.page = AppPage::Login;
-                }
-
                 self.login.emit(LoginInput::PairCode {
                     code,
                     qr_code,
@@ -1272,9 +1232,6 @@ impl AsyncComponent for Application {
                     }
                     AppPage::Session => {
                         // TODO: display error
-                    }
-                    AppPage::Fetching => {
-                        self.page = AppPage::Error;
                     }
                     AppPage::Error => {}
                 }
