@@ -68,11 +68,11 @@ futures-util = {
 }
 
 # WhatsApp
-whatsapp-rust = "0.5"
-whatsapp-rust-tokio-transport = "0.5"
-whatsapp-rust-ureq-http-client = "0.5"
-wacore = "0.5"
-waproto = "0.5"
+waepic = {
+  git = "https://git.amanoteam.com/AmanoTeam/waepic",
+  rev = "7ad51e",
+  features = ["rustls", "tokio"]
+}
 
 [build-dependencies]
 relm4-icons-build = "0.11"

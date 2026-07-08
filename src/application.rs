@@ -13,8 +13,8 @@ use relm4::{
 use strum::{AsRefStr, EnumString};
 use tokio::time;
 use uuid::Uuid;
-use wacore::types::{message::MessageInfo, presence::ReceiptType};
-use waproto::whatsapp::Message;
+use wacore::types::presence::ReceiptType;
+use waepic::wacore;
 
 use crate::{
     DATA_DIR,
@@ -173,8 +173,7 @@ pub enum AppMsg {
 
     /// New message received.
     MessageReceived {
-        info: Box<MessageInfo>,
-        message: Box<Message>,
+        message: Box<waepic::Message>,
     },
 
     /// Send a text message.
@@ -655,9 +654,7 @@ impl AsyncComponent for Application {
                     last_seen,
                 },
 
-                ClientOutput::MessageReceived { info, message } => {
-                    AppMsg::MessageReceived { info, message }
-                }
+                ClientOutput::MessageReceived { message } => AppMsg::MessageReceived { message },
                 ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
                     chat_jid,
                     msg_id,
@@ -1064,24 +1061,15 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppMsg::MessageReceived { info, message } => {
-                let content = message
-                    .conversation
-                    .clone()
-                    .filter(|c| !c.is_empty())
-                    .or_else(|| {
-                        message
-                            .extended_text_message
-                            .as_ref()
-                            .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                    });
+            AppMsg::MessageReceived { message } => {
+                let content = message.text().filter(|c| !c.is_empty());
 
                 if let Some(content) = content {
                     if content == "status@broadcast" {
                         // TODO: handle status events
                     } else {
-                        let chat_jid = info.source.chat.to_string();
-                        let outgoing = info.source.is_from_me;
+                        let chat_jid = message.chat().to_string();
+                        let outgoing = message.outgoing();
 
                         let status = if outgoing {
                             MessageStatus::Read
@@ -1090,41 +1078,29 @@ impl AsyncComponent for Application {
                         };
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
-                            server_id: info.id.clone(),
+                            server_id: message.id().to_string(),
                             chat_jid: chat_jid.clone(),
-                            sender_jid: info.source.sender.to_string(),
-                            sender_name: Some(info.push_name.clone()),
+                            sender_jid: message.sender().to_string(),
+                            sender_name: None, // waepic::Message does not expose push_name
 
                             media: None,
                             status,
-                            content,
+                            content: content.to_string(),
                             outgoing,
                             reactions: IndexMap::new(),
-                            timestamp: info.timestamp,
+                            timestamp: DateTime::from_timestamp(
+                                message.date().try_into().unwrap_or(i64::MAX),
+                                0,
+                            )
+                            .unwrap_or_default(),
 
                             db: Arc::clone(&self.db),
                         };
 
                         self.add_message(&chat_jid, chat_message);
                     }
-                } else if let Some(sent_message) = message.device_sent_message {
-                    if let Some(_chat_jid) = sent_message.destination_jid {
-                        if let Some(msg) = sent_message.message {
-                            if let Some(_reaction) = msg.reaction_message {
-                                // TODO: handle
-                            } else if let Some(_sticker) = msg.sticker_message {
-                                // TODO: handle
-                            }
-                        }
-                    } else {
-                        // TODO: maybe add message to "You" chat?
-                    }
                 } else {
-                    tracing::trace!(
-                        "Message without content received: info = {:#?}, message = {:#?}",
-                        info,
-                        message
-                    );
+                    tracing::trace!("Message without content received: message = {:#?}", message);
                 }
             }
 

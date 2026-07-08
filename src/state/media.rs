@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use wacore::download::MediaType as DownloadMediaType;
+use waepic::wacore;
 
 use crate::i18n;
 

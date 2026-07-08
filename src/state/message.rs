@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use uuid::Uuid;
 use wacore::types::presence::ReceiptType;
+use waepic::{wacore, waproto};
 use waproto::whatsapp as wa;
 
 use crate::{
