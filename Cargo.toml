@@ -21,8 +21,8 @@ codegen-units = 1
 # tombi: format.rules.table-keys-order.disabled = true
 
 # GTK
-adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
-relm4 = { version = "0.11", features = ["gnome_49", "libadwaita"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
+relm4 = { version = "0.11", features = ["gnome_50", "libadwaita"] }
 relm4-icons = "0.11"
 relm4-components = { version = "0.11", features = ["libadwaita"] }
 
