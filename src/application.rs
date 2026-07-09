@@ -20,7 +20,7 @@ use crate::{
     DATA_DIR,
     components::{
         ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
-        LoginInput, LoginOutput,
+        LoginInput, LoginOutput, Welcome, WelcomeOutput,
     },
     config::{APP_ID, PROFILE},
     i18n,
@@ -48,6 +48,8 @@ pub struct Application {
     toaster: Toaster,
     /// JID from the connected user.
     user_jid: Option<String>,
+    /// Welcome page component.
+    welcome: AsyncController<Welcome>,
     /// Chat list component.
     chat_list: AsyncController<ChatList>,
     /// Chat view component.
@@ -67,6 +69,8 @@ enum AppPage {
     Login,
     /// Session view.
     Session,
+    /// Welcome page.
+    Welcome,
     /// Error page.
     Error,
 }
@@ -128,6 +132,10 @@ pub enum AppMsg {
     PairWithPhoneNumber {
         phone_number: String,
     },
+    /// Switch to the login page.
+    SwitchToLoginQrCode,
+    /// Switch to the login page with phone number pairing.
+    SwitchToLoginPhoneNumber,
 
     /// A chat was open.
     ChatOpen,
@@ -448,6 +456,9 @@ impl AsyncComponent for Application {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
 
                     #[local_ref]
+                    add_named[Some("welcome")] = welcome_widget -> adw::StatusPage {},
+
+                    #[local_ref]
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
 
                     add_named[Some("session")] = &adw::BreakpointBin {
@@ -567,6 +578,7 @@ impl AsyncComponent for Application {
                 .await
                 .expect("Failed to initialize database"),
         );
+
         let login =
             Login::builder()
                 .launch(())
@@ -577,6 +589,13 @@ impl AsyncComponent for Application {
                         AppMsg::PairWithPhoneNumber { phone_number }
                     }
                 });
+
+        let welcome = Welcome::builder()
+            .launch(())
+            .forward(sender.input_sender(), |output| match output {
+                WelcomeOutput::PairWithQrCode => AppMsg::SwitchToLoginQrCode,
+                WelcomeOutput::PairWithPhoneNumber => AppMsg::SwitchToLoginPhoneNumber,
+            });
 
         let client = Client::builder()
             .launch(())
@@ -706,13 +725,14 @@ impl AsyncComponent for Application {
 
         let model = Self {
             db,
-            page: AppPage::Login,
+            page: AppPage::Welcome,
             chats: Vec::new(),
             login,
             state: AppState::Loading,
             client,
             toaster: Toaster::default(),
             user_jid: None,
+            welcome,
             chat_list,
             chat_view,
             split_view: NavigationSplitView::new(),
@@ -722,6 +742,7 @@ impl AsyncComponent for Application {
 
         let split_view = &model.split_view;
         let login_widget = model.login.widget();
+        let welcome_widget = model.welcome.widget();
         let toast_overlay = model.toaster.overlay_widget();
         let chat_list_widget = model.chat_list.widget();
         let chat_view_widget = model.chat_view.widget();
@@ -793,7 +814,7 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::LoggedOut => {
-                self.page = AppPage::Login;
+                self.page = AppPage::Welcome;
                 self.state = AppState::Pairing;
 
                 // Start a fresh client — the old credentials have been cleared
@@ -839,6 +860,16 @@ impl AsyncComponent for Application {
             AppMsg::PairWithPhoneNumber { phone_number } => {
                 self.client
                     .emit(ClientInput::PairWithPhoneNumber { phone_number });
+            }
+
+            AppMsg::SwitchToLoginQrCode => {
+                self.page = AppPage::Login;
+                self.login.emit(LoginInput::PairWithQrCode);
+            }
+            AppMsg::SwitchToLoginPhoneNumber => {
+                self.page = AppPage::Login;
+                self.login
+                    .emit(LoginInput::PairWithPhoneNumber { edit: false });
             }
 
             AppMsg::ChatOpen => {
@@ -1225,7 +1256,6 @@ impl AsyncComponent for Application {
             AppMsg::Error { message } => {
                 self.state = AppState::Error(message.clone());
 
-                #[allow(clippy::match_same_arms)] // FIXME: remove when `Error` page is added
                 match self.page {
                     AppPage::Login => {
                         self.login.emit(LoginInput::Error { message });
@@ -1233,6 +1263,7 @@ impl AsyncComponent for Application {
                     AppPage::Session => {
                         // TODO: display error
                     }
+                    AppPage::Welcome => {}
                     AppPage::Error => {}
                 }
             }
