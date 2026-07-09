@@ -35,10 +35,12 @@ pub struct Login {
     pairing_box: gtk::Box,
     /// Pair code character.
     pairing_cells: Option<[PairingCell; 8]>,
-    /// Input entry containing the user phone number.
-    phone_number_entry: adw::EntryRow,
+    /// Cancel token for the QR code expiration bar animation.
+    progress_cancel: Arc<AtomicBool>,
     /// Current pair phone number view.
     phone_number_view: LoginPhoneNumberView,
+    /// Input entry containing the user phone number.
+    phone_number_entry: adw::EntryRow,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -484,8 +486,9 @@ impl AsyncComponent for Login {
             error_dialog,
             pairing_box,
             pairing_cells: None,
-            phone_number_entry: phone_number_entry.clone(),
+            progress_cancel: Arc::new(AtomicBool::new(false)),
             phone_number_view: LoginPhoneNumberView::EnterPhoneNumber,
+            phone_number_entry: phone_number_entry.clone(),
         };
 
         let pairing_box = &model.pairing_box;
@@ -586,6 +589,8 @@ impl AsyncComponent for Login {
                 self.qr_code = None;
                 self.pairing_cells = None;
                 self.pairing_box.remove_all();
+                self.progress_cancel.store(true, Ordering::Release);
+                self.progress_cancel = Arc::new(AtomicBool::new(false));
                 self.phone_number_entry.set_text("");
                 self.phone_number_view = LoginPhoneNumberView::EnterPhoneNumber;
             }
@@ -616,7 +621,6 @@ impl AsyncComponent for Login {
             }
 
             LoginCommand::UpdateQrCode { data, timeout } => {
-                // Reset the QR code and progress bar.
                 self.state.progress_fraction = 1.0;
 
                 if self.state.scan_attempts >= 5 {
@@ -627,14 +631,16 @@ impl AsyncComponent for Login {
                 }
                 self.state.scan_attempts += 1;
 
-                // Generate the QR code.
                 let texture = Box::pin(generate_qr_code(&data, 200))
                     .await
                     .expect("Failed to generate QR code");
                 self.qr_code = Some(texture.current_image());
 
-                // Make sure to not reset the qr code after it refreshes.
                 let timeout = timeout.saturating_sub(Duration::from_secs(2));
+
+                self.progress_cancel.store(true, Ordering::Release);
+                let progress_cancel = Arc::new(AtomicBool::new(false));
+                self.progress_cancel = progress_cancel.clone();
 
                 let start = Instant::now();
                 sender.command(move |command_sender, shutdown| {
@@ -646,7 +652,7 @@ impl AsyncComponent for Login {
                                 1.0 - (elapsed.as_secs_f32() / timeout.as_secs_f32());
                             interval.tick().await;
 
-                            while elapsed < timeout {
+                            while elapsed < timeout && !progress_cancel.load(Ordering::Acquire) {
                                 command_sender.emit(LoginCommand::UpdateExpirationBar(fraction));
 
                                 elapsed = start.elapsed();
@@ -654,7 +660,9 @@ impl AsyncComponent for Login {
                                 interval.tick().await;
                             }
 
-                            command_sender.emit(LoginCommand::QrCodeExpired);
+                            if !progress_cancel.load(Ordering::Acquire) {
+                                command_sender.emit(LoginCommand::QrCodeExpired);
+                            }
                         })
                         .drop_on_shutdown()
                         .boxed()

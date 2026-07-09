@@ -408,9 +408,7 @@ impl AsyncComponent for Client {
                                     }
                                     PairEvent::Success => {}
                                     PairEvent::Error(e) => {
-                                        let _ = sender.output(ClientOutput::Error {
-                                            message: i18n_f!("Failed to pair with qr code: {0}", e),
-                                        });
+                                        tracing::warn!("QR pairing stream error: {e}");
                                     }
                                 }
                             }
