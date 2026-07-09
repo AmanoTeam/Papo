@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wacore::{store::traits::DeviceStore, types::presence::ReceiptType};
 use waepic::{
-    ClientConfiguration, Jid, LoginStatus, MemorySession, Update, update::SyncedConversation,
-    wacore,
+    ClientConfiguration, Jid, LoginStatus, MemorySession, PairEvent, Update,
+    update::SyncedConversation, wacore,
 };
 
 use crate::{i18n, i18n_f, session::AvatarCache, state::ChatMessage};
@@ -72,6 +72,8 @@ pub enum ClientInput {
     /// Restart the client connection.
     Restart,
 
+    /// Pair scanning a QR code.
+    PairWithQrCode,
     /// Pair with a phone number.
     PairWithPhoneNumber { phone_number: String },
 
@@ -380,6 +382,47 @@ impl AsyncComponent for Client {
                 sender.oneshot_command(async { ClientCommand::Restart });
             }
 
+            ClientInput::PairWithQrCode => {
+                let stream = {
+                    let handle = self.handle.lock().await;
+                    match handle.as_ref() {
+                        Some(client) => client.request_pairing().await,
+                        None => return,
+                    }
+                };
+
+                match stream {
+                    Ok(mut stream) => {
+                        let sender = sender.clone();
+                        relm4::spawn(async move {
+                            while let Some(event) = stream.recv().await {
+                                match event {
+                                    PairEvent::QrCode { code, timeout } => {
+                                        sender.oneshot_command(async move {
+                                            ClientCommand::Pair {
+                                                code: None,
+                                                qr_code: Some(code),
+                                                timeout: Duration::from_secs(timeout),
+                                            }
+                                        });
+                                    }
+                                    PairEvent::Success => {}
+                                    PairEvent::Error(e) => {
+                                        let _ = sender.output(ClientOutput::Error {
+                                            message: i18n_f!("Failed to pair with qr code: {0}", e),
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let _ = sender.output(ClientOutput::Error {
+                            message: i18n_f!("Failed to pair with qr code: {0}", e),
+                        });
+                    }
+                }
+            }
             ClientInput::PairWithPhoneNumber { phone_number } => {
                 let handle = self.handle.lock().await;
                 if let Some(client) = handle.as_ref() {
@@ -391,7 +434,13 @@ impl AsyncComponent for Client {
 
                     match client.request_pair_code(&phone_number).await {
                         Ok(code) => {
-                            tracing::info!("Pair code received: {code}");
+                            sender.oneshot_command(async move {
+                                ClientCommand::Pair {
+                                    code: Some(code),
+                                    qr_code: None,
+                                    timeout: Duration::from_secs(180),
+                                }
+                            });
                         }
                         Err(e) => {
                             let _ = sender.output(ClientOutput::Error {
@@ -482,18 +531,15 @@ impl AsyncComponent for Client {
                     self.state,
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
-                    // Create in-memory session.
                     let session = Arc::new(MemorySession::new());
                     if let Err(e) = DeviceStore::create(&*session).await {
                         tracing::error!("Failed to create session: {e}");
                         return;
                     }
 
-                    // Connect to WhatsApp.
                     let (client, runner) =
                         waepic::Client::connect(session, ClientConfiguration::default());
 
-                    // Spawn the connection runner.
                     let sender_runner = sender.clone();
                     relm4::spawn(async move {
                         if let Err(e) = runner.run().await {
@@ -502,7 +548,6 @@ impl AsyncComponent for Client {
                         }
                     });
 
-                    // Load or create device.
                     if let Err(e) = client.load_or_create_device().await {
                         tracing::error!("Failed to load device: {e}");
                         let message = i18n_f!("Failed to initialize device: {0}", e);
@@ -511,7 +556,6 @@ impl AsyncComponent for Client {
                         return;
                     }
 
-                    // Get update stream before storing client.
                     let (mut stream, future) = match client.stream_updates() {
                         Ok(s) => s,
                         Err(e) => {
@@ -523,15 +567,10 @@ impl AsyncComponent for Client {
                         }
                     };
 
-                    // Store the client.
                     *self.handle.lock().await = Some(client);
-
                     self.update_state(ClientState::Connecting);
-
-                    // Spawn the update processing future.
                     relm4::spawn(future);
 
-                    // Spawn the update stream polling.
                     let sender_stream = sender.clone();
                     relm4::spawn(async move {
                         while let Some(update) = stream.next().await {
@@ -550,7 +589,6 @@ impl AsyncComponent for Client {
                                 }
 
                                 Update::PairingCode { code, timeout } => {
-                                    tracing::info!("Pair code received: {code}");
                                     sender_stream.oneshot_command(async move {
                                         ClientCommand::Pair {
                                             code: Some(code),
@@ -560,7 +598,6 @@ impl AsyncComponent for Client {
                                     });
                                 }
                                 Update::PairingQrCode { code, timeout } => {
-                                    tracing::info!("QR code received");
                                     sender_stream.oneshot_command(async move {
                                         ClientCommand::Pair {
                                             code: None,
@@ -682,8 +719,7 @@ impl AsyncComponent for Client {
                                 }
 
                                 Update::StreamReplaced => {
-                                    tracing::info!("Stream replaced, reconnecting...");
-                                    sender_stream.oneshot_command(async { ClientCommand::Start });
+                                    tracing::info!("Stream replaced, waiting for reconnection...");
                                 }
                                 Update::ConnectFailure(failure) => {
                                     tracing::error!("Connection failure: {failure:?}");
@@ -764,7 +800,9 @@ impl AsyncComponent for Client {
                                 push_name,
                             });
                         }
-                        Ok(LoginStatus::NotAuthorized) => {}
+                        Ok(LoginStatus::NotAuthorized) => {
+                            sender.input(ClientInput::PairWithQrCode);
+                        }
                         Err(e) => {
                             tracing::error!("Failed to check login status: {e}");
                         }

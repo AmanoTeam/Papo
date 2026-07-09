@@ -104,6 +104,9 @@ pub enum LoginInput {
 
     /// Error occurred.
     Error { message: String },
+
+    /// Reset all login state to initial values.
+    Reset,
 }
 
 #[derive(Debug)]
@@ -111,6 +114,8 @@ pub enum LoginOutput {
     /// Reset the session to be able to receive new qr codes.
     ResetSession,
 
+    /// Request the session to pair with a QR code.
+    PairWithQrCode,
     /// Request the session to pair with a phone number.
     PairWithPhoneNumber { phone_number: String },
 }
@@ -124,6 +129,8 @@ pub enum LoginCommand {
     UpdateQrCode { data: String, timeout: Duration },
     /// QR code expired by timeout.
     QrCodeExpired,
+    /// Request the session to pair with a QR code.
+    PairWithQrCode,
     /// Update the expiration bar.
     UpdateExpirationBar(f32),
     /// Request the session to pair with a phone number.
@@ -551,6 +558,7 @@ impl AsyncComponent for Login {
             }
             LoginInput::PairWithQrCode => {
                 self.page = LoginPage::QrCode;
+                sender.oneshot_command(async { LoginCommand::PairWithQrCode });
             }
             LoginInput::PairWithPhoneNumber { edit } => {
                 if edit {
@@ -562,20 +570,24 @@ impl AsyncComponent for Login {
             }
 
             LoginInput::Error { message } => {
-                if self.page == LoginPage::PhoneNumber {
-                    // Reset session and start pair with phone number
-                    sender.oneshot_command(async { LoginCommand::ResetSession });
+                // Show error dialog for all pairing/connection errors,
+                // regardless of which login page is active. Previously,
+                // the phone number page auto-retried on error, which
+                // caused multiple PairWithPhoneNumber requests when the
+                // server dropped the connection (error 515).
+                self.state.pair_state = PairState::Pairing;
 
-                    let phone_number = self.phone_number_entry.text().to_string();
-                    sender.oneshot_command(async {
-                        LoginCommand::PairWithPhoneNumber { phone_number }
-                    });
-                } else {
-                    self.state.pair_state = PairState::Pairing;
-
-                    self.error_dialog.widgets().gtk_label_2.set_text(&message);
-                    self.error_dialog.emit(AlertMsg::Show);
-                }
+                self.error_dialog.widgets().gtk_label_2.set_text(&message);
+                self.error_dialog.emit(AlertMsg::Show);
+            }
+            LoginInput::Reset => {
+                self.page = LoginPage::QrCode;
+                self.state = LoginState::default();
+                self.qr_code = None;
+                self.pairing_cells = None;
+                self.pairing_box.remove_all();
+                self.phone_number_entry.set_text("");
+                self.phone_number_view = LoginPhoneNumberView::EnterPhoneNumber;
             }
         }
     }
@@ -655,6 +667,9 @@ impl AsyncComponent for Login {
             }
             LoginCommand::UpdateExpirationBar(progress) => {
                 self.state.progress_fraction = f64::from(progress);
+            }
+            LoginCommand::PairWithQrCode => {
+                let _ = sender.output(LoginOutput::PairWithQrCode);
             }
             LoginCommand::PairWithPhoneNumber { phone_number } => {
                 if self.state.valid_phone_number.load(Ordering::Acquire) {

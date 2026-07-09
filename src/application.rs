@@ -124,6 +124,8 @@ pub enum AppMsg {
     },
     /// Device has successfully paired.
     DevicePaired,
+    /// Pair with a QR code.
+    PairWithQrCode,
     /// Pair with a phone number.
     PairWithPhoneNumber {
         phone_number: String,
@@ -573,6 +575,7 @@ impl AsyncComponent for Application {
                 .forward(sender.input_sender(), |output| match output {
                     LoginOutput::ResetSession => AppMsg::ResetSession,
 
+                    LoginOutput::PairWithQrCode => AppMsg::PairWithQrCode,
                     LoginOutput::PairWithPhoneNumber { phone_number } => {
                         AppMsg::PairWithPhoneNumber { phone_number }
                     }
@@ -796,7 +799,10 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Login;
                 self.state = AppState::Pairing;
 
-                // Start a fresh client — the old credentials have been cleared
+                // Reset login component state so it doesn't show stale pair code.
+                self.login.emit(LoginInput::Reset);
+
+                // Start a fresh client - the old credentials have been cleared
                 // by the ClientCommand::LoggedOut handler.
                 self.client.emit(ClientInput::Start);
 
@@ -835,6 +841,9 @@ impl AsyncComponent for Application {
 
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;
+            }
+            AppMsg::PairWithQrCode => {
+                self.client.emit(ClientInput::PairWithQrCode);
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
                 self.client
