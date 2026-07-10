@@ -7,11 +7,11 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wacore::{store::traits::DeviceStore, types::presence::ReceiptType};
 use waepic::{
-    ClientConfiguration, Jid, LoginStatus, MemorySession, PairEvent, Update,
+    ClientConfiguration, Jid, LoginStatus, PairEvent, SqliteSession, Update,
     update::SyncedConversation, wacore,
 };
 
-use crate::{i18n, i18n_f, session::AvatarCache, state::ChatMessage};
+use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
 
 /// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<waepic::Client>>>;
@@ -529,7 +529,16 @@ impl AsyncComponent for Client {
                     self.state,
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
-                    let session = Arc::new(MemorySession::new());
+                    let session = match SqliteSession::new(DATA_DIR.join("session.db")) {
+                        Ok(session) => Arc::new(session),
+                        Err(e) => {
+                            tracing::error!("Failed to initialize session storage: {e}");
+                            let message = i18n_f!("Failed to initialize session storage: {0}", e);
+                            self.update_state(ClientState::Error(message.clone()));
+                            let _ = sender.output(ClientOutput::Error { message });
+                            return;
+                        }
+                    };
                     if let Err(e) = DeviceStore::create(&*session).await {
                         tracing::error!("Failed to create session: {e}");
                         return;
@@ -538,14 +547,6 @@ impl AsyncComponent for Client {
                     let (client, runner) =
                         waepic::Client::connect(session, ClientConfiguration::default());
 
-                    let sender_runner = sender.clone();
-                    relm4::spawn(async move {
-                        if let Err(e) = runner.run().await {
-                            tracing::error!("Connection runner failed: {e}");
-                            sender_runner.oneshot_command(async { ClientCommand::LoggedOut });
-                        }
-                    });
-
                     if let Err(e) = client.load_or_create_device().await {
                         tracing::error!("Failed to load device: {e}");
                         let message = i18n_f!("Failed to initialize device: {0}", e);
@@ -553,6 +554,14 @@ impl AsyncComponent for Client {
                         let _ = sender.output(ClientOutput::Error { message });
                         return;
                     }
+
+                    let sender_runner = sender.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = runner.run().await {
+                            tracing::error!("Connection runner failed: {e}");
+                            sender_runner.oneshot_command(async { ClientCommand::LoggedOut });
+                        }
+                    });
 
                     let (mut stream, future) = match client.stream_updates() {
                         Ok(s) => s,

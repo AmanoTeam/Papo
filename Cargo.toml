@@ -72,6 +72,7 @@ waepic = {
   git = "https://git.amanoteam.com/AmanoTeam/waepic",
   rev = "7ad51e",
   features = ["rustls", "tokio"]
+  features = ["rustls", "sqlite-storage", "tokio"]
 }
 
 [build-dependencies]
