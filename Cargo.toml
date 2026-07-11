@@ -70,9 +70,8 @@ futures-util = {
 # WhatsApp
 waepic = {
   git = "https://git.amanoteam.com/AmanoTeam/waepic",
-  rev = "7ad51e",
-  features = ["rustls", "tokio"]
-  features = ["rustls", "sqlite-storage", "tokio"]
+  rev = "224fbd",
+  features = ["download", "rustls", "sqlite-storage", "tokio"]
 }
 
 [build-dependencies]

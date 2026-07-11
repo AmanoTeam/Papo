@@ -544,8 +544,13 @@ impl AsyncComponent for Client {
                         return;
                     }
 
-                    let (client, runner) =
-                        waepic::Client::connect(session, ClientConfiguration::default());
+                    let (client, runner) = waepic::Client::connect(
+                        session,
+                        ClientConfiguration {
+                            auto_history_sync: true,
+                            ..Default::default()
+                        },
+                    );
 
                     if let Err(e) = client.load_or_create_device().await {
                         tracing::error!("Failed to load device: {e}");
