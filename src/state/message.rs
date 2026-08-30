@@ -3,8 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use uuid::Uuid;
-use wacore::types::presence::ReceiptType;
-use waproto::whatsapp as wa;
+use whatsapp_rust::{types::presence::ReceiptType, waproto::whatsapp as wa};
 
 use crate::{
     state::{Chat, Media},

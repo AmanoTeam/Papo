@@ -32,17 +32,10 @@ libsql = { version = "0.9", features = ["encryption"] }
 # Utilities
 rand = "0.10"
 moka = { version = "0.12", features = ["future"] }
-uuid = { version = "1.22", features = ["v4"] }
+uuid = { version = "1.26", features = ["v4"] }
 strum = { version = "0.28", features = ["derive"] }
-chrono = {
-  version = "0.4",
-  default-features = false,
-  features = [
-    "clock",
-    "std",
-  ]
-}
-os_info = "3.14"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+os_info = "3.15"
 indexmap = "2.14"
 rlibphonenumber = "1.1"
 
@@ -64,22 +57,11 @@ glycin = { version = "3.1", features = ["gdk4"] }
 fast_qr = { version = "0.13", features = ["image"] }
 
 # Futures
-tokio = { version = "1.49", features = ["rt", "rt-multi-thread", "sync"] }
-futures-util = {
-  version = "0.3",
-  default-features = false,
-  features = [
-    "async-await",
-    "std",
-  ]
-}
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 
 # WhatsApp
-whatsapp-rust = "0.5"
-whatsapp-rust-tokio-transport = "0.5"
-whatsapp-rust-ureq-http-client = "0.5"
-wacore = "0.5"
-waproto = "0.5"
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "535732f4" }
 
 [build-dependencies]
 relm4-icons-build = "0.11"

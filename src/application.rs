@@ -13,8 +13,10 @@ use relm4::{
 use strum::{AsRefStr, EnumString};
 use tokio::time;
 use uuid::Uuid;
-use wacore::types::{message::MessageInfo, presence::ReceiptType};
-use waproto::whatsapp::Message;
+use whatsapp_rust::{
+    types::{message::MessageInfo, presence::ReceiptType},
+    waproto::whatsapp::Message,
+};
 
 use crate::{
     DATA_DIR,
@@ -1072,7 +1074,7 @@ impl AsyncComponent for Application {
                     .or_else(|| {
                         message
                             .extended_text_message
-                            .as_ref()
+                            .as_option()
                             .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
                     });
 
@@ -1107,12 +1109,12 @@ impl AsyncComponent for Application {
 
                         self.add_message(&chat_jid, chat_message);
                     }
-                } else if let Some(sent_message) = message.device_sent_message {
-                    if let Some(_chat_jid) = sent_message.destination_jid {
-                        if let Some(msg) = sent_message.message {
-                            if let Some(_reaction) = msg.reaction_message {
+                } else if let Some(sent_message) = message.device_sent_message.as_option() {
+                    if let Some(_chat_jid) = sent_message.destination_jid.as_ref() {
+                        if let Some(msg) = sent_message.message.as_option() {
+                            if let Some(_reaction) = msg.reaction_message.as_option() {
                                 // TODO: handle
-                            } else if let Some(_sticker) = msg.sticker_message {
+                            } else if let Some(_sticker) = msg.sticker_message.as_option() {
                                 // TODO: handle
                             }
                         }

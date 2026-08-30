@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use wacore::download::MediaType as DownloadMediaType;
+use whatsapp_rust::download::MediaType as DownloadMediaType;
 
 use crate::i18n;
 

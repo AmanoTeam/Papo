@@ -10,22 +10,24 @@ use chrono::{DateTime, Utc};
 use relm4::prelude::*;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use wacore::{
-    net::HttpRequest,
-    pair_code::{PairCodeOptions, PlatformId},
+use whatsapp_rust::{
+    Jid, TokioRuntime,
+    bot::Bot,
+    http::{HttpRequest, UreqHttpClient},
+    pair_code::{CompanionWebClientType, PairCodeOptions},
+    store::SqliteStore,
+    transport::TokioWebSocketTransportFactory,
     types::{
-        events::{Event, LazyConversation},
+        events::{Event, LazyHistorySync},
         message::MessageInfo,
         presence::ReceiptType,
     },
+    wacore::store::DevicePropsOverride,
+    waproto::whatsapp::{
+        Conversation, Message,
+        device_props::{AppVersion, PlatformType},
+    },
 };
-use waproto::whatsapp::{
-    Message,
-    device_props::{AppVersion, PlatformType},
-};
-use whatsapp_rust::{Jid, TokioRuntime, bot::Bot, store::SqliteStore};
-use whatsapp_rust_tokio_transport::TokioWebSocketTransportFactory;
-use whatsapp_rust_ureq_http_client::UreqHttpClient;
 
 use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
 
@@ -183,7 +185,7 @@ pub enum ClientOutput {
         message: Box<Message>,
     },
 
-    /// Chat synced from history (`JoinedGroup` event).
+    /// Chat synced from history.
     ChatSynced {
         /// Chat JID.
         jid: String,
@@ -289,15 +291,12 @@ fn clear_whatsapp_credentials() {
 }
 
 /// Extract synced messages from a conversation's message list.
-/// Shared between `ProcessJoinedGroup` and `ProcessHistorySync`.
-fn extract_synced_messages(
-    conv: &waproto::whatsapp::Conversation,
-    chat_jid: &str,
-) -> Vec<SyncedMessage> {
+/// Used by `ProcessHistorySync`.
+fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
     for hist_msg in &conv.messages {
-        if let Some(web_msg) = &hist_msg.message
-            && let Some(msg) = &web_msg.message
+        if let Some(web_msg) = hist_msg.message.as_option()
+            && let Some(msg) = web_msg.message.as_option()
         {
             let msg_id = web_msg.key.id.clone().unwrap_or_default();
             let sender_jid = web_msg
@@ -319,7 +318,7 @@ fn extract_synced_messages(
                 .filter(|c| !c.is_empty())
                 .or_else(|| {
                     msg.extended_text_message
-                        .as_ref()
+                        .as_option()
                         .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
                 });
 
@@ -366,15 +365,10 @@ pub enum ClientCommand {
         /// Chat JID.
         jid: String,
     },
-    /// Process a `JoinedGroup` event (conversation sync) in background.
-    ProcessJoinedGroup {
-        /// Lazy conversation to parse.
-        lazy_conv: Box<LazyConversation>,
-    },
     /// Process a `HistorySync` event in background.
     ProcessHistorySync {
-        /// History sync protobuf.
-        history_sync: Box<waproto::whatsapp::HistorySync>,
+        /// History sync payload.
+        history_sync: Box<LazyHistorySync>,
     },
 }
 
@@ -400,7 +394,7 @@ impl AsyncComponent for Client {
     }
 
     async fn init(
-        init: Self::Init,
+        _init: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
@@ -461,9 +455,9 @@ impl AsyncComponent for Client {
 
                     if let Err(e) = client
                         .pair_with_code(PairCodeOptions {
-                            platform_id: PlatformId::OtherWebClient,
                             phone_number,
-                            platform_display: "Desktop (Linux)".to_string(),
+                            platform_id: Some(CompanionWebClientType::OtherWebClient),
+                            display_os: Some("Desktop".to_string()),
                             show_push_notification: true,
                             ..Default::default()
                         })
@@ -500,8 +494,11 @@ impl AsyncComponent for Client {
                             None
                         };
 
-                        if let Err(e) = client.mark_as_read(&jid, s_jid.as_ref(), message_ids).await
-                        {
+                        let ids = message_ids
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<&str>>();
+                        if let Err(e) = client.mark_as_read(&jid, s_jid.as_ref(), &ids).await {
                             tracing::error!("Failed to mark messages as read: {e}");
                         }
                     }
@@ -516,9 +513,9 @@ impl AsyncComponent for Client {
                     };
 
                     match Box::pin(client.send_message(jid, (*message).clone().into())).await {
-                        Ok(msg_id) => {
+                        Ok(result) => {
                             // Update the message server id in-place.
-                            message.server_id = msg_id;
+                            message.server_id = result.message_id;
 
                             // Update the message in the database.
                             if let Err(e) = message.save().await {
@@ -565,7 +562,7 @@ impl AsyncComponent for Client {
                     // Initialize SQLite backend.
                     let path = DATA_DIR.join("whatsapp.db").to_string_lossy().into_owned();
                     let backend = match SqliteStore::new(&path).await {
-                        Ok(store) => Arc::new(store),
+                        Ok(store) => store,
                         Err(e) => {
                             tracing::error!("Failed to initialize SQLite storage: {e}");
                             let _ = sender.output(ClientOutput::Error {
@@ -586,26 +583,27 @@ impl AsyncComponent for Client {
 
                     // Create bot with event handler.
                     let sender_clone = sender.clone();
-                    let mut bot = Bot::builder()
+                    let bot_builder = Bot::builder()
                         .with_backend(backend)
                         .with_runtime(TokioRuntime)
                         .with_http_client(UreqHttpClient::new())
                         .with_device_props(
-                            Some(self.os_type.clone()),
-                            Some(AppVersion {
-                                primary: Some(app_version.0),
-                                secondary: Some(app_version.1),
-                                tertiary: Some(app_version.2),
-                                ..Default::default()
-                            }),
-                            Some(PlatformType::Desktop),
+                            DevicePropsOverride::new()
+                                .with_os(self.os_type.clone())
+                                .with_version(AppVersion {
+                                    primary: Some(app_version.0),
+                                    secondary: Some(app_version.1),
+                                    tertiary: Some(app_version.2),
+                                    ..Default::default()
+                                })
+                                .with_platform_type(PlatformType::Desktop),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
                             let sender = sender_clone.clone();
 
                             async move {
-                                match event {
+                                match &*event {
                                     Event::Connected(_) => {
                                         sender.oneshot_command(async { ClientCommand::Connected });
                                     }
@@ -617,7 +615,10 @@ impl AsyncComponent for Client {
                                             .oneshot_command(async { ClientCommand::Disconnected });
                                     }
 
-                                    Event::PairingCode { code, timeout } => {
+                                    Event::PairingCode(pairing) => {
+                                        let code = pairing.code.clone();
+                                        let timeout = pairing.timeout;
+
                                         tracing::info!("Pair code received: {}", code);
                                         sender.oneshot_command(async move {
                                             ClientCommand::Pair {
@@ -627,7 +628,10 @@ impl AsyncComponent for Client {
                                             }
                                         });
                                     }
-                                    Event::PairingQrCode { code, timeout } => {
+                                    Event::PairingQrCode(pairing) => {
+                                        let code = pairing.code.clone();
+                                        let timeout = pairing.timeout;
+
                                         tracing::info!("QR code received");
                                         sender.oneshot_command(async move {
                                             ClientCommand::Pair {
@@ -644,12 +648,12 @@ impl AsyncComponent for Client {
 
                                     Event::Receipt(receipt) => {
                                         let chat_jid = receipt.source.chat.to_string();
-                                        let message_ids = receipt.message_ids;
+                                        let message_ids = receipt.message_ids.clone();
 
                                         let _ = sender.output(ClientOutput::ReceiptUpdate {
                                             chat_jid,
                                             message_ids,
-                                            receipt_type: receipt.r#type,
+                                            receipt_type: receipt.r#type.clone(),
                                         });
                                     }
                                     Event::Presence(presence) => {
@@ -664,28 +668,20 @@ impl AsyncComponent for Client {
                                         });
                                     }
 
-                                    Event::Message(message, info) => {
-                                        let _ = sender.output(ClientOutput::MessageReceived {
-                                            info: Box::new(info),
-                                            message,
-                                        });
-                                    }
-
-                                    Event::JoinedGroup(lazy_conv) => {
-                                        // Offload conversation parsing to background task
-                                        // to avoid blocking the UI thread
-                                        sender.oneshot_command(async move {
-                                            ClientCommand::ProcessJoinedGroup {
-                                                lazy_conv: Box::new(lazy_conv),
-                                            }
-                                        });
+                                    Event::Messages(batch) => {
+                                        for msg in batch.messages.iter() {
+                                            let _ = sender.output(ClientOutput::MessageReceived {
+                                                info: Box::new((*msg.info).clone()),
+                                                message: Box::new((*msg.message).clone()),
+                                            });
+                                        }
                                     }
 
                                     Event::HistorySync(history_sync) => {
+                                        let history_sync = history_sync.clone();
+
                                         sender.oneshot_command(async move {
-                                            ClientCommand::ProcessHistorySync {
-                                                history_sync: Box::new(history_sync),
-                                            }
+                                            ClientCommand::ProcessHistorySync { history_sync }
                                         });
                                     }
                                     Event::OfflineSyncPreview(_) => {
@@ -736,7 +732,7 @@ impl AsyncComponent for Client {
                                     Event::ContactUpdate(contact_update) => {
                                         let jid = contact_update.jid.to_string();
                                         let name = contact_update.action.full_name.clone();
-                                        let phone_number = contact_update.jid.user.clone();
+                                        let phone_number = contact_update.jid.user.to_string();
                                         let push_name = contact_update.action.first_name.clone();
 
                                         let _ = sender.output(ClientOutput::ContactUpdate {
@@ -749,17 +745,27 @@ impl AsyncComponent for Client {
 
                                     Event::SelfPushNameUpdated(update) => {
                                         let _ = sender.output(ClientOutput::SelfPushNameUpdated {
-                                            push_name: update.new_name,
+                                            push_name: update.new_name.clone(),
                                         });
                                     }
 
                                     e => tracing::warn!("Unhandled event type: {e:#?}"),
                                 }
                             }
-                        })
-                        .build()
-                        .await
-                        .expect("Failed to build client");
+                        });
+
+                    let bot = match bot_builder.build().await {
+                        Ok(bot) => bot,
+                        Err(e) => {
+                            tracing::error!("Failed to build client: {e}");
+
+                            let message = i18n_f!("Connection failed: {0}", e);
+                            self.update_state(ClientState::Error(message.clone()));
+                            let _ = sender.output(ClientOutput::Error { message });
+
+                            return;
+                        }
+                    };
 
                     // Extract client from bot.
                     let client = bot.client();
@@ -768,21 +774,9 @@ impl AsyncComponent for Client {
                     self.update_state(ClientState::Connecting);
 
                     // Start the client.
-                    match bot.run().await {
-                        Ok(handle) => {
-                            // Wait client stop in background.
-                            relm4::spawn(async move {
-                                let _ = handle.await;
-                            });
-                        }
-                        Err(e) => {
-                            tracing::error!("Client failed to start: {e}");
-
-                            let message = i18n_f!("Connection failed: {0}", e);
-                            self.update_state(ClientState::Error(message.clone()));
-                            let _ = sender.output(ClientOutput::Error { message });
-                        }
-                    }
+                    relm4::spawn(async move {
+                        bot.run().await;
+                    });
                 }
             }
             ClientCommand::Stop => {
@@ -825,17 +819,12 @@ impl AsyncComponent for Client {
                 tracing::info!("Connected to WhatsApp!");
 
                 // Get connected user's push name.
-                let (jid, push_name) = {
-                    let handle = self.handle.lock().await;
-                    if let Some(client) = handle.as_ref() {
-                        (
-                            client.get_lid().await.map(|j| j.to_string()),
-                            client.get_push_name().await,
-                        )
-                    } else {
-                        (None, i18n!("You!"))
-                    }
-                };
+                let handle = self.handle.lock().await;
+                let (jid, push_name) = handle.as_ref().map_or_else(
+                    || (None, i18n!("You!")),
+                    |client| (client.lid().map(|j| j.to_string()), client.push_name()),
+                );
+                drop(handle);
 
                 self.update_state(ClientState::Connected);
                 let _ = sender.output(ClientOutput::Connected { jid, push_name });
@@ -1007,53 +996,15 @@ impl AsyncComponent for Client {
                     let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
                 });
             }
-            ClientCommand::ProcessJoinedGroup { lazy_conv } => {
-                // Offload CPU-intensive protobuf parsing to blocking thread.
-                let sender_clone = sender.clone();
-                relm4::spawn_blocking(move || {
-                    // Parse the lazy conversation (this does protobuf decoding - CPU intensive).
-                    // Use get_with_messages() because get() strips messages to save memory.
-                    if let Some(conv) = lazy_conv.get_with_messages() {
-                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
-                        let is_group = chat_jid.ends_with("@g.us");
-
-                        // Extract participants for groups.
-                        let mut participants = Vec::new();
-                        if is_group {
-                            for p in &conv.participant {
-                                participants.push((p.user_jid.clone(), None::<String>));
-                            }
-                        }
-
-                        // Emit chat synced event.
-                        let _ = sender_clone.output(ClientOutput::ChatSynced {
-                            jid: chat_jid.clone(),
-                            name: conv.name.clone(),
-                            pinned: conv.pinned.is_some_and(|p| p > 0),
-                            archived: conv.archived.unwrap_or(false),
-                            unread_count: conv.unread_count,
-                            participants,
-                            mute_end_time: conv.mute_end_time,
-                            last_message_time: conv.last_msg_timestamp,
-                        });
-
-                        // Process messages from the conversation.
-                        let synced_messages = extract_synced_messages(&conv, &chat_jid);
-
-                        // Emit messages synced event if we have messages.
-                        if !synced_messages.is_empty() {
-                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
-                                chat_jid,
-                                messages: synced_messages,
-                            });
-                        }
-                    }
-                });
-            }
             ClientCommand::ProcessHistorySync { history_sync } => {
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
-                    for conv in &history_sync.conversations {
+                    let Some(sync) = history_sync.get() else {
+                        tracing::error!("Failed to decode history sync payload");
+                        return;
+                    };
+
+                    for conv in &sync.conversations {
                         let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
                         let is_group = chat_jid.ends_with("@g.us");
 
