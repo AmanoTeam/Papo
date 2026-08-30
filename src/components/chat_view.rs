@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::VecDeque, ops::Deref, rc::Rc};
+use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use adw::prelude::*;
 use chrono::{DateTime, Local, NaiveDate, Utc};
@@ -8,6 +8,7 @@ use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
 };
+use uuid::Uuid;
 
 use crate::{
     i18n,
@@ -82,8 +83,8 @@ pub enum ChatViewInput {
     },
     /// Message status updated.
     MessageStatusUpdate {
-        msg_id: String,
         status: MessageStatus,
+        local_id: Uuid,
     },
 
     /// Scroll to the bottom of the chat.
@@ -378,7 +379,8 @@ impl AsyncComponent for ChatView {
 
                 // Load the initial batch of messages.
                 if let Ok(messages) = chat.load_messages(INITIAL_LOAD_COUNT).await {
-                    self.state.has_more_messages = messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap();
+                    self.state.has_more_messages =
+                        messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap();
 
                     // Track the oldest loaded timestamp for pagination.
                     if let Some(oldest) = messages.last() {
@@ -534,15 +536,26 @@ impl AsyncComponent for ChatView {
                     self.update_presence();
                 }
             }
-            ChatViewInput::MessageStatusUpdate { msg_id, status } => {
-                if let Some(item) = self.list_view_wrapper.iter().find(
-                    |item| matches!(item.borrow().deref(), ChatRow::Message(message) if message.server_id == msg_id),
-                    ) {
-                        let mut row = item.borrow_mut();
-                        if let ChatRow::Message(message) = &mut *row {
-                            message.status = status;
-                        }
+            ChatViewInput::MessageStatusUpdate { local_id, status } => {
+                if let Some(index) = self.list_view_wrapper.find(
+                    |row| matches!(row, ChatRow::Message(message) if message.local_id == local_id),
+                ) && let Some(item) = self.list_view_wrapper.get(index)
+                {
+                    let mut updated_row = item.borrow().clone();
+                    if let ChatRow::Message(message) = &mut updated_row {
+                        message.status = status;
                     }
+
+                    let adj = self.list_view_wrapper.view.vadjustment();
+                    let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
+
+                    self.list_view_wrapper.remove(index);
+                    self.list_view_wrapper.insert(index, updated_row);
+
+                    if let (Some(adj), Some(value)) = (adj, saved_scroll) {
+                        glib::idle_add_local_once(move || adj.set_value(value));
+                    }
+                }
             }
 
             ChatViewInput::ScrollToBottom => {

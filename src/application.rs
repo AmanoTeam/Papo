@@ -1060,8 +1060,8 @@ impl AsyncComponent for Application {
                     });
 
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
-                        msg_id: message.server_id,
                         status: message.status,
+                        local_id: msg_id,
                     });
                 }
             }
