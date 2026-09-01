@@ -23,7 +23,9 @@ src/
 ├── components/              # Relm4 UI components (AsyncComponent/SimpleAsyncComponent)
 │   ├── mod.rs               # Re-exports ChatList, ChatView, Login and their I/O types
 │   ├── chat_list.rs         # Sidebar chat list with AdwToggleGroup filters, TypedListView rows
-│   ├── chat_view.rs         # Chat history with bidirectional infinite scroll, message input, read receipts
+│   ├── chat_view/           # Chat history with bidirectional infinite scroll, message input, read receipts
+│   │   ├── mod.rs           # ChatView model, I/O enums, view!, update/update_cmd, helpers, RowMetadata
+│   │   └── rows.rs          # ChatRow enum, ChatRowWidgets, RelmListItem impl (setup/bind)
 │   └── login.rs             # QR-code + phone-number pairing flow, pair-code cells
 │
 ├── modals/                  # SimpleComponent dialogs launched from Application actions
