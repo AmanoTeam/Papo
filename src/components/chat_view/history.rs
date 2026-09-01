@@ -56,12 +56,12 @@ impl ChatHistory {
         }
     }
 
-    /// Borrow the underlying list view (for `view!` macro `local_ref`).
+    /// Borrow the underlying list view.
     pub(crate) fn view(&self) -> &TypedListView<ChatRow, gtk::NoSelection> {
         &self.list
     }
 
-    /// Number of loaded rows (messages + separators).
+    /// Number of loaded rows.
     pub(crate) fn len(&self) -> u32 {
         self.list.len()
     }
@@ -171,9 +171,9 @@ impl ChatHistory {
     }
 
     /// Prepend a batch of older messages to the top; reversed internally.
-    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) -> bool {
+    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) -> u32 {
         if messages.is_empty() {
-            return false;
+            return 0;
         }
 
         // Update the oldest loaded timestamp cursor.
@@ -220,7 +220,7 @@ impl ChatHistory {
             self.first_message_date = Some(oldest_msg.timestamp.with_timezone(&Local).date_naive());
         }
 
-        true
+        insert_pos
     }
 
     /// Append a batch of newer messages to the bottom; iterated forward.
@@ -330,6 +330,24 @@ impl ChatHistory {
                 .view
                 .scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
         }
+    }
+
+    /// Re-anchor the scroll to the row at `index` once the list
+    /// view has reallocated row heights, then run `settled`.
+    pub(crate) fn anchor_scroll(&self, index: u32, settled: impl FnOnce() + 'static) {
+        if index == 0 || index >= self.list.len() {
+            settled();
+            return;
+        }
+
+        let view = self.list.view.clone();
+        glib::idle_add_local_once(move || {
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            view.scroll_to(index, gtk::ListScrollFlags::NONE, Some(info));
+
+            settled();
+        });
     }
 
     /// Update bottom cursors (`newest_loaded_timestamp`, `last_message_date`)

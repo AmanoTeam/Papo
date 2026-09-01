@@ -117,6 +117,8 @@ pub enum ChatViewCommand {
         messages: Vec<ChatMessage>,
     },
 
+    /// Scroll anchoring finished after a prepend-driven reallocation.
+    ScrollSettled { generation: u64 },
     /// The scroll position has changed.
     ScrollPositionChanged { at_top: bool, at_bottom: bool },
 }
@@ -545,12 +547,16 @@ impl AsyncComponent for ChatView {
                 self.history
                     .set_has_older(messages.len() == usize::try_from(LOAD_MORE_COUNT).unwrap());
 
-                self.history.prepend_messages(&messages);
+                let inserted = self.history.prepend_messages(&messages);
 
                 // Trim excess rows from the bottom to stay within MAX_LOADED_ROWS.
                 self.history.trim_bottom(MAX_LOADED_ROWS);
 
-                self.state.is_loading = false;
+                let generation = self.generation;
+                let command_sender = sender.command_sender().clone();
+                self.history.anchor_scroll(inserted, move || {
+                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
+                });
             }
             ChatViewCommand::NewerMessagesLoaded {
                 generation,
@@ -589,6 +595,12 @@ impl AsyncComponent for ChatView {
                 // Scroll to the last message.
                 self.history.scroll_to_bottom();
                 self.state.is_at_bottom = true;
+            }
+
+            ChatViewCommand::ScrollSettled { generation } => {
+                if generation == self.generation {
+                    self.state.is_loading = false;
+                }
             }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
                 if at_bottom != self.state.is_at_bottom {
