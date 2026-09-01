@@ -457,7 +457,7 @@ impl AsyncComponent for Application {
                     set_transition_type: gtk::StackTransitionType::Crossfade,
 
                     #[local_ref]
-                    add_named[Some("welcome")] = welcome_widget -> adw::StatusPage {},
+                    add_named[Some("welcome")] = welcome_widget -> adw::ToolbarView {},
 
                     #[local_ref]
                     add_named[Some("login")] = login_widget -> adw::ToolbarView {},
