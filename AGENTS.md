@@ -24,7 +24,8 @@ src/
 │   ├── mod.rs               # Re-exports ChatList, ChatView, Login and their I/O types
 │   ├── chat_list.rs         # Sidebar chat list with AdwToggleGroup filters, TypedListView rows
 │   ├── chat_view/           # Chat history with bidirectional infinite scroll, message input, read receipts
-│   │   ├── mod.rs           # ChatView model, I/O enums, view!, update/update_cmd, helpers, RowMetadata
+│   │   ├── history.rs       # ChatHistory: message list, row metadata, pagination cursors, fill/prepend/append/trim
+│   │   ├── mod.rs           # ChatView model, I/O enums, view!, update/update_cmd, helpers
 │   │   └── rows.rs          # ChatRow enum, ChatRowWidgets, RelmListItem impl (setup/bind)
 │   └── login.rs             # QR-code + phone-number pairing flow, pair-code cells
 │
