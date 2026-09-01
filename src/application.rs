@@ -1006,6 +1006,11 @@ impl AsyncComponent for Application {
                                             tracing::error!("Failed to update message: {}", e);
                                         }
                                     });
+
+                                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                                        status: message.status,
+                                        local_id: message.local_id,
+                                    });
                                 }
                             }
 
