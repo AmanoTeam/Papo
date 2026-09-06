@@ -458,6 +458,10 @@ impl AsyncComponent for ChatView {
 
                 self.history.append_live(*message);
 
+                if self.state.is_at_bottom {
+                    self.scroll_to_bottom();
+                }
+
                 // If the user is at the bottom, they're seeing this message — mark read.
                 if self.state.is_at_bottom
                     && let Some(ref chat) = self.chat
@@ -493,7 +497,8 @@ impl AsyncComponent for ChatView {
                         message.status = status;
                     }
 
-                    self.history.replace_row(index, row);
+                    self.history
+                        .replace_row(index, row, self.state.is_at_bottom);
                 }
             }
 
@@ -522,8 +527,7 @@ impl AsyncComponent for ChatView {
                     }
                 } else {
                     // Scroll to the last message.
-                    self.momentum.stop();
-                    self.history.scroll_to_bottom();
+                    self.scroll_to_bottom();
                     self.state.is_at_bottom = true;
                 }
             }
@@ -554,7 +558,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_loading = false;
 
                 // Scroll to the last message.
-                self.history.scroll_to_bottom();
+                self.scroll_to_bottom();
                 self.state.is_at_bottom = true;
 
                 if had_unread && let Some(ref chat) = self.chat {
@@ -604,6 +608,10 @@ impl AsyncComponent for ChatView {
                 // Trim excess rows from the top to stay within MAX_LOADED_ROWS.
                 self.history.trim_top(MAX_LOADED_ROWS);
 
+                if self.state.is_at_bottom {
+                    self.scroll_to_bottom();
+                }
+
                 let command_sender = sender.command_sender().clone();
                 glib::idle_add_local_once(move || {
                     command_sender.emit(ChatViewCommand::ScrollSettled { generation });
@@ -624,7 +632,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_loading = false;
 
                 // Scroll to the last message.
-                self.history.scroll_to_bottom();
+                self.scroll_to_bottom();
                 self.state.is_at_bottom = true;
             }
 
@@ -725,5 +733,11 @@ impl ChatView {
                 self.state.presence = Some(presence);
             }
         }
+    }
+
+    fn scroll_to_bottom(&self) {
+        self.momentum.stop();
+        self.momentum.pause_recording();
+        self.history.scroll_to_bottom();
     }
 }

@@ -349,12 +349,16 @@ impl ChatHistory {
     }
 
     /// Remove the row at `index` and re-insert a replacement, preserving scroll.
-    pub(crate) fn replace_row(&mut self, index: u32, new_row: ChatRow) {
+    pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
         let adj = self.list.view.vadjustment();
-        let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
+        let saved_scroll = if at_bottom {
+            None
+        } else {
+            adj.as_ref().map(AdjustmentExt::value)
+        };
 
-        self.list.remove(index);
-        self.list.insert(index, new_row);
+        let object = glib::BoxedAnyObject::new(new_row);
+        self.store().splice(index, 1, &[object]);
 
         if let (Some(adj), Some(value)) = (adj, saved_scroll) {
             glib::idle_add_local_once(move || adj.set_value(value));
@@ -363,14 +367,15 @@ impl ChatHistory {
 
     /// Scroll the list view to the bottom (last row).
     pub(crate) fn scroll_to_bottom(&self) {
-        let count = self.list.len();
-        if count > 0 {
-            let info = gtk::ScrollInfo::new();
-            info.set_enable_vertical(true);
-            self.list
-                .view
-                .scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
-        }
+        let view = self.list.view.clone();
+        glib::idle_add_local_once(move || {
+            let count = view.model().map_or(0, |model| model.n_items());
+            if count > 0 {
+                let info = gtk::ScrollInfo::new();
+                info.set_enable_vertical(true);
+                view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+            }
+        });
     }
 
     /// The backing `gio::ListStore`, recovered through the public

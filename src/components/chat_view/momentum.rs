@@ -31,6 +31,7 @@ const FIGHT_JUMP_THRESHOLD: f64 = 15.0;
 const MIN_DOWN_VELOCITY: f64 = 150.0;
 /// Minimum time between fight takeovers to avoid re-trigger churn.
 const TAKEOVER_COOLDOWN: Duration = Duration::from_millis(300);
+const PROGRAMMATIC_MUTE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnimPhase {
@@ -53,6 +54,7 @@ struct Inner {
     adj: Option<Adjustment>,
     anim: Option<Anim>,
     tick_id: Option<TickCallbackId>,
+    muted_until: Option<Instant>,
     prev_sample: Option<(Instant, f64)>,
     last_velocity: Option<f64>,
     last_takeover_at: Option<Instant>,
@@ -88,6 +90,13 @@ impl Momentum {
         let mut inner = self.inner.borrow_mut();
         let now = Instant::now();
 
+        if inner.muted_until.is_some_and(|until| now < until) {
+            inner.prev_sample = None;
+            inner.last_velocity = None;
+            inner.last_velocity_at = None;
+            return false;
+        }
+
         let fight = inner.anim.is_none()
             && inner
                 .last_takeover_at
@@ -113,6 +122,11 @@ impl Momentum {
 
         inner.prev_sample = Some((now, value));
         fight
+    }
+
+    pub(crate) fn pause_recording(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.muted_until = Some(Instant::now() + PROGRAMMATIC_MUTE);
     }
 
     /// Captures the scroll baseline and flick velocity before a prepend.
@@ -229,6 +243,7 @@ impl Momentum {
             id.remove();
         }
         inner.anim = None;
+        inner.muted_until = None;
         inner.prev_sample = None;
         inner.last_velocity = None;
         inner.last_takeover_at = None;
