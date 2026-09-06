@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use adw::prelude::*;
 use chrono::{Local, NaiveDate};
-use gtk::glib;
+use gtk::{gio, glib};
 use relm4::{prelude::*, typed_view::list::TypedListView};
 
 use super::rows::ChatRow;
@@ -171,9 +171,9 @@ impl ChatHistory {
     }
 
     /// Prepend a batch of older messages to the top; reversed internally.
-    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) -> u32 {
+    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) {
         if messages.is_empty() {
-            return 0;
+            return;
         }
 
         // Update the oldest loaded timestamp cursor.
@@ -182,7 +182,8 @@ impl ChatHistory {
         }
 
         // Reverse messages to get chronological order for prepending.
-        let mut insert_pos: u32 = 0;
+        let mut rows = Vec::with_capacity(messages.len());
+        let mut metas = Vec::with_capacity(messages.len());
         let mut prev_date: Option<NaiveDate> = None;
 
         for msg in messages.iter().rev() {
@@ -190,37 +191,61 @@ impl ChatHistory {
 
             // Insert a date separator if the date changed.
             if prev_date != Some(msg_date) {
-                self.list
-                    .insert(insert_pos, ChatRow::DateSeparator(msg_date));
-                self.row_metadata
-                    .insert(insert_pos as usize, RowMetadata::Separator(msg_date));
-                insert_pos += 1;
+                rows.push(ChatRow::DateSeparator(msg_date));
+                metas.push(RowMetadata::Separator(msg_date));
                 prev_date = Some(msg_date);
             }
 
             let ts = msg.timestamp.timestamp();
-            self.list.insert(insert_pos, ChatRow::Message(msg.clone()));
-            self.row_metadata
-                .insert(insert_pos as usize, RowMetadata::Message(ts));
-            insert_pos += 1;
+            rows.push(ChatRow::Message(msg.clone()));
+            metas.push(RowMetadata::Message(ts));
         }
 
         // Remove duplicate date separator if the last prepended date matches
         // the first existing date separator.
-        if let Some(last_prepended_date) = prev_date
-            && Some(last_prepended_date) == self.first_message_date
-            && insert_pos < self.list.len()
+        let remove_old_separator = matches!(
+            self.row_metadata.front(),
+            Some(RowMetadata::Separator(date)) if Some(*date) == prev_date
+        );
+
+        let objects: Vec<glib::BoxedAnyObject> =
+            rows.into_iter().map(glib::BoxedAnyObject::new).collect();
+        if let Some(scrolled_window) = self
+            .list
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_downcast::<gtk::ScrolledWindow>()
         {
-            self.list.remove(insert_pos);
-            self.row_metadata.remove(insert_pos as usize);
+            scrolled_window.set_kinetic_scrolling(false);
+            scrolled_window.set_kinetic_scrolling(true);
+        }
+        if let Some(anchor) = self
+            .row_metadata
+            .iter()
+            .position(|m| matches!(m, RowMetadata::Message(_)))
+            .and_then(|i| u32::try_from(i).ok())
+        {
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            self.list
+                .view
+                .scroll_to(anchor, gtk::ListScrollFlags::NONE, Some(info));
+        }
+        self.store()
+            .splice(0, u32::from(remove_old_separator), &objects);
+
+        if remove_old_separator {
+            self.row_metadata.pop_front();
+        }
+        metas.reverse();
+        for meta in metas {
+            self.row_metadata.push_front(meta);
         }
 
         // Update first_message_date to the oldest prepended message's date.
         if let Some(oldest_msg) = messages.last() {
             self.first_message_date = Some(oldest_msg.timestamp.with_timezone(&Local).date_naive());
         }
-
-        insert_pos
     }
 
     /// Append a batch of newer messages to the bottom; iterated forward.
@@ -229,21 +254,29 @@ impl ChatHistory {
             return false;
         }
 
+        let mut rows = Vec::with_capacity(messages.len());
+        let mut metas = Vec::with_capacity(messages.len());
+
         for msg in messages {
             let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
             // Insert a date separator if the date changed.
             if self.last_message_date != Some(msg_date) {
-                self.list.append(ChatRow::DateSeparator(msg_date));
-                self.row_metadata
-                    .push_back(RowMetadata::Separator(msg_date));
+                rows.push(ChatRow::DateSeparator(msg_date));
+                metas.push(RowMetadata::Separator(msg_date));
                 self.last_message_date = Some(msg_date);
             }
 
             let ts = msg.timestamp.timestamp();
-            self.list.append(ChatRow::Message(msg.clone()));
-            self.row_metadata.push_back(RowMetadata::Message(ts));
+            rows.push(ChatRow::Message(msg.clone()));
+            metas.push(RowMetadata::Message(ts));
         }
+
+        let objects: Vec<glib::BoxedAnyObject> =
+            rows.into_iter().map(glib::BoxedAnyObject::new).collect();
+        self.store().splice(self.list.len(), 0, &objects);
+
+        self.row_metadata.extend(metas);
 
         // Update the newest loaded timestamp cursor.
         if let Some(newest) = messages.last() {
@@ -261,10 +294,9 @@ impl ChatHistory {
         }
 
         let to_remove = total - max_rows;
-        for _ in 0..to_remove {
-            self.list.remove(self.list.len() - 1);
-            self.row_metadata.pop_back();
-        }
+        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
+        self.store().splice(max_rows, to_remove, &empty);
+        self.row_metadata.truncate(max_rows as usize);
 
         self.has_newer = true;
 
@@ -279,12 +311,21 @@ impl ChatHistory {
         if total <= max_rows {
             return 0;
         }
-
         let to_remove = total - max_rows;
-        for _ in 0..to_remove {
-            self.list.remove(0);
-            self.row_metadata.pop_front();
+
+        if let Some(scrolled_window) = self
+            .list
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_downcast::<gtk::ScrolledWindow>()
+        {
+            scrolled_window.set_kinetic_scrolling(false);
+            scrolled_window.set_kinetic_scrolling(true);
         }
+
+        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
+        self.store().splice(0, to_remove, &empty);
+        self.row_metadata.drain(..to_remove as usize);
 
         self.has_older = true;
 
@@ -332,22 +373,15 @@ impl ChatHistory {
         }
     }
 
-    /// Re-anchor the scroll to the row at `index` once the list
-    /// view has reallocated row heights, then run `settled`.
-    pub(crate) fn anchor_scroll(&self, index: u32, settled: impl FnOnce() + 'static) {
-        if index == 0 || index >= self.list.len() {
-            settled();
-            return;
-        }
-
-        let view = self.list.view.clone();
-        glib::idle_add_local_once(move || {
-            let info = gtk::ScrollInfo::new();
-            info.set_enable_vertical(true);
-            view.scroll_to(index, gtk::ListScrollFlags::NONE, Some(info));
-
-            settled();
-        });
+    /// The backing `gio::ListStore`, recovered through the public
+    /// selection model so row batches can be spliced with a single
+    /// items-changed emission.
+    fn store(&self) -> gio::ListStore {
+        self.list
+            .selection_model
+            .model()
+            .and_then(|model| model.downcast::<gio::ListStore>().ok())
+            .expect("unfiltered list view wraps the raw store")
     }
 
     /// Update bottom cursors (`newest_loaded_timestamp`, `last_message_date`)

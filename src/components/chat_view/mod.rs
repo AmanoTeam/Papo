@@ -1,4 +1,5 @@
 mod history;
+mod momentum;
 mod rows;
 
 use std::{cell::Cell, rc::Rc};
@@ -9,7 +10,7 @@ use gtk::{gdk, glib};
 use relm4::prelude::*;
 use uuid::Uuid;
 
-use self::{history::ChatHistory, rows::ChatRow};
+use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
     i18n,
     state::{Chat, ChatMessage, MessageStatus},
@@ -30,6 +31,8 @@ pub struct ChatView {
     state: ChatViewState,
     /// Owned message list + pagination state.
     history: ChatHistory,
+    /// Touchpad flick continuation across prepended batches.
+    momentum: Momentum,
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
@@ -272,6 +275,7 @@ impl AsyncComponent for ChatView {
                 is_at_bottom: true,
             },
             history,
+            momentum: Momentum::new(),
             generation: 0,
             message_entry: gtk::Entry::new(),
         };
@@ -315,10 +319,27 @@ impl AsyncComponent for ChatView {
 
         // Track scroll position and notify the model when it changes.
         let adj = widgets.scroll_window.vadjustment();
+        model.momentum.attach(&scroll_window);
+
+        let momentum = model.momentum.clone();
+        let scroll_controller =
+            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+
+        let stop_momentum = momentum.clone();
+        scroll_controller.connect_scroll(move |_, _, _| {
+            stop_momentum.stop();
+            glib::Propagation::Proceed
+        });
+        scroll_window.add_controller(scroll_controller);
+
         let command_sender = sender.command_sender().clone();
         let was_at_top = Rc::new(Cell::new(false));
         let was_at_bottom = Rc::new(Cell::new(true));
         adj.connect_value_changed(move |adj| {
+            if momentum.record(adj.value()) {
+                momentum.take_over_down();
+            }
+
             let at_top = adj.value() <= 50.0 && adj.upper() > adj.page_size();
             let at_bottom = adj.value() + adj.page_size() >= adj.upper() - 25.0;
 
@@ -360,6 +381,7 @@ impl AsyncComponent for ChatView {
             ChatViewInput::Open(chat) => {
                 self.generation += 1;
 
+                self.momentum.stop();
                 self.history.clear();
 
                 // Reset state.
@@ -395,6 +417,7 @@ impl AsyncComponent for ChatView {
             ChatViewInput::Close => {
                 self.generation += 1;
 
+                self.momentum.stop();
                 self.history.clear();
 
                 // Reset state.
@@ -479,6 +502,7 @@ impl AsyncComponent for ChatView {
                 // message history — reload from scratch to jump to the real latest.
                 if self.history.has_newer() || self.history.has_older() {
                     self.generation += 1;
+                    self.momentum.stop();
                     self.history.clear();
                     self.state.is_loading = true;
 
@@ -498,6 +522,7 @@ impl AsyncComponent for ChatView {
                     }
                 } else {
                     // Scroll to the last message.
+                    self.momentum.stop();
                     self.history.scroll_to_bottom();
                     self.state.is_at_bottom = true;
                 }
@@ -547,14 +572,17 @@ impl AsyncComponent for ChatView {
                 self.history
                     .set_has_older(messages.len() == usize::try_from(LOAD_MORE_COUNT).unwrap());
 
-                let inserted = self.history.prepend_messages(&messages);
+                let (baseline, velocity) = self.momentum.capture();
+
+                self.history.prepend_messages(&messages);
 
                 // Trim excess rows from the bottom to stay within MAX_LOADED_ROWS.
                 self.history.trim_bottom(MAX_LOADED_ROWS);
 
-                let generation = self.generation;
+                self.momentum.continue_from(baseline, velocity);
+
                 let command_sender = sender.command_sender().clone();
-                self.history.anchor_scroll(inserted, move || {
+                glib::idle_add_local_once(move || {
                     command_sender.emit(ChatViewCommand::ScrollSettled { generation });
                 });
             }
@@ -576,7 +604,10 @@ impl AsyncComponent for ChatView {
                 // Trim excess rows from the top to stay within MAX_LOADED_ROWS.
                 self.history.trim_top(MAX_LOADED_ROWS);
 
-                self.state.is_loading = false;
+                let command_sender = sender.command_sender().clone();
+                glib::idle_add_local_once(move || {
+                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
+                });
             }
             ChatViewCommand::JumpLoaded {
                 generation,
