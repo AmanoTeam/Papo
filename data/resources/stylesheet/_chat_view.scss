@@ -61,41 +61,42 @@
 .message-bubble {
   padding: 6px 10px;
   font-size: 0.85em;
-  border-radius: vendor.$menu_radius;
+  border-radius: 0px;
 
   @include vendor.focus-ring();
 
+  &.group-first {
+    border-top-left-radius: vendor.$menu_radius;
+    border-top-right-radius: vendor.$menu_radius;
+  }
+
   &.incoming {
     background-color: var(--card-bg-color);
-    border-top-left-radius: vendor.$menu_radius;
-    border-bottom-left-radius: vendor.$menu_radius;
 
-    &:first-child {
-      border-top-left-radius: vendor.$card_radius;
-    }
-
-    &:last-child {
-      border-bottom-left-radius: 0px;
-    }
+    border-top-right-radius: vendor.$menu_radius;
+    border-bottom-right-radius: vendor.$menu_radius;
   }
 
   &.outgoing {
     color: var(--accent-fg-color);
     background-color: var(--accent-bg-color);
-    border-top-right-radius: vendor.$menu_radius;
-    border-bottom-right-radius: vendor.$menu_radius;
+
+    border-top-left-radius: vendor.$menu_radius;
+    border-bottom-left-radius: vendor.$menu_radius;
 
     &.dimmed {
       color: color-mix(in srgb, var(--accent-fg-color) 90%, transparent);
     }
+  }
+}
 
-    &:first-child {
-      border-top-right-radius: vendor.$card_radius;
-    }
+.message-tail {
+  &.incoming {
+    color: var(--card-bg-color);
+  }
 
-    &:last-child {
-      border-bottom-right-radius: 0px;
-    }
+  &.outgoing {
+    color: var(--accent-bg-color);
   }
 }
 
