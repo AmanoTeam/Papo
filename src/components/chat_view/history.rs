@@ -9,7 +9,7 @@ use super::rows::ChatRow;
 use crate::state::ChatMessage;
 
 fn same_group(a: &ChatMessage, b: &ChatMessage) -> bool {
-    a.outgoing == b.outgoing && a.sender_jid == b.sender_jid
+    (a.outgoing && b.outgoing) || (!a.outgoing && !b.outgoing && a.sender_jid == b.sender_jid)
 }
 
 fn build_prepend_rows(

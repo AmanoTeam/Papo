@@ -1099,7 +1099,11 @@ impl AsyncComponent for Application {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.clone(),
                             chat_jid: chat_jid.clone(),
-                            sender_jid: info.source.sender.to_string(),
+                            sender_jid: if outgoing {
+                                self.user_jid.clone().unwrap_or_default()
+                            } else {
+                                info.source.sender.to_string()
+                            },
                             sender_name: Some(info.push_name.clone()),
 
                             media: None,
