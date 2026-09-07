@@ -450,6 +450,14 @@ impl AsyncComponent for ChatView {
                 }
             }
             ChatViewInput::MessageReceived(message) => {
+                if self
+                    .chat
+                    .as_ref()
+                    .is_none_or(|chat| chat.jid != message.chat_jid)
+                {
+                    return;
+                }
+
                 // If the bottom has been trimmed, skip appending — the message will
                 // appear when the user scrolls back to bottom and triggers a reload.
                 if self.history.has_newer() {

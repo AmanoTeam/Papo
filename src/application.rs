@@ -343,6 +343,9 @@ impl Application {
             }
         });
 
+        self.chat_view
+            .emit(ChatViewInput::MessageReceived(Box::new(message.clone())));
+
         // Save the message in the database.
         relm4::spawn(async move {
             if let Err(e) = message.save().await {
