@@ -51,7 +51,8 @@ src/
 │   └── database.rs          # Schema creation, CRUD for chats/messages/contacts, search queries
 │
 └── widgets/                 # Custom GTK widgets reused in components
-    ├── mod.rs               # Re-exports PairStep, PairingCell
+    ├── mod.rs               # Re-exports MessageTail, PairStep, PairingCell
+    ├── message_tail.rs      # Cairo-drawn message bubble tail for grouping
     ├── pair_step.rs         # Single character cell for phone-number pair code
     └── pairing_cell.rs      # Character display widget for pair code grid
 
