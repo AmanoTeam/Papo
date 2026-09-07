@@ -8,6 +8,59 @@ use relm4::{prelude::*, typed_view::list::TypedListView};
 use super::rows::ChatRow;
 use crate::state::ChatMessage;
 
+fn same_group(a: &ChatMessage, b: &ChatMessage) -> bool {
+    a.outgoing == b.outgoing && a.sender_jid == b.sender_jid
+}
+
+fn build_prepend_rows(
+    messages: &[ChatMessage],
+    boundary_group: bool,
+) -> (Vec<ChatRow>, Vec<RowMetadata>) {
+    let mut rows = Vec::with_capacity(messages.len());
+    let mut metas = Vec::with_capacity(messages.len());
+    let mut prev_date: Option<NaiveDate> = None;
+    let mut prev_msg: Option<&ChatMessage> = None;
+
+    // Reverse messages to get chronological order for prepending.
+    for (i, msg) in messages.iter().enumerate().rev() {
+        let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+
+        let first = if prev_date == Some(msg_date)
+            && let Some(prev) = prev_msg
+        {
+            !same_group(prev, msg)
+        } else {
+            true
+        };
+
+        // Insert a date separator if the date changed.
+        if prev_date != Some(msg_date) {
+            rows.push(ChatRow::DateSeparator(msg_date));
+            metas.push(RowMetadata::Separator(msg_date));
+            prev_date = Some(msg_date);
+        }
+
+        let last = if i == 0 {
+            !boundary_group
+        } else {
+            let next = &messages[i - 1];
+            let next_date = next.timestamp.with_timezone(&Local).date_naive();
+            next_date != msg_date || !same_group(msg, next)
+        };
+
+        let ts = msg.timestamp.timestamp();
+        rows.push(ChatRow::Message {
+            last,
+            first,
+            message: msg.clone(),
+        });
+        metas.push(RowMetadata::Message(ts));
+        prev_msg = Some(msg);
+    }
+
+    (rows, metas)
+}
+
 /// Metadata for a single row in the message list, used for cursor tracking
 /// when trimming rows during bidirectional pagination.
 #[derive(Clone, Debug)]
@@ -123,7 +176,7 @@ impl ChatHistory {
             self.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
         }
 
-        for msg in messages.iter().rev() {
+        for (i, msg) in messages.iter().enumerate().rev() {
             // Convert to local date for separator comparison.
             let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
 
@@ -140,8 +193,24 @@ impl ChatHistory {
                 self.first_message_date = Some(msg_date);
             }
 
+            let first = match (self.row_metadata.back(), messages.get(i + 1)) {
+                (Some(RowMetadata::Message(_)), Some(prev)) => !same_group(prev, msg),
+                _ => true,
+            };
+            let last = if i == 0 {
+                true
+            } else {
+                let next = &messages[i - 1];
+                let next_date = next.timestamp.with_timezone(&Local).date_naive();
+                next_date != msg_date || !same_group(msg, next)
+            };
+
             let ts = msg.timestamp.timestamp();
-            self.list.append(ChatRow::Message(msg.clone()));
+            self.list.append(ChatRow::Message {
+                last,
+                first,
+                message: msg.clone(),
+            });
             self.row_metadata.push_back(RowMetadata::Message(ts));
         }
 
@@ -153,6 +222,29 @@ impl ChatHistory {
     pub(crate) fn append_live(&mut self, message: ChatMessage) {
         // Convert to local date for separator comparison.
         let msg_date = message.timestamp.with_timezone(&Local).date_naive();
+
+        let mut first = true;
+        if self.last_message_date == Some(msg_date)
+            && matches!(self.row_metadata.back(), Some(RowMetadata::Message(_)))
+        {
+            let idx = self.list.len() - 1;
+            if let Some(ChatRow::Message {
+                last: _,
+                first: prev_first,
+                message: prev,
+            }) = self.get_row(idx)
+                && same_group(&prev, &message)
+            {
+                first = false;
+                let updated = ChatRow::Message {
+                    last: false,
+                    first: prev_first,
+                    message: prev,
+                };
+                let object = glib::BoxedAnyObject::new(updated);
+                self.store().splice(idx, 1, &[object]);
+            }
+        }
 
         // Insert a date separator if the date changed.
         if self.last_message_date != Some(msg_date) {
@@ -166,7 +258,11 @@ impl ChatHistory {
         let ts = message.timestamp.timestamp();
         self.newest_loaded_timestamp = Some(ts);
 
-        self.list.append(ChatRow::Message(message));
+        self.list.append(ChatRow::Message {
+            last: true,
+            first,
+            message,
+        });
         self.row_metadata.push_back(RowMetadata::Message(ts));
     }
 
@@ -181,32 +277,32 @@ impl ChatHistory {
             self.oldest_loaded_timestamp = Some(oldest.timestamp.timestamp());
         }
 
-        // Reverse messages to get chronological order for prepending.
-        let mut rows = Vec::with_capacity(messages.len());
-        let mut metas = Vec::with_capacity(messages.len());
-        let mut prev_date: Option<NaiveDate> = None;
+        let newest = &messages[0];
+        let newest_date = newest.timestamp.with_timezone(&Local).date_naive();
 
-        for msg in messages.iter().rev() {
-            let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
-
-            // Insert a date separator if the date changed.
-            if prev_date != Some(msg_date) {
-                rows.push(ChatRow::DateSeparator(msg_date));
-                metas.push(RowMetadata::Separator(msg_date));
-                prev_date = Some(msg_date);
-            }
-
-            let ts = msg.timestamp.timestamp();
-            rows.push(ChatRow::Message(msg.clone()));
-            metas.push(RowMetadata::Message(ts));
-        }
+        let old_top_idx = self
+            .row_metadata
+            .iter()
+            .position(|m| matches!(m, RowMetadata::Message(_)))
+            .and_then(|i| u32::try_from(i).ok());
+        let old_top_row = old_top_idx.and_then(|i| self.get_row(i));
+        let front_is_message = matches!(self.row_metadata.front(), Some(RowMetadata::Message(_)));
 
         // Remove duplicate date separator if the last prepended date matches
         // the first existing date separator.
         let remove_old_separator = matches!(
             self.row_metadata.front(),
-            Some(RowMetadata::Separator(date)) if Some(*date) == prev_date
+            Some(RowMetadata::Separator(date)) if *date == newest_date
         );
+
+        let boundary_group = match &old_top_row {
+            Some(ChatRow::Message { message: prev, .. }) => {
+                (front_is_message || remove_old_separator) && same_group(prev, newest)
+            }
+            _ => false,
+        };
+
+        let (rows, mut metas) = build_prepend_rows(messages, boundary_group);
 
         let objects: Vec<glib::BoxedAnyObject> =
             rows.into_iter().map(glib::BoxedAnyObject::new).collect();
@@ -242,6 +338,25 @@ impl ChatHistory {
             self.row_metadata.push_front(meta);
         }
 
+        if boundary_group
+            && let (
+                Ok(inserted),
+                Some(ChatRow::Message {
+                    last,
+                    first: _,
+                    message,
+                }),
+            ) = (u32::try_from(objects.len()), old_top_row)
+        {
+            let updated = ChatRow::Message {
+                last,
+                first: false,
+                message,
+            };
+            let object = glib::BoxedAnyObject::new(updated);
+            self.store().splice(inserted, 1, &[object]);
+        }
+
         // Update first_message_date to the oldest prepended message's date.
         if let Some(oldest_msg) = messages.last() {
             self.first_message_date = Some(oldest_msg.timestamp.with_timezone(&Local).date_naive());
@@ -254,11 +369,34 @@ impl ChatHistory {
             return false;
         }
 
+        let oldest_batch = &messages[0];
+        let oldest_batch_date = oldest_batch.timestamp.with_timezone(&Local).date_naive();
+
+        let old_bottom_idx = self.list.len().checked_sub(1);
+        let old_bottom_row = old_bottom_idx.and_then(|i| self.get_row(i));
+
+        let boundary_group = match &old_bottom_row {
+            Some(ChatRow::Message { message: prev, .. }) => {
+                self.last_message_date == Some(oldest_batch_date) && same_group(prev, oldest_batch)
+            }
+            _ => false,
+        };
+
         let mut rows = Vec::with_capacity(messages.len());
         let mut metas = Vec::with_capacity(messages.len());
+        let mut prev_msg: Option<&ChatMessage> = None;
 
-        for msg in messages {
+        for (i, msg) in messages.iter().enumerate() {
             let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+
+            let mut first = true;
+            if i == 0 {
+                first = !boundary_group;
+            } else if self.last_message_date == Some(msg_date)
+                && let Some(prev) = prev_msg
+            {
+                first = !same_group(prev, msg);
+            }
 
             // Insert a date separator if the date changed.
             if self.last_message_date != Some(msg_date) {
@@ -267,9 +405,19 @@ impl ChatHistory {
                 self.last_message_date = Some(msg_date);
             }
 
+            let last = messages.get(i + 1).is_none_or(|next| {
+                let next_date = next.timestamp.with_timezone(&Local).date_naive();
+                next_date != msg_date || !same_group(msg, next)
+            });
+
             let ts = msg.timestamp.timestamp();
-            rows.push(ChatRow::Message(msg.clone()));
+            rows.push(ChatRow::Message {
+                last,
+                first,
+                message: msg.clone(),
+            });
             metas.push(RowMetadata::Message(ts));
+            prev_msg = Some(msg);
         }
 
         let objects: Vec<glib::BoxedAnyObject> =
@@ -277,6 +425,25 @@ impl ChatHistory {
         self.store().splice(self.list.len(), 0, &objects);
 
         self.row_metadata.extend(metas);
+
+        if boundary_group
+            && let (
+                Some(idx),
+                Some(ChatRow::Message {
+                    last: _,
+                    first,
+                    message,
+                }),
+            ) = (old_bottom_idx, old_bottom_row)
+        {
+            let updated = ChatRow::Message {
+                last: false,
+                first,
+                message,
+            };
+            let object = glib::BoxedAnyObject::new(updated);
+            self.store().splice(idx, 1, &[object]);
+        }
 
         // Update the newest loaded timestamp cursor.
         if let Some(newest) = messages.last() {
@@ -297,11 +464,32 @@ impl ChatHistory {
         let empty: Vec<glib::BoxedAnyObject> = Vec::new();
         self.store().splice(max_rows, to_remove, &empty);
         self.row_metadata.truncate(max_rows as usize);
-
         self.has_newer = true;
 
         // Update bottom cursors from remaining metadata.
         self.update_bottom_cursors();
+
+        if let Some(idx) = self
+            .row_metadata
+            .iter()
+            .rposition(|m| matches!(m, RowMetadata::Message(_)))
+            .and_then(|i| u32::try_from(i).ok())
+            && let Some(ChatRow::Message {
+                last,
+                first,
+                message,
+            }) = self.get_row(idx)
+            && !last
+        {
+            let updated = ChatRow::Message {
+                last: true,
+                first,
+                message,
+            };
+            let object = glib::BoxedAnyObject::new(updated);
+            self.store().splice(idx, 1, &[object]);
+        }
+
         to_remove
     }
 
@@ -326,11 +514,32 @@ impl ChatHistory {
         let empty: Vec<glib::BoxedAnyObject> = Vec::new();
         self.store().splice(0, to_remove, &empty);
         self.row_metadata.drain(..to_remove as usize);
-
         self.has_older = true;
 
         // Update top cursors from remaining metadata.
         self.update_top_cursors();
+
+        if let Some(idx) = self
+            .row_metadata
+            .iter()
+            .position(|m| matches!(m, RowMetadata::Message(_)))
+            .and_then(|i| u32::try_from(i).ok())
+            && let Some(ChatRow::Message {
+                last,
+                first,
+                message,
+            }) = self.get_row(idx)
+            && !first
+        {
+            let updated = ChatRow::Message {
+                last,
+                first: true,
+                message,
+            };
+            let object = glib::BoxedAnyObject::new(updated);
+            self.store().splice(idx, 1, &[object]);
+        }
+
         to_remove
     }
 
@@ -340,7 +549,7 @@ impl ChatHistory {
         predicate: impl Fn(&ChatMessage) -> bool,
     ) -> Option<u32> {
         self.list
-            .find(|row| matches!(row, ChatRow::Message(msg) if predicate(msg)))
+            .find(|row| matches!(row, ChatRow::Message { message, .. } if predicate(message)))
     }
 
     /// Get a cloned copy of the row at `index`.

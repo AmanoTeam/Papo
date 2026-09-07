@@ -493,7 +493,7 @@ impl AsyncComponent for ChatView {
                     .find_message_index(|message| message.local_id == local_id)
                     && let Some(mut row) = self.history.get_row(index)
                 {
-                    if let ChatRow::Message(message) = &mut row {
+                    if let ChatRow::Message { message, .. } = &mut row {
                         message.status = status;
                     }
 
