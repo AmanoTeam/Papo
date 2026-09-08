@@ -50,6 +50,7 @@ pub struct ChatViewState {
     is_loading: bool,
     /// Whether the scroll is at the bottom.
     is_at_bottom: bool,
+    unread_count: usize,
 }
 
 #[derive(Debug)]
@@ -235,12 +236,24 @@ impl AsyncComponent for ChatView {
                     set_transition_type: gtk::RevealerTransitionType::Crossfade,
                     set_transition_duration: 350,
 
-                    gtk::Button {
-                        set_icon_name: "down-small-symbolic",
-                        set_css_classes: &["circular", "osd"],
-                        set_margin_bottom: 12,
+                    gtk::Overlay {
+                        gtk::Button {
+                            set_icon_name: "down-small-symbolic",
+                            set_css_classes: &["circular", "osd"],
+                            set_margin_bottom: 12,
 
-                        connect_clicked => ChatViewInput::ScrollToBottom
+                            connect_clicked => ChatViewInput::ScrollToBottom
+                        },
+
+                        add_overlay = &gtk::Label {
+                            #[watch]
+                            set_label: model.unread_badge_label().as_str(),
+                            set_halign: gtk::Align::End,
+                            set_valign: gtk::Align::Start,
+                            #[watch]
+                            set_visible: model.state.unread_count > 0,
+                            set_css_classes: &["badge"],
+                        },
                     },
                 },
 
@@ -321,6 +334,7 @@ impl AsyncComponent for ChatView {
                 presence: None,
                 is_loading: true,
                 is_at_bottom: true,
+                unread_count: 0,
             },
             history,
             momentum: Momentum::new(),
@@ -438,6 +452,7 @@ impl AsyncComponent for ChatView {
                 self.state.presence = None;
                 self.state.is_loading = true;
                 self.state.is_at_bottom = true;
+                self.state.unread_count = 0;
 
                 self.chat = Some(chat.clone());
 
@@ -518,10 +533,13 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
+                let outgoing = message.outgoing;
                 self.history.append_live(*message);
 
                 if self.state.is_at_bottom {
                     self.scroll_to_bottom();
+                } else if !outgoing {
+                    self.state.unread_count += 1;
                 }
 
                 // If the user is at the bottom, they're seeing this message — mark read.
@@ -599,6 +617,7 @@ impl AsyncComponent for ChatView {
                     // Scroll to the last message.
                     self.scroll_to_bottom();
                     self.state.is_at_bottom = true;
+                    self.state.unread_count = 0;
                 }
             }
         }
@@ -704,8 +723,8 @@ impl AsyncComponent for ChatView {
                 // Scroll to the last message.
                 self.scroll_to_bottom();
                 self.state.is_at_bottom = true;
+                self.state.unread_count = 0;
             }
-
             ChatViewCommand::ScrollSettled { generation } => {
                 if generation == self.generation {
                     self.state.is_loading = false;
@@ -714,6 +733,9 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
                 if at_bottom != self.state.is_at_bottom {
                     self.state.is_at_bottom = at_bottom;
+                    if at_bottom {
+                        self.state.unread_count = 0;
+                    }
                 }
 
                 // Guard against concurrent loads and exhausted history.
@@ -828,6 +850,14 @@ impl ChatView {
             ))
         } else {
             Some(names.join(", "))
+        }
+    }
+
+    fn unread_badge_label(&self) -> String {
+        if self.state.unread_count > 99 {
+            "99+".to_string()
+        } else {
+            self.state.unread_count.to_string()
         }
     }
 
