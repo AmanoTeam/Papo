@@ -51,10 +51,11 @@ src/
 │   └── database.rs          # Schema creation, CRUD for chats/messages/contacts, search queries
 │
 └── widgets/                 # Custom GTK widgets reused in components
-    ├── mod.rs               # Re-exports MessageTail, PairStep, PairingCell
+    ├── mod.rs               # Re-exports MessageTail, PairStep, PairingCell, TypingDots
     ├── message_tail.rs      # Cairo-drawn message bubble tail for grouping
     ├── pair_step.rs         # Single character cell for phone-number pair code
-    └── pairing_cell.rs      # Character display widget for pair code grid
+    ├── pairing_cell.rs      # Character display widget for pair code grid
+    └── typing_dots.rs       # Animated typing indicator dots
 
 data/
 ├── com.amanoteam.Papo.desktop.in.in      # Desktop entry template

@@ -73,7 +73,7 @@ meson install -C build
 - [ ] Message reactions
 - [ ] Reply/quote messages
 - [ ] Database encryption
-- [ ] Typing indicators
+- [x] Typing indicators
 
 ## Translations
 
