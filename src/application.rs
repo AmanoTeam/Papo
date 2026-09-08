@@ -295,7 +295,11 @@ impl ChatTypingState {
 }
 
 impl Application {
-    fn add_chat(&mut self, chat: Chat) {
+    fn add_chat(&mut self, mut chat: Chat) {
+        if let Some(name) = self.contacts.get(&chat.jid).filter(|n| !n.is_empty()) {
+            chat.name.clone_from(name);
+        }
+
         // Insert the chat into our cached list.
         self.chats.push(chat.clone());
 
@@ -1621,6 +1625,12 @@ impl AsyncComponent for Application {
 
                         // Check for existing cached avatars.
                         for chat in &mut chats {
+                            if let Some(name) =
+                                self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
+                            {
+                                chat.name.clone_from(name);
+                            }
+
                             // Check if avatar exists in cache.
                             let avatar_path = DATA_DIR.join("avatars").join(format!(
                                 "{}.jpg",
