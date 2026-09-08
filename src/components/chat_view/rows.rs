@@ -300,7 +300,9 @@ impl RelmListItem for ChatRow {
                     widgets.tail_left.set_opacity(if *last { 1.0 } else { 0.0 });
                 }
 
-                widgets.bubble_box.set_margin_top(2);
+                widgets
+                    .bubble_box
+                    .set_margin_top(if *first { 8 } else { 1 });
                 widgets.bubble_box.set_margin_bottom(2);
             }
         }
