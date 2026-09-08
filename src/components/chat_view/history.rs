@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 use adw::prelude::*;
 use chrono::{Local, NaiveDate};
@@ -162,6 +162,8 @@ impl ChatHistory {
 
     /// Fill the history with an initial batch of messages.
     pub(crate) fn fill(&mut self, messages: &[ChatMessage]) -> bool {
+        self.list.view.set_opacity(0.0);
+
         if messages.is_empty() {
             return false;
         }
@@ -576,13 +578,47 @@ impl ChatHistory {
 
     /// Scroll the list view to the bottom (last row).
     pub(crate) fn scroll_to_bottom(&self) {
-        let view = self.list.view.clone();
-        glib::idle_add_local_once(move || {
+        fn scroll(view: &gtk::ListView) -> bool {
             let count = view.model().map_or(0, |model| model.n_items());
-            if count > 0 {
-                let info = gtk::ScrollInfo::new();
-                info.set_enable_vertical(true);
-                view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+            if count == 0 {
+                return true;
+            }
+
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+
+            view.vadjustment()
+                .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
+        }
+
+        let view = self.list.view.clone();
+        let mut attempts = 0;
+        let mut last_upper: Option<f64> = None;
+
+        glib::idle_add_local_once({
+            let view = view.clone();
+            move || {
+                scroll(&view);
+            }
+        });
+
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            attempts += 1;
+
+            let upper = view.vadjustment().map(|adj| adj.upper());
+            let settled = scroll(&view);
+            let stable = match (upper, last_upper) {
+                (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+                _ => false,
+            };
+            last_upper = upper;
+
+            if (settled && stable) || attempts >= 15 {
+                view.set_opacity(1.0);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
             }
         });
     }
