@@ -6,14 +6,15 @@ use std::{cell::Cell, rc::Rc};
 
 use adw::prelude::*;
 use chrono::{DateTime, Local, Utc};
-use gtk::{gdk, glib};
+use gtk::{gdk, glib, pango};
 use relm4::prelude::*;
 use uuid::Uuid;
 
 use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
-    i18n,
+    i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus},
+    widgets::TypingDots,
 };
 
 /// Number of messages to load when scrolling.
@@ -38,11 +39,12 @@ pub struct ChatView {
     generation: u64,
     /// Text input for sending messages.
     message_entry: gtk::Entry,
+    typing_avatars: gtk::Box,
 }
 
 #[derive(Debug)]
 pub struct ChatViewState {
-    /// User presence.
+    typing: Vec<String>,
     presence: Option<String>,
     /// Whether a load operation is currently in progress.
     is_loading: bool,
@@ -67,6 +69,10 @@ pub enum ChatViewInput {
         jid: String,
         available: bool,
         last_seen: Option<DateTime<Utc>>,
+    },
+    TypingUpdate {
+        chat_jid: String,
+        senders: Vec<String>,
     },
     /// Message status updated.
     MessageStatusUpdate {
@@ -235,26 +241,65 @@ impl AsyncComponent for ChatView {
                         connect_clicked => ChatViewInput::ScrollToBottom
                     },
                 },
+
             },
 
             add_bottom_bar = &gtk::Box {
-                set_spacing: 6,
-                set_margin_all: 6,
-                set_orientation: gtk::Orientation::Horizontal,
+                set_orientation: gtk::Orientation::Vertical,
 
-                #[local_ref]
-                message_entry -> gtk::Entry {
-                    set_hexpand: true,
-                    set_placeholder_text: Some(&i18n!("Type a message...")),
+                gtk::Revealer {
+                    #[watch]
+                    set_reveal_child: model.chat.is_some() && !model.state.typing.is_empty(),
+                    set_transition_type: gtk::RevealerTransitionType::SlideUp,
+                    set_transition_duration: 250,
 
-                    connect_activate => ChatViewInput::SendMessage,
+                    gtk::Box {
+                        set_spacing: 6,
+                        set_margin_start: 6,
+                        set_margin_top: 6,
+                        set_margin_end: 6,
+
+                        #[local_ref]
+                        typing_avatars -> gtk::Box {
+                            set_css_classes: &["typing-avatars"]
+                        },
+
+                        gtk::Box {
+                            set_valign: gtk::Align::Center,
+
+                            TypingDots {},
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_label: model.typing_text().as_str(),
+                            set_halign: gtk::Align::Start,
+                            set_valign: gtk::Align::Center,
+                            set_css_classes: &["dimmed"],
+                            set_ellipsize: pango::EllipsizeMode::End,
+                        },
+                    },
                 },
 
-                gtk::Button {
-                    set_icon_name: "paper-plane-symbolic",
-                    set_css_classes: &["circular", "suggested-action"],
+                gtk::Box {
+                    set_spacing: 6,
+                    set_margin_all: 6,
+                    set_orientation: gtk::Orientation::Horizontal,
 
-                    connect_clicked => ChatViewInput::SendMessage,
+                    #[local_ref]
+                    message_entry -> gtk::Entry {
+                        set_hexpand: true,
+                        set_placeholder_text: Some(&i18n!("Type a message...")),
+
+                        connect_activate => ChatViewInput::SendMessage,
+                    },
+
+                    gtk::Button {
+                        set_icon_name: "paper-plane-symbolic",
+                        set_css_classes: &["circular", "suggested-action"],
+
+                        connect_clicked => ChatViewInput::SendMessage,
+                    },
                 },
             },
         }
@@ -270,6 +315,7 @@ impl AsyncComponent for ChatView {
         let model = Self {
             chat: None,
             state: ChatViewState {
+                typing: Vec::new(),
                 presence: None,
                 is_loading: true,
                 is_at_bottom: true,
@@ -278,11 +324,13 @@ impl AsyncComponent for ChatView {
             momentum: Momentum::new(),
             generation: 0,
             message_entry: gtk::Entry::new(),
+            typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
         };
 
         let list_view = model.history.view().view.clone();
         let scroll_window = gtk::ScrolledWindow::new();
         let message_entry = &model.message_entry;
+        let typing_avatars = &model.typing_avatars;
         let widgets = view_output!();
 
         // Focus the scroll window when clicked within.
@@ -391,6 +439,9 @@ impl AsyncComponent for ChatView {
 
                 self.chat = Some(chat.clone());
 
+                self.state.typing.clear();
+                self.rebuild_typing_avatars();
+
                 // Update the user presence label.
                 self.update_presence();
 
@@ -425,6 +476,8 @@ impl AsyncComponent for ChatView {
                 self.state.presence = None;
                 self.state.is_loading = false;
                 self.state.is_at_bottom = false;
+                self.state.typing.clear();
+                self.rebuild_typing_avatars();
 
                 let _ = sender.output(ChatViewOutput::ChatClosed);
             }
@@ -494,6 +547,14 @@ impl AsyncComponent for ChatView {
                     // Update the user presence label.
                     self.update_presence();
                 }
+            }
+            ChatViewInput::TypingUpdate { chat_jid, senders } => {
+                if self.chat.as_ref().is_none_or(|chat| chat.jid != chat_jid) {
+                    return;
+                }
+
+                self.state.typing = senders;
+                self.rebuild_typing_avatars();
             }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
                 if let Some(index) = self
@@ -740,6 +801,40 @@ impl ChatView {
                 };
                 self.state.presence = Some(presence);
             }
+        }
+    }
+
+    fn typing_text(&self) -> String {
+        if self.state.typing.len() == 1 {
+            i18n_f!("{0} is typing...", self.state.typing[0].clone())
+        } else {
+            i18n_f!("{0} people are typing...", self.state.typing.len())
+        }
+    }
+
+    fn rebuild_typing_avatars(&self) {
+        while let Some(child) = self.typing_avatars.first_child() {
+            self.typing_avatars.remove(&child);
+        }
+
+        let is_group = self.chat.as_ref().is_some_and(Chat::is_group);
+        self.typing_avatars.set_visible(is_group);
+
+        if !is_group {
+            return;
+        }
+
+        for sender in &self.state.typing {
+            let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
+            avatar.set_text(
+                (!sender.starts_with('+') && sender != &i18n!("Someone"))
+                    .then_some(sender.as_str()),
+            );
+
+            let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            frame.append(&avatar);
+
+            self.typing_avatars.append(&frame);
         }
     }
 

@@ -121,3 +121,12 @@
     color: #FFFFFF;
   }
 }
+
+.typing-avatars {
+  .avatar {
+    padding: 2px;
+    margin-right: -8px;
+    border-radius: 14px;
+    background-color: var(--window-bg-color);
+  }
+}
