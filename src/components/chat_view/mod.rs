@@ -497,8 +497,7 @@ impl AsyncComponent for ChatView {
 
                     // TODO: implements media sending
 
-                    // Scroll the chat to bottom and mark it as read.
-                    sender.input(ChatViewInput::ScrollToBottom);
+                    // Mark the chat as read.
                     let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
                 }
             }
