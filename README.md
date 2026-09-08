@@ -73,6 +73,8 @@ meson install -C build
 - [ ] Message reactions
 - [ ] Reply/quote messages
 - [ ] Database encryption
+- [ ] Unread messages divider
+- [ ] Message draft persistence
 - [x] Typing indicators
 
 ## Translations
