@@ -557,8 +557,9 @@ impl AsyncComponent for ChatView {
 
                     // TODO: implements media sending
 
-                    // Mark the chat as read.
-                    let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                    if self.state.is_at_bottom {
+                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                    }
                 }
             }
             ChatViewInput::EntryChanged => {
