@@ -2,12 +2,13 @@ mod history;
 mod momentum;
 mod rows;
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use adw::prelude::*;
 use chrono::{DateTime, Local, Utc};
 use gtk::{gdk, glib, pango};
 use relm4::prelude::*;
+use tokio::time;
 use uuid::Uuid;
 
 use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
@@ -46,11 +47,13 @@ pub struct ChatView {
 pub struct ChatViewState {
     typing: Vec<TypingSender>,
     presence: Option<String>,
+    is_typing: bool,
     /// Whether a load operation is currently in progress.
     is_loading: bool,
     /// Whether the scroll is at the bottom.
     is_at_bottom: bool,
     unread_count: usize,
+    typing_generation: u64,
 }
 
 #[derive(Debug)]
@@ -62,6 +65,7 @@ pub enum ChatViewInput {
 
     /// Send a message.
     SendMessage,
+    EntryChanged,
     /// New message received.
     MessageReceived(Box<ChatMessage>),
 
@@ -101,6 +105,11 @@ pub enum ChatViewOutput {
         /// Message recipient.
         recipient: String,
     },
+
+    TypingStateChanged {
+        chat_jid: String,
+        composing: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -128,9 +137,18 @@ pub enum ChatViewCommand {
     },
 
     /// Scroll anchoring finished after a prepend-driven reallocation.
-    ScrollSettled { generation: u64 },
+    ScrollSettled {
+        generation: u64,
+    },
     /// The scroll position has changed.
-    ScrollPositionChanged { at_top: bool, at_bottom: bool },
+    ScrollPositionChanged {
+        at_top: bool,
+        at_bottom: bool,
+    },
+
+    TypingTimeout {
+        generation: u64,
+    },
 }
 
 #[relm4::component(async, pub)]
@@ -307,6 +325,7 @@ impl AsyncComponent for ChatView {
                         set_placeholder_text: Some(&i18n!("Type a message...")),
 
                         connect_activate => ChatViewInput::SendMessage,
+                        connect_changed => ChatViewInput::EntryChanged,
                     },
 
                     gtk::Button {
@@ -333,8 +352,10 @@ impl AsyncComponent for ChatView {
                 typing: Vec::new(),
                 presence: None,
                 is_loading: true,
+                is_typing: false,
                 is_at_bottom: true,
                 unread_count: 0,
+                typing_generation: 0,
             },
             history,
             momentum: Momentum::new(),
@@ -448,11 +469,22 @@ impl AsyncComponent for ChatView {
                 self.momentum.stop();
                 self.history.clear();
 
+                if self.state.is_typing
+                    && let Some(ref old) = self.chat
+                {
+                    self.state.is_typing = false;
+                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
+                        chat_jid: old.jid.clone(),
+                        composing: false,
+                    });
+                }
+
                 // Reset state.
                 self.state.presence = None;
                 self.state.is_loading = true;
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
+                self.state.typing_generation += 1;
 
                 self.chat = Some(chat.clone());
 
@@ -488,11 +520,22 @@ impl AsyncComponent for ChatView {
                 self.momentum.stop();
                 self.history.clear();
 
+                if self.state.is_typing
+                    && let Some(ref chat) = self.chat
+                {
+                    self.state.is_typing = false;
+                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
+                        chat_jid: chat.jid.clone(),
+                        composing: false,
+                    });
+                }
+
                 // Reset state.
                 self.chat = None;
                 self.state.presence = None;
                 self.state.is_loading = false;
                 self.state.is_at_bottom = false;
+                self.state.typing_generation += 1;
                 self.state.typing.clear();
                 self.rebuild_typing_avatars();
 
@@ -516,6 +559,38 @@ impl AsyncComponent for ChatView {
 
                     // Mark the chat as read.
                     let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                }
+            }
+            ChatViewInput::EntryChanged => {
+                let Some(chat_jid) = self.chat.as_ref().map(|chat| chat.jid.clone()) else {
+                    return;
+                };
+
+                if self.message_entry.text_length() > 0 {
+                    self.state.typing_generation += 1;
+                    let generation = self.state.typing_generation;
+
+                    sender.oneshot_command(async move {
+                        time::sleep(Duration::from_secs(5)).await;
+                        ChatViewCommand::TypingTimeout { generation }
+                    });
+
+                    if !self.state.is_typing {
+                        self.state.is_typing = true;
+
+                        let _ = sender.output(ChatViewOutput::TypingStateChanged {
+                            chat_jid,
+                            composing: true,
+                        });
+                    }
+                } else if self.state.is_typing {
+                    self.state.is_typing = false;
+                    self.state.typing_generation += 1;
+
+                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
+                        chat_jid,
+                        composing: false,
+                    });
                 }
             }
             ChatViewInput::MessageReceived(message) => {
@@ -728,6 +803,18 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::ScrollSettled { generation } => {
                 if generation == self.generation {
                     self.state.is_loading = false;
+                }
+            }
+            ChatViewCommand::TypingTimeout { generation } => {
+                if generation == self.state.typing_generation
+                    && self.state.is_typing
+                    && let Some(ref chat) = self.chat
+                {
+                    self.state.is_typing = false;
+                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
+                        chat_jid: chat.jid.clone(),
+                        composing: false,
+                    });
                 }
             }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {

@@ -198,6 +198,10 @@ pub enum AppMsg {
         sender_jid: String,
         generation: u64,
     },
+    TypingStateChanged {
+        chat_jid: String,
+        composing: bool,
+    },
 
     /// New message received.
     MessageReceived {
@@ -872,6 +876,14 @@ impl AsyncComponent for Application {
                 ChatViewOutput::SendTextMessage { text, recipient } => {
                     AppMsg::SendTextMessage { text, recipient }
                 }
+
+                ChatViewOutput::TypingStateChanged {
+                    chat_jid,
+                    composing,
+                } => AppMsg::TypingStateChanged {
+                    chat_jid,
+                    composing,
+                },
             });
 
         let model = Self {
@@ -1362,6 +1374,16 @@ impl AsyncComponent for Application {
 
                 if removed {
                     self.emit_typing(&chat_jid);
+                }
+            }
+            AppMsg::TypingStateChanged {
+                chat_jid,
+                composing,
+            } => {
+                if composing {
+                    self.client.emit(ClientInput::SendTyping { jid: chat_jid });
+                } else {
+                    self.client.emit(ClientInput::StopTyping { jid: chat_jid });
                 }
             }
 

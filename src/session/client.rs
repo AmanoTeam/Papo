@@ -490,6 +490,33 @@ impl AsyncComponent for Client {
                 }
             }
 
+            ClientInput::SendTyping { jid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(to) = jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {}", jid);
+                        return;
+                    };
+
+                    if let Err(e) = client.chatstate().send_composing(&to).await {
+                        tracing::error!("Failed to send composing state: {e}");
+                    }
+                }
+            }
+            ClientInput::StopTyping { jid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(to) = jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {}", jid);
+                        return;
+                    };
+
+                    if let Err(e) = client.chatstate().send_paused(&to).await {
+                        tracing::error!("Failed to send paused state: {e}");
+                    }
+                }
+            }
+
             ClientInput::MarkRead {
                 chat_jid,
                 sender_jid,
