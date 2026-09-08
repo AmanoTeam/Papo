@@ -121,3 +121,9 @@ impl Chat {
         self.db.get_unread_messages(&self.jid).await
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct TypingSender {
+    pub name: String,
+    pub recording: bool,
+}

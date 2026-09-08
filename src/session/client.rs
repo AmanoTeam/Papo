@@ -20,7 +20,7 @@ use whatsapp_rust::{
     types::{
         events::{Event, LazyHistorySync},
         message::MessageInfo,
-        presence::{ChatPresence, ReceiptType},
+        presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
     wacore::store::DevicePropsOverride,
     waproto::whatsapp::{
@@ -180,6 +180,7 @@ pub enum ClientOutput {
     ChatPresenceUpdate {
         chat_jid: String,
         active: bool,
+        recording: bool,
         sender_jid: String,
         sender_alt: Option<String>,
     },
@@ -701,11 +702,14 @@ impl AsyncComponent for Client {
                                                 .map(ToString::to_string);
                                             let active =
                                                 matches!(presence.state, ChatPresence::Composing);
+                                            let recording =
+                                                matches!(presence.media, ChatPresenceMedia::Audio);
 
                                             let _ =
                                                 sender.output(ClientOutput::ChatPresenceUpdate {
                                                     chat_jid,
                                                     active,
+                                                    recording,
                                                     sender_jid,
                                                     sender_alt,
                                                 });

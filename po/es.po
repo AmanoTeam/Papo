@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-09-08 15:51-0300\n"
+"POT-Creation-Date: 2026-09-08 18:03-0300\n"
 "PO-Revision-Date: 2026-07-05 23:10-0600\n"
 "Last-Translator: SrTortugardo <srtortugardo@disroot.org>\n"
 "Language-Team: none\n"
@@ -19,7 +19,7 @@ msgstr ""
 
 #: data/com.amanoteam.Papo.desktop.in.in:2
 #: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:128
-#: src/application.rs:508 src/application.rs:578 src/modals/about.rs:20
+#: src/application.rs:523 src/application.rs:593 src/modals/about.rs:20
 msgid "Papo"
 msgstr "Papo"
 
@@ -67,70 +67,70 @@ msgstr ""
 "Papo es una aplicación de mensajería para WhatsApp en GNOME escrita en Rust. "
 "Su interfaz se adapta tanto a pantallas grandes como pequeñas."
 
-#: src/application.rs:336 src/application.rs:338 src/application.rs:400
-#: src/application.rs:1050 src/application.rs:1153 src/application.rs:1587
-#: src/application.rs:1662 src/application.rs:1664
+#: src/application.rs:351 src/application.rs:353 src/application.rs:415
+#: src/application.rs:1104 src/application.rs:1208 src/application.rs:1715
+#: src/application.rs:1790 src/application.rs:1792
 msgid "Unknown"
 msgstr "Desconocido"
 
-#: src/application.rs:352 src/application.rs:1571
+#: src/application.rs:367 src/application.rs:1699
 msgid "Group"
 msgstr "Grupo"
 
-#: src/application.rs:354 src/application.rs:592 src/application.rs:1573
-#: src/components/chat_list.rs:691 src/components/chat_list.rs:692
+#: src/application.rs:369 src/application.rs:607 src/application.rs:1701
+#: src/components/chat_list.rs:702 src/components/chat_list.rs:703
 msgid "You"
 msgstr "Tú"
 
-#: src/application.rs:495
+#: src/application.rs:510
 msgid "_Contacts"
 msgstr "_Contactos"
 
-#: src/application.rs:498
+#: src/application.rs:513
 msgid "_Preferences"
 msgstr "_Preferencias"
 
-#: src/application.rs:499
+#: src/application.rs:514
 msgid "_Keyboard Shortcuts"
 msgstr "_Atajos de teclado"
 
-#: src/application.rs:500
+#: src/application.rs:515
 msgid "_About Papo"
 msgstr "_Acerca de Papo"
 
-#: src/application.rs:533 src/components/login.rs:154
+#: src/application.rs:548 src/components/login.rs:154
 msgid "About Papo"
 msgstr "Acerca de Papo"
 
-#: src/application.rs:546
+#: src/application.rs:561
 msgid "Fetching account data..."
 msgstr "Obteniendo datos de la cuenta..."
 
-#: src/application.rs:588
+#: src/application.rs:603
 msgid "Your profile"
 msgstr "Tu perfil"
 
-#: src/application.rs:600
+#: src/application.rs:615
 msgid "Menu"
 msgstr "Menú"
 
-#: src/application.rs:608
+#: src/application.rs:623
 msgid "Chats"
 msgstr "Chats"
 
-#: src/application.rs:627
+#: src/application.rs:642
 msgid "Chat"
 msgstr "Chat"
 
-#: src/application.rs:635
+#: src/application.rs:650
 msgid "No Chat Selected"
 msgstr "No se ha seleccionado ningún chat"
 
-#: src/application.rs:640
+#: src/application.rs:655
 msgid "Select a chat to start chatting"
 msgstr "Selecciona un chat para comenzar a chatear"
 
-#: src/application.rs:1161 src/components/chat_view/mod.rs:830
+#: src/application.rs:1238 src/components/chat_view/mod.rs:837
 msgid "Someone"
 msgstr ""
 
@@ -158,12 +158,22 @@ msgstr "No leídos"
 msgid "Groups"
 msgstr "Grupos"
 
-#: src/components/chat_list.rs:466 src/components/chat_view/mod.rs:809
+#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:810
+#, rust-format
+msgid "{0} is recording audio..."
+msgstr ""
+
+#: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:814
 #, rust-format
 msgid "{0} is typing..."
 msgstr ""
 
-#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:811
+#: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:816
+#, rust-format
+msgid "{0} people are recording audio..."
+msgstr ""
+
+#: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:818
 #, rust-format
 msgid "{0} people are typing..."
 msgstr ""
@@ -176,25 +186,25 @@ msgstr "Cargando mensajes..."
 msgid "Type a message..."
 msgstr "Escribe un mensaje..."
 
-#: src/components/chat_view/mod.rs:770
+#: src/components/chat_view/mod.rs:769
 msgid "online"
 msgstr "En línea"
 
-#: src/components/chat_view/mod.rs:778 src/components/chat_view/mod.rs:788
-#: src/components/chat_view/mod.rs:796
+#: src/components/chat_view/mod.rs:777 src/components/chat_view/mod.rs:787
+#: src/components/chat_view/mod.rs:795
 msgid "Last seen"
 msgstr "Visto por última vez"
 
-#: src/components/chat_view/mod.rs:779
+#: src/components/chat_view/mod.rs:778
 msgid "today"
 msgstr "Hoy"
 
-#: src/components/chat_view/mod.rs:780 src/components/chat_view/mod.rs:790
-#: src/components/chat_view/mod.rs:798
+#: src/components/chat_view/mod.rs:779 src/components/chat_view/mod.rs:789
+#: src/components/chat_view/mod.rs:797
 msgid "at"
 msgstr "a las"
 
-#: src/components/chat_view/mod.rs:789
+#: src/components/chat_view/mod.rs:788
 msgid "yesterday"
 msgstr "Ayer"
 
@@ -301,21 +311,21 @@ msgstr "Hoy"
 msgid "Yesterday"
 msgstr "Ayer"
 
-#: src/session/client.rs:474
+#: src/session/client.rs:487
 #, rust-format
 msgid "Failed to pair with phone number: {0}"
 msgstr "No se pudo vincular con el número de teléfono: {0}"
 
-#: src/session/client.rs:576
+#: src/session/client.rs:593
 #, rust-format
 msgid "Database error: {0}"
 msgstr "Error en la base de datos: {0}"
 
-#: src/session/client.rs:790
+#: src/session/client.rs:810
 #, rust-format
 msgid "Connection failed: {0}"
 msgstr "Falló la conexión: {0}"
 
-#: src/session/client.rs:852
+#: src/session/client.rs:872
 msgid "You!"
 msgstr "¡Tú!"

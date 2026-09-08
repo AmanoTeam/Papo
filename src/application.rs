@@ -28,7 +28,7 @@ use crate::{
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{Client, ClientInput, ClientOutput, SyncedMessage},
-    state::{Chat, ChatMessage, MessageStatus},
+    state::{Chat, ChatMessage, MessageStatus, TypingSender},
     store::{Contact, Database},
     utils::{format_lid_as_number, get_first_name},
 };
@@ -175,6 +175,7 @@ pub enum AppMsg {
     ChatPresenceUpdate {
         chat_jid: String,
         active: bool,
+        recording: bool,
         sender_jid: String,
         sender_alt: Option<String>,
     },
@@ -284,12 +285,12 @@ pub enum AppCmd {
 
 #[derive(Debug, Default)]
 struct ChatTypingState {
-    senders: IndexMap<String, String>,
+    senders: IndexMap<String, TypingSender>,
     generation: u64,
 }
 
 impl ChatTypingState {
-    fn sender_names(&self) -> Vec<String> {
+    fn typing_senders(&self) -> Vec<TypingSender> {
         self.senders.values().cloned().collect()
     }
 }
@@ -328,15 +329,15 @@ impl Application {
             return;
         };
 
-        let names = state.sender_names();
+        let senders = state.typing_senders();
         self.chat_list.emit(ChatListInput::UpdateTyping {
             chat_jid: chat_jid.to_string(),
-            senders: names.clone(),
+            senders: senders.clone(),
         });
 
         self.chat_view.emit(ChatViewInput::TypingUpdate {
             chat_jid: chat_jid.to_string(),
-            senders: names,
+            senders,
         });
     }
 
@@ -765,11 +766,13 @@ impl AsyncComponent for Application {
                 ClientOutput::ChatPresenceUpdate {
                     chat_jid,
                     active,
+                    recording,
                     sender_jid,
                     sender_alt,
                 } => AppMsg::ChatPresenceUpdate {
                     chat_jid,
                     active,
+                    recording,
                     sender_jid,
                     sender_alt,
                 },
@@ -1189,6 +1192,7 @@ impl AsyncComponent for Application {
             AppMsg::ChatPresenceUpdate {
                 chat_jid,
                 active,
+                recording,
                 sender_jid,
                 sender_alt,
             } => {
@@ -1251,7 +1255,9 @@ impl AsyncComponent for Application {
                     state.generation += 1;
                     let generation = state.generation;
 
-                    state.senders.insert(sender_jid.clone(), name);
+                    state
+                        .senders
+                        .insert(sender_jid.clone(), TypingSender { name, recording });
                     self.emit_typing(&chat_jid);
 
                     let sender = sender.clone();
@@ -1323,7 +1329,7 @@ impl AsyncComponent for Application {
                     self.contacts.insert(lid.clone(), resolved.clone());
 
                     if let Some(state) = self.typing.get(&chat_jid)
-                        && state.senders.contains_key(&lid)
+                        && let Some(recording) = state.senders.get(&lid).map(|s| s.recording)
                     {
                         let display = if resolved.starts_with('+') {
                             resolved
@@ -1331,7 +1337,13 @@ impl AsyncComponent for Application {
                             get_first_name(&resolved)
                         };
                         if let Some(state) = self.typing.get_mut(&chat_jid) {
-                            state.senders.insert(lid, display);
+                            state.senders.insert(
+                                lid,
+                                TypingSender {
+                                    name: display,
+                                    recording,
+                                },
+                            );
                         }
 
                         self.emit_typing(&chat_jid);

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
     i18n, i18n_f,
-    state::{Chat, ChatMessage, MessageStatus},
+    state::{Chat, ChatMessage, MessageStatus, TypingSender},
     widgets::TypingDots,
 };
 
@@ -44,7 +44,7 @@ pub struct ChatView {
 
 #[derive(Debug)]
 pub struct ChatViewState {
-    typing: Vec<String>,
+    typing: Vec<TypingSender>,
     presence: Option<String>,
     /// Whether a load operation is currently in progress.
     is_loading: bool,
@@ -72,7 +72,7 @@ pub enum ChatViewInput {
     },
     TypingUpdate {
         chat_jid: String,
-        senders: Vec<String>,
+        senders: Vec<TypingSender>,
     },
     /// Message status updated.
     MessageStatusUpdate {
@@ -804,8 +804,16 @@ impl ChatView {
     }
 
     fn typing_text(&self) -> String {
-        if self.state.typing.len() == 1 {
-            i18n_f!("{0} is typing...", self.state.typing[0].clone())
+        let recording = self.state.typing.iter().any(|s| s.recording);
+        if self.state.typing.len() == 1 && recording {
+            i18n_f!(
+                "{0} is recording audio...",
+                self.state.typing[0].name.clone()
+            )
+        } else if self.state.typing.len() == 1 {
+            i18n_f!("{0} is typing...", self.state.typing[0].name.clone())
+        } else if recording {
+            i18n_f!("{0} people are recording audio...", self.state.typing.len())
         } else {
             i18n_f!("{0} people are typing...", self.state.typing.len())
         }
@@ -826,8 +834,8 @@ impl ChatView {
         for sender in &self.state.typing {
             let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
             avatar.set_text(
-                (!sender.starts_with('+') && sender != &i18n!("Someone"))
-                    .then_some(sender.as_str()),
+                (!sender.name.starts_with('+') && sender.name != i18n!("Someone"))
+                    .then_some(sender.name.as_str()),
             );
 
             let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);

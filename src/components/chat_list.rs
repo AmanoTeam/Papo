@@ -10,14 +10,14 @@ use relm4::{
 
 use crate::{
     i18n, i18n_f,
-    state::{Chat, ChatMessage, MessageStatus},
+    state::{Chat, ChatMessage, MessageStatus, TypingSender},
     utils::{format_lid_as_number, get_first_name, load_avatar},
     widgets::TypingDots,
 };
 
 #[derive(Debug)]
 pub struct ChatList {
-    typing: HashMap<String, Vec<String>>,
+    typing: HashMap<String, Vec<TypingSender>>,
     /// Currently selected chat JID.
     chat_jid: Option<String>,
     /// `ListView` widget wrapper containing all chat rows.
@@ -61,7 +61,7 @@ pub enum ChatListInput {
     },
     UpdateTyping {
         chat_jid: String,
-        senders: Vec<String>,
+        senders: Vec<TypingSender>,
     },
 
     /// Apply a filter.
@@ -224,11 +224,11 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     // Build chat row.
-                    let (is_typing, typing_names) = self.typing_row_data(&chat.jid);
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
                     let row = ChatRow {
                         chat,
                         is_typing,
-                        typing_names,
+                        typing_senders,
                         last_message,
                         unread_count,
                         avatar_texture,
@@ -258,11 +258,11 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     // Build updated chat row.
-                    let (is_typing, typing_names) = self.typing_row_data(&chat.jid);
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
                     let updated_row = ChatRow {
                         chat: chat.clone(),
                         is_typing,
-                        typing_names,
+                        typing_senders,
                         last_message,
                         unread_count,
                         avatar_texture,
@@ -334,11 +334,11 @@ impl SimpleAsyncComponent for ChatList {
                 if let (Some(index), Some((chat, last_message, unread_count, avatar_texture))) =
                     (index, row_data)
                 {
-                    let (is_typing, typing_names) = self.typing_row_data(&chat_jid);
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
                     let updated_row = ChatRow {
                         chat,
                         is_typing,
-                        typing_names,
+                        typing_senders,
                         last_message,
                         unread_count,
                         avatar_texture,
@@ -439,7 +439,7 @@ impl ChatList {
         None
     }
 
-    fn typing_row_data(&self, jid: &str) -> (bool, Vec<String>) {
+    fn typing_row_data(&self, jid: &str) -> (bool, Vec<TypingSender>) {
         match self.typing.get(jid) {
             Some(senders) if !senders.is_empty() => (true, senders.clone()),
             _ => (false, Vec::new()),
@@ -452,7 +452,7 @@ impl ChatList {
 pub struct ChatRow {
     chat: Chat,
     is_typing: bool,
-    typing_names: Vec<String>,
+    typing_senders: Vec<TypingSender>,
     /// The last sent message in the chat.
     last_message: Option<ChatMessage>,
     /// How many messages are unread.
@@ -462,10 +462,21 @@ pub struct ChatRow {
 
 impl ChatRow {
     fn typing_text(&self) -> String {
-        if self.typing_names.len() == 1 {
-            i18n_f!("{0} is typing...", self.typing_names[0].clone())
+        let recording = self.typing_senders.iter().any(|s| s.recording);
+        if self.typing_senders.len() == 1 && recording {
+            i18n_f!(
+                "{0} is recording audio...",
+                self.typing_senders[0].name.clone()
+            )
+        } else if self.typing_senders.len() == 1 {
+            i18n_f!("{0} is typing...", self.typing_senders[0].name.clone())
+        } else if recording {
+            i18n_f!(
+                "{0} people are recording audio...",
+                self.typing_senders.len()
+            )
         } else {
-            i18n_f!("{0} people are typing...", self.typing_names.len())
+            i18n_f!("{0} people are typing...", self.typing_senders.len())
         }
     }
 }
