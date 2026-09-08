@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-07-06 22:21-0300\n"
+"POT-Creation-Date: 2026-09-08 15:51-0300\n"
 "PO-Revision-Date: 2026-07-05 23:10-0600\n"
 "Last-Translator: SrTortugardo <srtortugardo@disroot.org>\n"
 "Language-Team: none\n"
@@ -17,10 +17,9 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
-#. Set app name and initialize libadwaita.
 #: data/com.amanoteam.Papo.desktop.in.in:2
-#: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
-#: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
+#: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:128
+#: src/application.rs:508 src/application.rs:578 src/modals/about.rs:20
 msgid "Papo"
 msgstr "Papo"
 
@@ -32,7 +31,6 @@ msgstr "WhatsApp"
 msgid "A GTK WhatsApp client"
 msgstr "Un cliente de WhatsApp en GTK"
 
-#. Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
 #: data/com.amanoteam.Papo.desktop.in.in:10
 msgid "GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;whatsapp.com;"
 msgstr "GTK;Gnome;Chat;Comunicación;Conversar;im;wp;zap;Mensajería;Mensajero;WhatsApp;whatsapp.com;"
@@ -69,74 +67,77 @@ msgstr ""
 "Papo es una aplicación de mensajería para WhatsApp en GNOME escrita en Rust. "
 "Su interfaz se adapta tanto a pantallas grandes como pequeñas."
 
-#: src/application.rs:292 src/application.rs:1386
-msgid "Group"
-msgstr "Grupo"
-
-#: src/application.rs:294 src/application.rs:519 src/application.rs:1388
-#: src/components/chat_list.rs:589 src/components/chat_list.rs:590
-msgid "You"
-msgstr "Tú"
-
-#: src/application.rs:334 src/application.rs:962 src/application.rs:1402
-#: src/application.rs:1477
+#: src/application.rs:336 src/application.rs:338 src/application.rs:400
+#: src/application.rs:1050 src/application.rs:1153 src/application.rs:1587
+#: src/application.rs:1662 src/application.rs:1664
 msgid "Unknown"
 msgstr "Desconocido"
 
-#: src/application.rs:422
+#: src/application.rs:352 src/application.rs:1571
+msgid "Group"
+msgstr "Grupo"
+
+#: src/application.rs:354 src/application.rs:592 src/application.rs:1573
+#: src/components/chat_list.rs:691 src/components/chat_list.rs:692
+msgid "You"
+msgstr "Tú"
+
+#: src/application.rs:495
 msgid "_Contacts"
 msgstr "_Contactos"
 
-#: src/application.rs:425
+#: src/application.rs:498
 msgid "_Preferences"
 msgstr "_Preferencias"
 
-#: src/application.rs:426
+#: src/application.rs:499
 msgid "_Keyboard Shortcuts"
 msgstr "_Atajos de teclado"
 
-#: src/application.rs:427
+#: src/application.rs:500
 msgid "_About Papo"
 msgstr "_Acerca de Papo"
 
-#: src/application.rs:460 src/components/login.rs:154
+#: src/application.rs:533 src/components/login.rs:154
 msgid "About Papo"
 msgstr "Acerca de Papo"
 
-#: src/application.rs:473
+#: src/application.rs:546
 msgid "Fetching account data..."
 msgstr "Obteniendo datos de la cuenta..."
 
-#: src/application.rs:515
+#: src/application.rs:588
 msgid "Your profile"
 msgstr "Tu perfil"
 
-#: src/application.rs:527
+#: src/application.rs:600
 msgid "Menu"
 msgstr "Menú"
 
-#: src/application.rs:535
+#: src/application.rs:608
 msgid "Chats"
 msgstr "Chats"
 
-#: src/application.rs:554
+#: src/application.rs:627
 msgid "Chat"
 msgstr "Chat"
 
-#: src/application.rs:562
+#: src/application.rs:635
 msgid "No Chat Selected"
 msgstr "No se ha seleccionado ningún chat"
 
-#: src/application.rs:567
+#: src/application.rs:640
 msgid "Select a chat to start chatting"
 msgstr "Selecciona un chat para comenzar a chatear"
 
-#. Translators: Replace "translator-credits" with your names, one per line.
+#: src/application.rs:1161 src/components/chat_view/mod.rs:830
+msgid "Someone"
+msgstr ""
+
 #: src/modals/about.rs:36
 msgid "translator-credits"
 msgstr "SrTortugardo <srtortugardo@disroot.org>"
 
-#. General section
 #: src/modals/shortcuts.rs:28
 msgid "General"
 msgstr "General"
@@ -145,49 +146,59 @@ msgstr "General"
 msgid "Quit"
 msgstr "Salir"
 
-#: src/components/chat_list.rs:109
+#: src/components/chat_list.rs:115
 msgid "All"
 msgstr "Todos"
 
-#: src/components/chat_list.rs:114
+#: src/components/chat_list.rs:120
 msgid "Unreads"
 msgstr "No leídos"
 
-#: src/components/chat_list.rs:119
+#: src/components/chat_list.rs:125
 msgid "Groups"
 msgstr "Grupos"
 
-#: src/components/chat_view.rs:209
+#: src/components/chat_list.rs:466 src/components/chat_view/mod.rs:809
+#, rust-format
+msgid "{0} is typing..."
+msgstr ""
+
+#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:811
+#, rust-format
+msgid "{0} people are typing..."
+msgstr ""
+
+#: src/components/chat_view/mod.rs:222
 msgid "Loading messages..."
 msgstr "Cargando mensajes..."
 
-#: src/components/chat_view.rs:241
+#: src/components/chat_view/mod.rs:292
 msgid "Type a message..."
 msgstr "Escribe un mensaje..."
 
-#: src/components/chat_view.rs:789
+#: src/components/chat_view/mod.rs:770
 msgid "online"
 msgstr "En línea"
 
-#: src/components/chat_view.rs:797 src/components/chat_view.rs:807
-#: src/components/chat_view.rs:815
+#: src/components/chat_view/mod.rs:778 src/components/chat_view/mod.rs:788
+#: src/components/chat_view/mod.rs:796
 msgid "Last seen"
 msgstr "Visto por última vez"
 
-#: src/components/chat_view.rs:798
+#: src/components/chat_view/mod.rs:779
 msgid "today"
 msgstr "Hoy"
 
-#: src/components/chat_view.rs:799 src/components/chat_view.rs:809
-#: src/components/chat_view.rs:817
+#: src/components/chat_view/mod.rs:780 src/components/chat_view/mod.rs:790
+#: src/components/chat_view/mod.rs:798
 msgid "at"
 msgstr "a las"
 
-#: src/components/chat_view.rs:808
+#: src/components/chat_view/mod.rs:789
 msgid "yesterday"
 msgstr "Ayer"
 
-#: src/components/chat_view.rs:1088
+#: src/components/chat_view/rows.rs:275
 msgid "The message could not be sent."
 msgstr "No se pudo enviar el mensaje"
 
@@ -213,7 +224,8 @@ msgstr "Abre WhatsApp en tu teléfono"
 
 #: src/components/login.rs:267 src/components/login.rs:438
 msgid "Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>"
-msgstr "Ve a: <i>Menú &gt; Dispositivos conectados &gt; Conectar dispositivo</i>"
+msgstr ""
+"Ve a: <i>Menú &gt; Dispositivos conectados &gt; Conectar dispositivo</i>"
 
 #: src/components/login.rs:268
 msgid "Scan this QR code."
@@ -281,29 +293,29 @@ msgstr "Sticker"
 msgid "Document"
 msgstr "Documento"
 
-#: src/utils.rs:61
+#: src/utils.rs:62
 msgid "Today"
 msgstr "Hoy"
 
-#: src/utils.rs:67
+#: src/utils.rs:68
 msgid "Yesterday"
 msgstr "Ayer"
 
-#: src/session/client.rs:480
+#: src/session/client.rs:474
 #, rust-format
 msgid "Failed to pair with phone number: {0}"
 msgstr "No se pudo vincular con el número de teléfono: {0}"
 
-#: src/session/client.rs:579
+#: src/session/client.rs:576
 #, rust-format
 msgid "Database error: {0}"
 msgstr "Error en la base de datos: {0}"
 
-#: src/session/client.rs:788
+#: src/session/client.rs:790
 #, rust-format
 msgid "Connection failed: {0}"
 msgstr "Falló la conexión: {0}"
 
-#: src/session/client.rs:843
+#: src/session/client.rs:852
 msgid "You!"
 msgstr "¡Tú!"
