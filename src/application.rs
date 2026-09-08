@@ -1412,7 +1412,15 @@ impl AsyncComponent for Application {
                             sender_jid: if outgoing {
                                 self.user_jid.clone().unwrap_or_default()
                             } else {
-                                info.source.sender.to_string()
+                                let sender = info.source.sender.to_string();
+                                if sender.ends_with("@lid")
+                                    && let Some(alt) = info.source.sender_alt.as_ref()
+                                    && !alt.to_string().ends_with("@lid")
+                                {
+                                    alt.to_string()
+                                } else {
+                                    sender
+                                }
                             },
                             sender_name: Some(info.push_name.clone()),
 
