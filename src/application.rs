@@ -1286,7 +1286,6 @@ impl AsyncComponent for Application {
                         .typing
                         .get_mut(&chat_jid)
                         .is_some_and(|state| state.senders.shift_remove(&sender_jid).is_some());
-
                     if removed {
                         self.emit_typing(&chat_jid);
                     }
@@ -1371,7 +1370,6 @@ impl AsyncComponent for Application {
                     state.generation == generation
                         && state.senders.shift_remove(&sender_jid).is_some()
                 });
-
                 if removed {
                     self.emit_typing(&chat_jid);
                 }
@@ -1435,9 +1433,23 @@ impl AsyncComponent for Application {
                                 (!info.push_name.is_empty()).then_some(info.push_name.as_str());
                             self.register_participant(&chat_jid, &sender_jid, name);
 
-                            if let Some(alt) = &info.source.sender_alt {
-                                let alt_jid = alt.to_string();
-                                self.register_participant(&chat_jid, &alt_jid, name);
+                            let alt_jid = info
+                                .source
+                                .sender_alt
+                                .as_ref()
+                                .map(std::string::ToString::to_string);
+                            if let Some(alt_jid) = alt_jid.as_ref() {
+                                self.register_participant(&chat_jid, alt_jid, name);
+                            }
+
+                            let removed = self.typing.get_mut(&chat_jid).is_some_and(|state| {
+                                state.senders.shift_remove(&sender_jid).is_some()
+                                    || alt_jid.as_ref().is_some_and(|alt| {
+                                        state.senders.shift_remove(alt).is_some()
+                                    })
+                            });
+                            if removed {
+                                self.emit_typing(&chat_jid);
                             }
                         }
                     }
