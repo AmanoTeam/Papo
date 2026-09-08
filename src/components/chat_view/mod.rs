@@ -173,6 +173,8 @@ impl AsyncComponent for ChatView {
                             #[watch]
                             set_visible: model.state.presence.is_some(),
                             set_selectable: false,
+                            set_ellipsize: pango::EllipsizeMode::End,
+                            set_max_width_chars: 40,
                             set_css_classes: &["subtitle"],
                         },
                     },
@@ -765,7 +767,9 @@ impl ChatView {
     /// Update the user presence.
     fn update_presence(&mut self) {
         if let Some(ref mut chat) = self.chat {
-            if chat.available.unwrap_or_default() {
+            if chat.is_group() {
+                self.state.presence = Self::participants_label(chat);
+            } else if chat.available.unwrap_or_default() {
                 self.state.presence = Some(i18n!("online"));
             } else if let Some(last_seen) = chat.last_seen {
                 let today = Local::now().date_naive();
@@ -800,6 +804,30 @@ impl ChatView {
                 };
                 self.state.presence = Some(presence);
             }
+        }
+    }
+
+    fn participants_label(chat: &Chat) -> Option<String> {
+        let unknown = i18n!("Unknown");
+        let mut names = chat
+            .participants
+            .values()
+            .filter(|name| !name.is_empty() && name.as_str() != unknown.as_str())
+            .cloned()
+            .collect::<Vec<String>>();
+        names.sort();
+        names.dedup();
+
+        if names.is_empty() {
+            None
+        } else if names.len() > 3 {
+            Some(format!(
+                "{}, {}",
+                names[..3].join(", "),
+                i18n_f!("+{0} more", names.len() - 3)
+            ))
+        } else {
+            Some(names.join(", "))
         }
     }
 

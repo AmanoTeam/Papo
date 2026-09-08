@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-09-08 18:03-0300\n"
+"POT-Creation-Date: 2026-09-08 18:16-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -68,6 +68,7 @@ msgstr ""
 #: src/application.rs:351 src/application.rs:353 src/application.rs:415
 #: src/application.rs:1104 src/application.rs:1208 src/application.rs:1715
 #: src/application.rs:1790 src/application.rs:1792
+#: src/components/chat_view/mod.rs:811
 msgid "Unknown"
 msgstr ""
 
@@ -128,7 +129,7 @@ msgstr ""
 msgid "Select a chat to start chatting"
 msgstr ""
 
-#: src/application.rs:1238 src/components/chat_view/mod.rs:837
+#: src/application.rs:1238 src/components/chat_view/mod.rs:865
 msgid "Someone"
 msgstr ""
 
@@ -156,54 +157,59 @@ msgstr ""
 msgid "Groups"
 msgstr ""
 
-#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:810
+#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:838
 #, rust-format
 msgid "{0} is recording audio..."
 msgstr ""
 
-#: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:814
+#: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:842
 #, rust-format
 msgid "{0} is typing..."
 msgstr ""
 
-#: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:816
+#: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:844
 #, rust-format
 msgid "{0} people are recording audio..."
 msgstr ""
 
-#: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:818
+#: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:846
 #, rust-format
 msgid "{0} people are typing..."
 msgstr ""
 
-#: src/components/chat_view/mod.rs:222
+#: src/components/chat_view/mod.rs:224
 msgid "Loading messages..."
 msgstr ""
 
-#: src/components/chat_view/mod.rs:292
+#: src/components/chat_view/mod.rs:294
 msgid "Type a message..."
 msgstr ""
 
-#: src/components/chat_view/mod.rs:769
+#: src/components/chat_view/mod.rs:773
 msgid "online"
 msgstr ""
 
-#: src/components/chat_view/mod.rs:777 src/components/chat_view/mod.rs:787
-#: src/components/chat_view/mod.rs:795
+#: src/components/chat_view/mod.rs:781 src/components/chat_view/mod.rs:791
+#: src/components/chat_view/mod.rs:799
 msgid "Last seen"
 msgstr ""
 
-#: src/components/chat_view/mod.rs:778
+#: src/components/chat_view/mod.rs:782
 msgid "today"
 msgstr ""
 
-#: src/components/chat_view/mod.rs:779 src/components/chat_view/mod.rs:789
-#: src/components/chat_view/mod.rs:797
+#: src/components/chat_view/mod.rs:783 src/components/chat_view/mod.rs:793
+#: src/components/chat_view/mod.rs:801
 msgid "at"
 msgstr ""
 
-#: src/components/chat_view/mod.rs:788
+#: src/components/chat_view/mod.rs:792
 msgid "yesterday"
+msgstr ""
+
+#: src/components/chat_view/mod.rs:827
+#, rust-format
+msgid "+{0} more"
 msgstr ""
 
 #: src/components/chat_view/rows.rs:275
