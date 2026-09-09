@@ -1,7 +1,7 @@
 {
     "id": "com.amanoteam.Papo",
     "runtime": "org.gnome.Platform",
-    "runtime-version": "49",
+    "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
     "sdk-extensions": [
         "org.freedesktop.Sdk.Extension.rust-nightly",
@@ -19,7 +19,9 @@
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-nightly/bin:/usr/lib/sdk/llvm21/bin",
-        "build-args": ["--share=network"],
+        "build-args": [
+            "--share=network"
+        ],
         "env": {
             "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "clang",
@@ -27,20 +29,27 @@
             "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER": "clang",
             "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "-C link-arg=-fuse-ld=/usr/lib/sdk/rust-nightly/bin/mold"
         },
-        "test-args": ["--socket=x11", "--share=network"]
+        "test-args": [
+            "--socket=x11",
+            "--share=network"
+        ]
     },
     "modules": [
         {
             "name": "grass",
             "buildsystem": "simple",
-            "build-commands": ["cargo install --locked --root=/app grass"],
+            "build-commands": [
+                "cargo install --locked --root=/app grass"
+            ],
             "sources": []
         },
         {
             "name": "papo",
             "buildsystem": "meson",
             "run-tests": true,
-            "config-opts": ["-Dprofile=default"],
+            "config-opts": [
+                "-Dprofile=default"
+            ],
             "sources": [
                 {
                     "type": "dir",
