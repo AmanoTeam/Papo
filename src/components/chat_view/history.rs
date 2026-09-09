@@ -6,7 +6,7 @@ use gtk::{gio, glib};
 use relm4::{prelude::*, typed_view::list::TypedListView};
 
 use super::rows::ChatRow;
-use crate::state::ChatMessage;
+use crate::state::{ChatMessage, MessageStatus};
 
 fn same_group(a: &ChatMessage, b: &ChatMessage) -> bool {
     (a.outgoing && b.outgoing) || (!a.outgoing && !b.outgoing && a.sender_jid == b.sender_jid)
@@ -69,6 +69,8 @@ pub(crate) enum RowMetadata {
     Message(i64),
     /// A date separator row.
     Separator(NaiveDate),
+    /// The unread messages divider row.
+    UnreadDivider,
 }
 
 /// Owns the message list view and all pagination state for a single open chat.
@@ -178,6 +180,10 @@ impl ChatHistory {
             self.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
         }
 
+        let unread_boundary = messages.iter().rposition(|msg| {
+            !msg.outgoing && matches!(msg.status, MessageStatus::Sent | MessageStatus::Delivered)
+        });
+
         for (i, msg) in messages.iter().enumerate().rev() {
             // Convert to local date for separator comparison.
             let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
@@ -188,6 +194,11 @@ impl ChatHistory {
                 self.row_metadata
                     .push_back(RowMetadata::Separator(msg_date));
                 self.last_message_date = Some(msg_date);
+            }
+
+            if Some(i) == unread_boundary {
+                self.list.append(ChatRow::UnreadDivider);
+                self.row_metadata.push_back(RowMetadata::UnreadDivider);
             }
 
             // Track the first message date for prepend separators.
@@ -422,8 +433,10 @@ impl ChatHistory {
             prev_msg = Some(msg);
         }
 
-        let objects: Vec<glib::BoxedAnyObject> =
-            rows.into_iter().map(glib::BoxedAnyObject::new).collect();
+        let objects = rows
+            .into_iter()
+            .map(glib::BoxedAnyObject::new)
+            .collect::<Vec<glib::BoxedAnyObject>>();
         self.store().splice(self.list.len(), 0, &objects);
 
         self.row_metadata.extend(metas);
@@ -559,6 +572,33 @@ impl ChatHistory {
         self.list.get(index).map(|item| item.borrow().clone())
     }
 
+    /// Remove the unread messages divider row, if present.
+    pub(crate) fn remove_unread_divider(&mut self, at_bottom: bool) {
+        let Some(index) = self
+            .row_metadata
+            .iter()
+            .position(|m| matches!(m, RowMetadata::UnreadDivider))
+        else {
+            return;
+        };
+
+        let adj = self.list.view.vadjustment();
+        let saved_scroll = if at_bottom {
+            None
+        } else {
+            adj.as_ref().map(AdjustmentExt::value)
+        };
+
+        let index = u32::try_from(index).expect("row index fits u32");
+        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
+        self.store().splice(index, 1, &empty);
+        self.row_metadata.remove(index as usize);
+
+        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
+            glib::idle_add_local_once(move || adj.set_value(value));
+        }
+    }
+
     /// Remove the row at `index` and re-insert a replacement, preserving scroll.
     pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
         let adj = self.list.view.vadjustment();
@@ -653,6 +693,7 @@ impl ChatHistory {
                         self.last_message_date = Some(*date);
                     }
                 }
+                RowMetadata::UnreadDivider => {}
             }
 
             // Stop once both cursors are found.
@@ -681,6 +722,7 @@ impl ChatHistory {
                         self.first_message_date = Some(*date);
                     }
                 }
+                RowMetadata::UnreadDivider => {}
             }
 
             // Stop once both cursors are found.

@@ -560,6 +560,7 @@ impl AsyncComponent for ChatView {
                     if self.state.is_at_bottom {
                         let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
                     }
+                    self.history.remove_unread_divider(self.state.is_at_bottom);
                 }
             }
             ChatViewInput::EntryChanged => {

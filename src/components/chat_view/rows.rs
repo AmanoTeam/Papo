@@ -23,6 +23,8 @@ pub enum ChatRow {
     DateSeparator(NaiveDate),
     /// A service/system event (e.g. "someone added xxx").
     ServiceEvent { text: String },
+    /// The unread messages divider.
+    UnreadDivider,
 }
 
 pub struct ChatRowWidgets {
@@ -40,6 +42,8 @@ pub struct ChatRowWidgets {
     sender_label: gtk::Label,
     /// Message text content.
     content_label: gtk::Label,
+    /// Unread messages divider label.
+    divider_label: gtk::Label,
     /// Service event label (e.g. "someone added xxx").
     service_label: gtk::Label,
     /// Date separator label (e.g. "Today", "Yesterday").
@@ -56,12 +60,14 @@ fn new_tail(direction: TailDirection, css_class: &str) -> MessageTail {
     tail.set_margin_bottom(2);
     tail.set_width_request(8);
     tail.set_height_request(13);
+
     tail
 }
 
 fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, last: bool) {
     widgets.avatar_slot.set_visible(true);
     widgets.avatar.set_visible(last);
+
     if last {
         let name = msg
             .sender_name
@@ -69,6 +75,7 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
             .or_else(|| msg.sender_jid.split('@').next().map(str::to_string));
         widgets.avatar.set_text(name.as_deref());
     }
+
     if first && let Some(name) = &msg.sender_name {
         widgets.sender_label.set_label(name);
         widgets.sender_label.set_visible(true);
@@ -79,6 +86,7 @@ impl RelmListItem for ChatRow {
     type Root = gtk::Box;
     type Widgets = ChatRowWidgets;
 
+    #[allow(clippy::too_many_lines)]
     fn setup(_list_item: &gtk::ListItem) -> (Self::Root, Self::Widgets) {
         // Root container stacks all row variants vertically.
         let root = gtk::Box::builder()
@@ -91,9 +99,17 @@ impl RelmListItem for ChatRow {
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(12)
             .margin_bottom(4)
-            // .visible(false)
             .build();
         root.append(&separator_label);
+
+        // Unread messages divider.
+        let divider_label = gtk::Label::builder()
+            .halign(gtk::Align::Center)
+            .css_classes(["unread-divider", "caption"])
+            .margin_top(6)
+            .margin_bottom(2)
+            .build();
+        root.append(&divider_label);
 
         // Service event (e.g. "someone added xxx").
         let service_label = gtk::Label::builder()
@@ -101,13 +117,11 @@ impl RelmListItem for ChatRow {
             .css_classes(["service-message", "caption", "dimmed"])
             .margin_top(4)
             .margin_bottom(4)
-            // .visible(false)
             .build();
         root.append(&service_label);
 
         // Message bubble container.
         let message_box = gtk::Box::builder()
-            // .visible(false)
             .spacing(0)
             .orientation(gtk::Orientation::Horizontal)
             .build();
@@ -192,6 +206,7 @@ impl RelmListItem for ChatRow {
             status_icon,
             sender_label,
             content_label,
+            divider_label,
             service_label,
             separator_label,
             timestamp_label,
@@ -203,6 +218,7 @@ impl RelmListItem for ChatRow {
     fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
         // Hide all variants first, then show the active one.
         widgets.separator_label.set_visible(false);
+        widgets.divider_label.set_visible(false);
         widgets.service_label.set_visible(false);
         widgets.message_box.set_visible(false);
 
@@ -211,6 +227,11 @@ impl RelmListItem for ChatRow {
                 widgets.separator_label.set_label(&format_date_label(*date));
                 widgets.separator_label.set_visible(true);
                 widgets.separator_label.set_focusable(false);
+            }
+            Self::UnreadDivider => {
+                widgets.divider_label.set_label(&i18n!("Unread messages"));
+                widgets.divider_label.set_visible(true);
+                widgets.divider_label.set_focusable(false);
             }
             Self::ServiceEvent { text } => {
                 widgets.service_label.set_label(text);
