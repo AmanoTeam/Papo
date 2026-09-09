@@ -1,21 +1,23 @@
-use std::path::Path;
+use std::collections::HashMap;
 
 use adw::prelude::*;
 use chrono::Local;
-use gtk::{gdk::Texture, gio, glib, pango};
+use gtk::{gdk::Texture, glib, pango};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
 };
 
 use crate::{
-    i18n,
-    state::{Chat, ChatMessage, MessageStatus},
-    utils::{format_lid_as_number, get_first_name},
+    i18n, i18n_f,
+    state::{Chat, ChatMessage, MessageStatus, TypingSender},
+    utils::{format_lid_as_number, get_first_name, load_avatar},
+    widgets::TypingDots,
 };
 
 #[derive(Debug)]
 pub struct ChatList {
+    typing: HashMap<String, Vec<TypingSender>>,
     /// Currently selected chat JID.
     chat_jid: Option<String>,
     /// `ListView` widget wrapper containing all chat rows.
@@ -56,6 +58,10 @@ pub enum ChatListInput {
         chat: Chat,
         /// Whether move the chat to the top of the list.
         move_to_top: bool,
+    },
+    UpdateTyping {
+        chat_jid: String,
+        senders: Vec<TypingSender>,
     },
 
     /// Apply a filter.
@@ -164,6 +170,7 @@ impl SimpleAsyncComponent for ChatList {
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let model = Self {
+            typing: HashMap::new(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
@@ -217,8 +224,11 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     // Build chat row.
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
                     let row = ChatRow {
                         chat,
+                        is_typing,
+                        typing_senders,
                         last_message,
                         unread_count,
                         avatar_texture,
@@ -248,8 +258,11 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     // Build updated chat row.
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
                     let updated_row = ChatRow {
                         chat: chat.clone(),
+                        is_typing,
+                        typing_senders,
                         last_message,
                         unread_count,
                         avatar_texture,
@@ -290,6 +303,61 @@ impl SimpleAsyncComponent for ChatList {
                         if let (Some(adj), Some(value)) = (adj, saved_scroll) {
                             glib::idle_add_local_once(move || adj.set_value(value));
                         }
+                    }
+                }
+            }
+
+            ChatListInput::UpdateTyping { chat_jid, senders } => {
+                if senders.is_empty() {
+                    self.typing.remove(&chat_jid);
+                } else {
+                    self.typing.insert(chat_jid.clone(), senders);
+                }
+
+                let index = self.get_index_by_jid(&chat_jid);
+
+                let row_data = index.and_then(|index| {
+                    self.list_view_wrapper
+                        .iter()
+                        .nth(index as usize)
+                        .map(|item| {
+                            let row = item.borrow();
+                            (
+                                row.chat.clone(),
+                                row.last_message.clone(),
+                                row.unread_count,
+                                row.avatar_texture.clone(),
+                            )
+                        })
+                });
+
+                if let (Some(index), Some((chat, last_message, unread_count, avatar_texture))) =
+                    (index, row_data)
+                {
+                    let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
+                    let updated_row = ChatRow {
+                        chat,
+                        is_typing,
+                        typing_senders,
+                        last_message,
+                        unread_count,
+                        avatar_texture,
+                    };
+
+                    let adj = self.list_view_wrapper.view.vadjustment();
+                    let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
+
+                    self.list_view_wrapper.remove(index);
+                    self.list_view_wrapper.insert(index, updated_row);
+
+                    if self.chat_jid.as_deref() == Some(&chat_jid) {
+                        self.list_view_wrapper
+                            .selection_model
+                            .select_item(index, true);
+                    }
+
+                    if let (Some(adj), Some(value)) = (adj, saved_scroll) {
+                        glib::idle_add_local_once(move || adj.set_value(value));
                     }
                 }
             }
@@ -370,17 +438,47 @@ impl ChatList {
 
         None
     }
+
+    fn typing_row_data(&self, jid: &str) -> (bool, Vec<TypingSender>) {
+        match self.typing.get(jid) {
+            Some(senders) if !senders.is_empty() => (true, senders.clone()),
+            _ => (false, Vec::new()),
+        }
+    }
 }
 
 /// A single row in the chat history list.
 #[derive(Clone, Debug)]
 pub struct ChatRow {
     chat: Chat,
+    is_typing: bool,
+    typing_senders: Vec<TypingSender>,
     /// The last sent message in the chat.
     last_message: Option<ChatMessage>,
     /// How many messages are unread.
     unread_count: u32,
     avatar_texture: Option<Texture>,
+}
+
+impl ChatRow {
+    fn typing_text(&self) -> String {
+        let recording = self.typing_senders.iter().any(|s| s.recording);
+        if self.typing_senders.len() == 1 && recording {
+            i18n_f!(
+                "{0} is recording audio...",
+                self.typing_senders[0].name.clone()
+            )
+        } else if self.typing_senders.len() == 1 {
+            i18n_f!("{0} is typing...", self.typing_senders[0].name.clone())
+        } else if recording {
+            i18n_f!(
+                "{0} people are recording audio...",
+                self.typing_senders.len()
+            )
+        } else {
+            i18n_f!("{0} people are typing...", self.typing_senders.len())
+        }
+    }
 }
 
 pub struct ChatRowWidgets {
@@ -392,8 +490,11 @@ pub struct ChatRowWidgets {
     pinned_icon: gtk::Image,
     /// Message status icon (e.g. "Sending", "Sent").
     status_icon: gtk::Image,
+    typing_box: gtk::Box,
+    suffix_dots: TypingDots,
     /// Chat title.
     title_label: gtk::Label,
+    typing_label: gtk::Label,
     /// Chat last message's content.
     subtitle_label: gtk::Label,
     /// Timestamp label (e.g. "14:30").
@@ -454,6 +555,9 @@ impl RelmListItem for ChatRow {
             .build();
         text_box.append(&subtitle_label);
 
+        let (typing_box, typing_label) = build_typing_widgets();
+        text_box.append(&typing_box);
+
         // End box.
         let suffix_box = gtk::Box::builder()
             .valign(gtk::Align::Center)
@@ -487,20 +591,10 @@ impl RelmListItem for ChatRow {
             .build();
         suffix_box.append(&suffix_bottom_box);
 
-        let muted_icon = gtk::Image::builder()
-            .halign(gtk::Align::End)
-            .icon_name("speaker-0-symbolic")
-            .pixel_size(12)
-            .css_classes(["dimmed"])
-            .build();
+        let muted_icon = build_suffix_icon("speaker-0-symbolic");
         suffix_bottom_box.append(&muted_icon);
 
-        let pinned_icon = gtk::Image::builder()
-            .halign(gtk::Align::End)
-            .icon_name("pin-symbolic")
-            .pixel_size(12)
-            .css_classes(["dimmed"])
-            .build();
+        let pinned_icon = build_suffix_icon("pin-symbolic");
         suffix_bottom_box.append(&pinned_icon);
 
         let unread_count_badge = gtk::Label::builder()
@@ -509,12 +603,21 @@ impl RelmListItem for ChatRow {
             .build();
         suffix_bottom_box.append(&unread_count_badge);
 
+        let suffix_dots = TypingDots::new();
+        suffix_dots.set_valign(gtk::Align::Center);
+        suffix_dots.add_css_class("dimmed");
+        suffix_dots.set_visible(false);
+        suffix_bottom_box.append(&suffix_dots);
+
         let widgets = ChatRowWidgets {
             avatar,
             muted_icon,
             pinned_icon,
             status_icon,
+            typing_box,
+            suffix_dots,
             title_label,
+            typing_label,
             subtitle_label,
             timestamp_label,
             unread_count_badge,
@@ -563,6 +666,16 @@ impl RelmListItem for ChatRow {
         widgets.status_icon.set_has_tooltip(false);
         widgets.status_icon.remove_css_class("white");
         widgets.status_icon.remove_css_class("warning");
+
+        let is_group = self.chat.is_group();
+        let show_typing_row = self.is_typing && is_group;
+        widgets.typing_box.set_visible(show_typing_row);
+        widgets.subtitle_label.set_visible(!show_typing_row);
+        widgets.suffix_dots.set_visible(self.is_typing && !is_group);
+
+        if show_typing_row {
+            widgets.typing_label.set_label(&self.typing_text());
+        }
 
         if let Some(msg) = &self.last_message {
             // Get last message's content.
@@ -635,18 +748,33 @@ impl RelmListItem for ChatRow {
     }
 }
 
-async fn load_avatar<P: AsRef<Path>>(path: P) -> Option<Texture> {
-    let file = gio::File::for_path(&path);
+fn build_typing_widgets() -> (gtk::Box, gtk::Label) {
+    let typing_box = gtk::Box::builder()
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
+    let typing_dots = TypingDots::new();
+    typing_dots.add_css_class("dimmed");
+    typing_box.append(&typing_dots);
+    let typing_label = gtk::Label::builder()
+        .lines(1)
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .ellipsize(pango::EllipsizeMode::End)
+        .css_classes(["dimmed"])
+        .width_chars(1)
+        .build();
+    typing_box.append(&typing_label);
+    typing_box.set_visible(false);
 
-    match file.load_bytes_future().await {
-        Ok((bytes, _)) => Texture::from_bytes(&bytes).ok(),
-        Err(e) => {
-            tracing::error!(
-                "Failed to load avatar from {}: {e}",
-                path.as_ref().display()
-            );
+    (typing_box, typing_label)
+}
 
-            None
-        }
-    }
+fn build_suffix_icon(icon_name: &str) -> gtk::Image {
+    gtk::Image::builder()
+        .halign(gtk::Align::End)
+        .icon_name(icon_name)
+        .pixel_size(12)
+        .css_classes(["dimmed"])
+        .build()
 }

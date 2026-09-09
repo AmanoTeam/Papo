@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-07-06 22:21-0300\n"
+"POT-Creation-Date: 2026-09-08 22:48-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -17,10 +17,9 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#. Set app name and initialize libadwaita.
 #: data/com.amanoteam.Papo.desktop.in.in:2
-#: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:122
-#: src/application.rs:435 src/application.rs:505 src/modals/about.rs:20
+#: data/com.amanoteam.Papo.metainfo.xml.in.in:7 src/main.rs:128
+#: src/application.rs:527 src/application.rs:597 src/modals/about.rs:20
 msgid "Papo"
 msgstr ""
 
@@ -32,7 +31,6 @@ msgstr ""
 msgid "A GTK WhatsApp client"
 msgstr ""
 
-#. Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
 #: data/com.amanoteam.Papo.desktop.in.in:10
 msgid "GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;whatsapp.com;"
 msgstr ""
@@ -67,74 +65,78 @@ msgid ""
 "will fit all screens, big or small."
 msgstr ""
 
-#: src/application.rs:292 src/application.rs:1386
-msgid "Group"
-msgstr ""
-
-#: src/application.rs:294 src/application.rs:519 src/application.rs:1388
-#: src/components/chat_list.rs:589 src/components/chat_list.rs:590
-msgid "You"
-msgstr ""
-
-#: src/application.rs:334 src/application.rs:962 src/application.rs:1402
-#: src/application.rs:1477
+#: src/application.rs:355 src/application.rs:357 src/application.rs:419
+#: src/application.rs:1116 src/application.rs:1220 src/application.rs:1757
+#: src/application.rs:1832 src/application.rs:1834
+#: src/components/chat_view/mod.rs:921
 msgid "Unknown"
 msgstr ""
 
-#: src/application.rs:422
+#: src/application.rs:371 src/application.rs:1741
+msgid "Group"
+msgstr ""
+
+#: src/application.rs:373 src/application.rs:611 src/application.rs:1743
+#: src/components/chat_list.rs:702 src/components/chat_list.rs:703
+msgid "You"
+msgstr ""
+
+#: src/application.rs:514
 msgid "_Contacts"
 msgstr ""
 
-#: src/application.rs:425
+#: src/application.rs:517
 msgid "_Preferences"
 msgstr ""
 
-#: src/application.rs:426
+#: src/application.rs:518
 msgid "_Keyboard Shortcuts"
 msgstr ""
 
-#: src/application.rs:427
+#: src/application.rs:519
 msgid "_About Papo"
 msgstr ""
 
-#: src/application.rs:460 src/components/login.rs:154
+#: src/application.rs:552 src/components/login.rs:154
 msgid "About Papo"
 msgstr ""
 
-#: src/application.rs:473
+#: src/application.rs:565
 msgid "Fetching account data..."
 msgstr ""
 
-#: src/application.rs:515
+#: src/application.rs:607
 msgid "Your profile"
 msgstr ""
 
-#: src/application.rs:527
+#: src/application.rs:619
 msgid "Menu"
 msgstr ""
 
-#: src/application.rs:535
+#: src/application.rs:627
 msgid "Chats"
 msgstr ""
 
-#: src/application.rs:554
+#: src/application.rs:646
 msgid "Chat"
 msgstr ""
 
-#: src/application.rs:562
+#: src/application.rs:654
 msgid "No Chat Selected"
 msgstr ""
 
-#: src/application.rs:567
+#: src/application.rs:659
 msgid "Select a chat to start chatting"
 msgstr ""
 
-#. Translators: Replace "translator-credits" with your names, one per line.
+#: src/application.rs:1250 src/components/chat_view/mod.rs:983
+msgid "Someone"
+msgstr ""
+
 #: src/modals/about.rs:36
 msgid "translator-credits"
 msgstr ""
 
-#. General section
 #: src/modals/shortcuts.rs:28
 msgid "General"
 msgstr ""
@@ -143,49 +145,78 @@ msgstr ""
 msgid "Quit"
 msgstr ""
 
-#: src/components/chat_list.rs:109
+#: src/components/chat_list.rs:115
 msgid "All"
 msgstr ""
 
-#: src/components/chat_list.rs:114
+#: src/components/chat_list.rs:120
 msgid "Unreads"
 msgstr ""
 
-#: src/components/chat_list.rs:119
+#: src/components/chat_list.rs:125
 msgid "Groups"
 msgstr ""
 
-#: src/components/chat_view.rs:209
+#: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:956
+#, rust-format
+msgid "{0} is recording audio..."
+msgstr ""
+
+#: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:960
+#, rust-format
+msgid "{0} is typing..."
+msgstr ""
+
+#: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:962
+#, rust-format
+msgid "{0} people are recording audio..."
+msgstr ""
+
+#: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:964
+#, rust-format
+msgid "{0} people are typing..."
+msgstr ""
+
+#: src/components/chat_view/mod.rs:243
 msgid "Loading messages..."
 msgstr ""
 
-#: src/components/chat_view.rs:241
+#: src/components/chat_view/mod.rs:325
 msgid "Type a message..."
 msgstr ""
 
-#: src/components/chat_view.rs:789
+#: src/components/chat_view/mod.rs:883
 msgid "online"
 msgstr ""
 
-#: src/components/chat_view.rs:797 src/components/chat_view.rs:807
-#: src/components/chat_view.rs:815
+#: src/components/chat_view/mod.rs:891 src/components/chat_view/mod.rs:901
+#: src/components/chat_view/mod.rs:909
 msgid "Last seen"
 msgstr ""
 
-#: src/components/chat_view.rs:798
+#: src/components/chat_view/mod.rs:892
 msgid "today"
 msgstr ""
 
-#: src/components/chat_view.rs:799 src/components/chat_view.rs:809
-#: src/components/chat_view.rs:817
+#: src/components/chat_view/mod.rs:893 src/components/chat_view/mod.rs:903
+#: src/components/chat_view/mod.rs:911
 msgid "at"
 msgstr ""
 
-#: src/components/chat_view.rs:808
+#: src/components/chat_view/mod.rs:902
 msgid "yesterday"
 msgstr ""
 
-#: src/components/chat_view.rs:1088
+#: src/components/chat_view/mod.rs:937
+#, rust-format
+msgid "+{0} more"
+msgstr ""
+
+#: src/components/chat_view/rows.rs:233
+msgid "Unread messages"
+msgstr ""
+
+#: src/components/chat_view/rows.rs:297
 msgid "The message could not be sent."
 msgstr ""
 
@@ -277,29 +308,29 @@ msgstr ""
 msgid "Document"
 msgstr ""
 
-#: src/utils.rs:61
+#: src/utils.rs:62
 msgid "Today"
 msgstr ""
 
-#: src/utils.rs:67
+#: src/utils.rs:68
 msgid "Yesterday"
 msgstr ""
 
-#: src/session/client.rs:480
+#: src/session/client.rs:487
 #, rust-format
 msgid "Failed to pair with phone number: {0}"
 msgstr ""
 
-#: src/session/client.rs:579
+#: src/session/client.rs:620
 #, rust-format
 msgid "Database error: {0}"
 msgstr ""
 
-#: src/session/client.rs:788
+#: src/session/client.rs:837
 #, rust-format
 msgid "Connection failed: {0}"
 msgstr ""
 
-#: src/session/client.rs:843
+#: src/session/client.rs:899
 msgid "You!"
 msgstr ""

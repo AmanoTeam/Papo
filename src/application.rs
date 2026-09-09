@@ -28,9 +28,9 @@ use crate::{
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{Client, ClientInput, ClientOutput, SyncedMessage},
-    state::{Chat, ChatMessage, MessageStatus},
+    state::{Chat, ChatMessage, MessageStatus, TypingSender},
     store::{Contact, Database},
-    utils::format_lid_as_number,
+    utils::{format_lid_as_number, get_first_name},
 };
 
 pub struct Application {
@@ -38,7 +38,7 @@ pub struct Application {
     db: Arc<Database>,
     /// Page main stack is displaying.
     page: AppPage,
-    /// Current chats data.
+    /// Current chats' data.
     chats: Vec<Chat>,
     /// User login component.
     login: AsyncController<Login>,
@@ -46,6 +46,11 @@ pub struct Application {
     state: AppState,
     /// `WhatsApp` client wrapper.
     client: AsyncController<Client>,
+    /// Typing state from chats.
+    typing: HashMap<String, ChatTypingState>,
+    /// Resolved contact list (JID -> name).
+    contacts: HashMap<String, String>,
+
     /// Toaster overlay.
     toaster: Toaster,
     /// JID from the connected user.
@@ -172,11 +177,36 @@ pub enum AppMsg {
         available: bool,
         last_seen: Option<DateTime<Utc>>,
     },
+    /// Chat presence updated.
+    ChatPresenceUpdate {
+        chat_jid: String,
+        active: bool,
+        recording: bool,
+        sender_jid: String,
+        sender_alt: Option<String>,
+    },
     /// Message status updated.
     MessageStatusUpdate {
         chat_jid: String,
         msg_id: Uuid,
         status: MessageStatus,
+    },
+
+    /// LID-PN resolved.
+    LidPnResolved {
+        chat_jid: String,
+        lid: String,
+        phone: Option<String>,
+    },
+    /// Typing status expired.
+    TypingExpired {
+        chat_jid: String,
+        sender_jid: String,
+        generation: u64,
+    },
+    TypingStateChanged {
+        chat_jid: String,
+        composing: bool,
     },
 
     /// New message received.
@@ -263,8 +293,24 @@ pub enum AppCmd {
     },
 }
 
+#[derive(Debug, Default)]
+struct ChatTypingState {
+    senders: IndexMap<String, TypingSender>,
+    generation: u64,
+}
+
+impl ChatTypingState {
+    fn typing_senders(&self) -> Vec<TypingSender> {
+        self.senders.values().cloned().collect()
+    }
+}
+
 impl Application {
-    fn add_chat(&mut self, chat: Chat) {
+    fn add_chat(&mut self, mut chat: Chat) {
+        if let Some(name) = self.contacts.get(&chat.jid).filter(|n| !n.is_empty()) {
+            chat.name.clone_from(name);
+        }
+
         // Insert the chat into our cached list.
         self.chats.push(chat.clone());
 
@@ -286,6 +332,39 @@ impl Application {
         // Add the chat in the chat list.
         self.chat_list
             .emit(ChatListInput::AddChat { chat, at_top: true });
+    }
+
+    fn emit_typing(&self, chat_jid: &str) {
+        let Some(state) = self.typing.get(chat_jid) else {
+            return;
+        };
+
+        let senders = state.typing_senders();
+        self.chat_list.emit(ChatListInput::UpdateTyping {
+            chat_jid: chat_jid.to_string(),
+            senders: senders.clone(),
+        });
+
+        self.chat_view.emit(ChatViewInput::TypingUpdate {
+            chat_jid: chat_jid.to_string(),
+            senders,
+        });
+    }
+
+    fn register_participant(&mut self, chat_jid: &str, jid: &str, name: Option<&str>) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
+            && chat.is_group()
+        {
+            let entry = chat
+                .participants
+                .entry(jid.to_string())
+                .or_insert_with(|| i18n!("Unknown"));
+            if let Some(name) = name.filter(|n| !n.is_empty())
+                && *entry == i18n!("Unknown")
+            {
+                *entry = name.to_string();
+            }
+        }
     }
 
     fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
@@ -325,6 +404,12 @@ impl Application {
             });
         }
 
+        let typing_cleared = !message.outgoing
+            && self
+                .typing
+                .get_mut(chat_jid)
+                .is_some_and(|state| state.senders.shift_remove(&message.sender_jid).is_some());
+
         // Get the chat.
         let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) else {
             return;
@@ -349,6 +434,9 @@ impl Application {
             }
         });
 
+        self.chat_view
+            .emit(ChatViewInput::MessageReceived(Box::new(message.clone())));
+
         // Save the message in the database.
         relm4::spawn(async move {
             if let Err(e) = message.save().await {
@@ -361,6 +449,10 @@ impl Application {
             chat: chat.clone(),
             move_to_top: true,
         });
+
+        if typing_cleared {
+            self.emit_typing(chat_jid);
+        }
     }
 
     /// Mark a chat as read.
@@ -593,12 +685,24 @@ impl AsyncComponent for Application {
                     }
                 });
 
-        let welcome = Welcome::builder()
-            .launch(())
-            .forward(sender.input_sender(), |output| match output {
-                WelcomeOutput::PairWithQrCode => AppMsg::SwitchToLoginQrCode,
-                WelcomeOutput::PairWithPhoneNumber => AppMsg::SwitchToLoginPhoneNumber,
-            });
+        let mut contacts = HashMap::new();
+        if let Ok(stored) = db.get_all_contacts().await {
+            for contact in stored {
+                let Contact {
+                    jid,
+                    name,
+                    push_name,
+                    ..
+                } = contact;
+                let display = name
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| push_name.filter(|n| !n.is_empty()));
+
+                if let Some(display) = display {
+                    contacts.insert(jid, display);
+                }
+            }
+        }
 
         let client = Client::builder()
             .launch(())
@@ -638,6 +742,19 @@ impl AsyncComponent for Application {
                     jid,
                     available,
                     last_seen,
+                },
+                ClientOutput::ChatPresenceUpdate {
+                    chat_jid,
+                    active,
+                    recording,
+                    sender_jid,
+                    sender_alt,
+                } => AppMsg::ChatPresenceUpdate {
+                    chat_jid,
+                    active,
+                    recording,
+                    sender_jid,
+                    sender_alt,
                 },
 
                 ClientOutput::MessageReceived { info, message } => {
@@ -693,6 +810,7 @@ impl AsyncComponent for Application {
                 ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
                 ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
+                ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
                 ClientOutput::ContactUpdate {
                     jid,
                     name,
@@ -705,12 +823,26 @@ impl AsyncComponent for Application {
                     phone_number,
                 },
 
-                ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
+                ClientOutput::LidPnResolved {
+                    chat_jid,
+                    lid,
+                    phone,
+                } => AppMsg::LidPnResolved {
+                    chat_jid,
+                    lid,
+                    phone,
+                },
 
                 ClientOutput::Error { message } => AppMsg::Error { message },
                 _ => AppMsg::Unknown,
             });
 
+        let welcome = Welcome::builder()
+            .launch(())
+            .forward(sender.input_sender(), |output| match output {
+                WelcomeOutput::PairWithQrCode => AppMsg::SwitchToLoginQrCode,
+                WelcomeOutput::PairWithPhoneNumber => AppMsg::SwitchToLoginPhoneNumber,
+            });
         let chat_list = ChatList::builder()
             .launch(())
             .forward(sender.input_sender(), |output| match output {
@@ -726,6 +858,14 @@ impl AsyncComponent for Application {
                 ChatViewOutput::SendTextMessage { text, recipient } => {
                     AppMsg::SendTextMessage { text, recipient }
                 }
+
+                ChatViewOutput::TypingStateChanged {
+                    chat_jid,
+                    composing,
+                } => AppMsg::TypingStateChanged {
+                    chat_jid,
+                    composing,
+                },
             });
 
         let model = Self {
@@ -735,7 +875,9 @@ impl AsyncComponent for Application {
             login,
             state: AppState::Loading,
             client,
+            typing: HashMap::new(),
             toaster: Toaster::default(),
+            contacts,
             user_jid: None,
             welcome,
             chat_list,
@@ -890,6 +1032,12 @@ impl AsyncComponent for Application {
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == jid).cloned() {
                     self.chat_view.emit(ChatViewInput::Open(chat));
                 }
+
+                if let Some(state) = self.typing.get(&jid)
+                    && !state.senders.is_empty()
+                {
+                    self.emit_typing(&jid);
+                }
             }
             AppMsg::MarkChatRead(jid) => {
                 self.mark_chat_read(&jid).await;
@@ -915,6 +1063,14 @@ impl AsyncComponent for Application {
                 push_name,
                 phone_number,
             } => {
+                let display = name
+                    .clone()
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| push_name.clone().filter(|n| !n.is_empty()));
+                if let Some(display) = display {
+                    self.contacts.insert(jid.clone(), display);
+                }
+
                 // Save contact to database in background.
                 let db = Arc::clone(&self.db);
                 let jid_for_contact = jid.clone();
@@ -997,6 +1153,11 @@ impl AsyncComponent for Application {
                                             tracing::error!("Failed to update message: {}", e);
                                         }
                                     });
+
+                                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                                        status: message.status,
+                                        local_id: message.local_id,
+                                    });
                                 }
                             }
 
@@ -1030,6 +1191,96 @@ impl AsyncComponent for Application {
                     last_seen,
                 });
             }
+            AppMsg::ChatPresenceUpdate {
+                chat_jid,
+                active,
+                recording,
+                sender_jid,
+                sender_alt,
+            } => {
+                let name = self.chats.iter().find(|c| c.jid == chat_jid).map(|chat| {
+                    let resolved = if chat.is_group() {
+                        chat.participants
+                            .get(&sender_jid)
+                            .or_else(|| {
+                                sender_alt
+                                    .as_ref()
+                                    .and_then(|alt| chat.participants.get(alt))
+                            })
+                            .filter(|name| !name.is_empty() && **name != i18n!("Unknown"))
+                            .map_or_else(
+                                || {
+                                    let sender_jid = sender_jid.as_str();
+                                    let contact = self
+                                        .contacts
+                                        .get(sender_jid)
+                                        .or_else(|| {
+                                            sender_alt
+                                                .as_ref()
+                                                .and_then(|alt| self.contacts.get(alt.as_str()))
+                                        })
+                                        .filter(|name| !name.is_empty());
+
+                                    if let Some(contact) = contact {
+                                        return contact.clone();
+                                    }
+
+                                    let phone = if sender_jid.ends_with("@lid") {
+                                        sender_alt.as_deref().filter(|alt| !alt.ends_with("@lid"))
+                                    } else {
+                                        Some(sender_jid)
+                                    };
+                                    if phone.is_none() {
+                                        self.client.emit(ClientInput::ResolveLidPn {
+                                            chat_jid: chat_jid.clone(),
+                                            lid: sender_jid.to_string(),
+                                        });
+                                    }
+
+                                    phone.map_or_else(|| i18n!("Someone"), format_lid_as_number)
+                                },
+                                String::clone,
+                            )
+                    } else {
+                        chat.name.trim().to_string()
+                    };
+
+                    if resolved.starts_with('+') {
+                        resolved
+                    } else {
+                        get_first_name(&resolved)
+                    }
+                });
+
+                if active && let Some(name) = name {
+                    let state = self.typing.entry(chat_jid.clone()).or_default();
+                    state.generation += 1;
+                    let generation = state.generation;
+
+                    state
+                        .senders
+                        .insert(sender_jid.clone(), TypingSender { name, recording });
+                    self.emit_typing(&chat_jid);
+
+                    let sender = sender.clone();
+                    relm4::spawn(async move {
+                        time::sleep(Duration::from_secs(10)).await;
+                        sender.input(AppMsg::TypingExpired {
+                            chat_jid,
+                            sender_jid,
+                            generation,
+                        });
+                    });
+                } else {
+                    let removed = self
+                        .typing
+                        .get_mut(&chat_jid)
+                        .is_some_and(|state| state.senders.shift_remove(&sender_jid).is_some());
+                    if removed {
+                        self.emit_typing(&chat_jid);
+                    }
+                }
+            }
             AppMsg::MessageStatusUpdate {
                 chat_jid,
                 msg_id,
@@ -1051,9 +1302,76 @@ impl AsyncComponent for Application {
                     });
 
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
-                        msg_id: message.server_id,
                         status: message.status,
+                        local_id: msg_id,
                     });
+                }
+            }
+
+            AppMsg::LidPnResolved {
+                chat_jid,
+                lid,
+                phone,
+            } => {
+                if let Some(phone) = phone
+                    && chat_jid.ends_with("@g.us")
+                {
+                    let pn_jid = format!("{phone}@s.whatsapp.net");
+                    let name = self
+                        .contacts
+                        .get(&pn_jid)
+                        .cloned()
+                        .filter(|n| !n.is_empty());
+
+                    self.register_participant(&chat_jid, &lid, name.as_deref());
+                    self.register_participant(&chat_jid, &pn_jid, name.as_deref());
+
+                    let resolved = name.unwrap_or_else(|| format_lid_as_number(&pn_jid));
+                    self.contacts.insert(lid.clone(), resolved.clone());
+
+                    if let Some(state) = self.typing.get(&chat_jid)
+                        && let Some(recording) = state.senders.get(&lid).map(|s| s.recording)
+                    {
+                        let display = if resolved.starts_with('+') {
+                            resolved
+                        } else {
+                            get_first_name(&resolved)
+                        };
+                        if let Some(state) = self.typing.get_mut(&chat_jid) {
+                            state.senders.insert(
+                                lid,
+                                TypingSender {
+                                    name: display,
+                                    recording,
+                                },
+                            );
+                        }
+
+                        self.emit_typing(&chat_jid);
+                    }
+                }
+            }
+            AppMsg::TypingExpired {
+                chat_jid,
+                sender_jid,
+                generation,
+            } => {
+                let removed = self.typing.get_mut(&chat_jid).is_some_and(|state| {
+                    state.generation == generation
+                        && state.senders.shift_remove(&sender_jid).is_some()
+                });
+                if removed {
+                    self.emit_typing(&chat_jid);
+                }
+            }
+            AppMsg::TypingStateChanged {
+                chat_jid,
+                composing,
+            } => {
+                if composing {
+                    self.client.emit(ClientInput::SendTyping { jid: chat_jid });
+                } else {
+                    self.client.emit(ClientInput::StopTyping { jid: chat_jid });
                 }
             }
 
@@ -1076,16 +1394,24 @@ impl AsyncComponent for Application {
                         let chat_jid = info.source.chat.to_string();
                         let outgoing = info.source.is_from_me;
 
-                        let status = if outgoing {
-                            MessageStatus::Read
-                        } else {
-                            MessageStatus::Sent
-                        };
+                        let status = MessageStatus::Sent;
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.clone(),
                             chat_jid: chat_jid.clone(),
-                            sender_jid: info.source.sender.to_string(),
+                            sender_jid: if outgoing {
+                                self.user_jid.clone().unwrap_or_default()
+                            } else {
+                                let sender = info.source.sender.to_string();
+                                if sender.ends_with("@lid")
+                                    && let Some(alt) = info.source.sender_alt.as_ref()
+                                    && !alt.to_string().ends_with("@lid")
+                                {
+                                    alt.to_string()
+                                } else {
+                                    sender
+                                }
+                            },
                             sender_name: Some(info.push_name.clone()),
 
                             media: None,
@@ -1099,6 +1425,31 @@ impl AsyncComponent for Application {
                         };
 
                         self.add_message(&chat_jid, chat_message);
+                        if !outgoing {
+                            let sender_jid = info.source.sender.to_string();
+                            let name =
+                                (!info.push_name.is_empty()).then_some(info.push_name.as_str());
+                            self.register_participant(&chat_jid, &sender_jid, name);
+
+                            let alt_jid = info
+                                .source
+                                .sender_alt
+                                .as_ref()
+                                .map(std::string::ToString::to_string);
+                            if let Some(alt_jid) = alt_jid.as_ref() {
+                                self.register_participant(&chat_jid, alt_jid, name);
+                            }
+
+                            let removed = self.typing.get_mut(&chat_jid).is_some_and(|state| {
+                                state.senders.shift_remove(&sender_jid).is_some()
+                                    || alt_jid.as_ref().is_some_and(|alt| {
+                                        state.senders.shift_remove(alt).is_some()
+                                    })
+                            });
+                            if removed {
+                                self.emit_typing(&chat_jid);
+                            }
+                        }
                     }
                 } else if let Some(sent_message) = message.device_sent_message.as_option() {
                     if let Some(_chat_jid) = sent_message.destination_jid.as_ref() {
@@ -1315,6 +1666,12 @@ impl AsyncComponent for Application {
 
                         // Check for existing cached avatars.
                         for chat in &mut chats {
+                            if let Some(name) =
+                                self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
+                            {
+                                chat.name.clone_from(name);
+                            }
+
                             // Check if avatar exists in cache.
                             let avatar_path = DATA_DIR.join("avatars").join(format!(
                                 "{}.jpg",
@@ -1456,11 +1813,14 @@ impl AsyncComponent for Application {
                 // Update participants for groups immediately (in-memory).
                 if is_group && let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
                     for (sender_jid, sender_name) in &sender_info {
-                        if !chat.participants.contains_key(sender_jid) {
-                            chat.participants.insert(
-                                sender_jid.clone(),
-                                sender_name.clone().unwrap_or_else(|| i18n!("Unknown")),
-                            );
+                        let entry = chat
+                            .participants
+                            .entry(sender_jid.clone())
+                            .or_insert_with(|| i18n!("Unknown"));
+                        if let Some(name) = sender_name.as_deref().filter(|n| !n.is_empty())
+                            && *entry == i18n!("Unknown")
+                        {
+                            *entry = name.to_string();
                         }
                     }
                 }

@@ -20,7 +20,7 @@ use whatsapp_rust::{
     types::{
         events::{Event, LazyHistorySync},
         message::MessageInfo,
-        presence::ReceiptType,
+        presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
     wacore::store::DevicePropsOverride,
     waproto::whatsapp::{
@@ -120,6 +120,8 @@ pub enum ClientInput {
         /// Chat JID.
         jid: String,
     },
+    /// Resolve a LID-PN from a chat.
+    ResolveLidPn { chat_jid: String, lid: String },
 }
 
 #[derive(Debug)]
@@ -173,6 +175,14 @@ pub enum ClientOutput {
         jid: String,
         available: bool,
         last_seen: Option<DateTime<Utc>>,
+    },
+    /// Chat presence updated.
+    ChatPresenceUpdate {
+        chat_jid: String,
+        active: bool,
+        recording: bool,
+        sender_jid: String,
+        sender_alt: Option<String>,
     },
 
     /// Message was sent successfully.
@@ -246,6 +256,13 @@ pub enum ClientOutput {
         push_name: Option<String>,
         /// Phone number (from JID user part).
         phone_number: String,
+    },
+
+    /// LID-PN resolved.
+    LidPnResolved {
+        chat_jid: String,
+        lid: String,
+        phone: Option<String>,
     },
 
     /// Error occurred.
@@ -365,6 +382,8 @@ pub enum ClientCommand {
         /// Chat JID.
         jid: String,
     },
+    /// Resolve a LID-PN from a chat.
+    ResolveLidPn { chat_jid: String, lid: String },
     /// Process a `HistorySync` event in background.
     ProcessHistorySync {
         /// History sync payload.
@@ -427,6 +446,7 @@ impl AsyncComponent for Client {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn update(
         &mut self,
         input: Self::Input,
@@ -466,6 +486,33 @@ impl AsyncComponent for Client {
                         let _ = sender.output(ClientOutput::Error {
                             message: i18n_f!("Failed to pair with phone number: {0}", e),
                         });
+                    }
+                }
+            }
+
+            ClientInput::SendTyping { jid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(to) = jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {}", jid);
+                        return;
+                    };
+
+                    if let Err(e) = client.chatstate().send_composing(&to).await {
+                        tracing::error!("Failed to send composing state: {e}");
+                    }
+                }
+            }
+            ClientInput::StopTyping { jid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(to) = jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {}", jid);
+                        return;
+                    };
+
+                    if let Err(e) = client.chatstate().send_paused(&to).await {
+                        tracing::error!("Failed to send paused state: {e}");
                     }
                 }
             }
@@ -540,6 +587,10 @@ impl AsyncComponent for Client {
             }
             ClientInput::FetchAvatar { jid } => {
                 sender.oneshot_command(async move { ClientCommand::FetchAvatar { jid } });
+            }
+            ClientInput::ResolveLidPn { chat_jid, lid } => {
+                sender
+                    .oneshot_command(async move { ClientCommand::ResolveLidPn { chat_jid, lid } });
             }
 
             _ => {}
@@ -666,6 +717,30 @@ impl AsyncComponent for Client {
                                             available,
                                             last_seen,
                                         });
+                                    }
+                                    Event::ChatPresence(presence) => {
+                                        if !presence.source.is_from_me {
+                                            let chat_jid = presence.source.chat.to_string();
+                                            let sender_jid = presence.source.sender.to_string();
+                                            let sender_alt = presence
+                                                .source
+                                                .sender_alt
+                                                .as_ref()
+                                                .map(ToString::to_string);
+                                            let active =
+                                                matches!(presence.state, ChatPresence::Composing);
+                                            let recording =
+                                                matches!(presence.media, ChatPresenceMedia::Audio);
+
+                                            let _ =
+                                                sender.output(ClientOutput::ChatPresenceUpdate {
+                                                    chat_jid,
+                                                    active,
+                                                    recording,
+                                                    sender_jid,
+                                                    sender_alt,
+                                                });
+                                        }
                                     }
 
                                     Event::Messages(batch) => {
@@ -995,6 +1070,28 @@ impl AsyncComponent for Client {
                     tracing::info!("Avatar downloaded and cached for {jid}");
                     let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
                 });
+            }
+            ClientCommand::ResolveLidPn { chat_jid, lid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(jid) = lid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID for LID-PN resolve: {lid}");
+                        return;
+                    };
+                    let phone = match client.get_lid_pn_entry(&jid).await {
+                        Ok(Some(entry)) => Some(entry.phone_number.to_string()),
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!("Failed to resolve LID-PN for {lid}: {e}");
+                            None
+                        }
+                    };
+                    let _ = sender.output(ClientOutput::LidPnResolved {
+                        chat_jid,
+                        lid,
+                        phone,
+                    });
+                }
             }
             ClientCommand::ProcessHistorySync { history_sync } => {
                 let sender_clone = sender.clone();

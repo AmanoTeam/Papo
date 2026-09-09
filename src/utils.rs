@@ -1,5 +1,6 @@
-use std::error::Error;
+use std::{error::Error, path::Path};
 
+use adw::prelude::*;
 use chrono::{Datelike, Local, NaiveDate};
 use fast_qr::{
     ECL, QRBuilder,
@@ -7,7 +8,7 @@ use fast_qr::{
 };
 use glib::Bytes;
 use glycin::Loader;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 use relm4::prelude::*;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
@@ -89,4 +90,21 @@ pub fn format_lid_as_number(lid: &str) -> String {
 /// Extracts phone number from JID/LID.
 pub fn extract_phone_from_jid(jid: &str) -> String {
     format!("+{}", jid.split('@').next().unwrap_or(jid))
+}
+
+/// Load an avatar into a texture from a local path.
+pub async fn load_avatar<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
+    let file = gio::File::for_path(&path);
+
+    match file.load_bytes_future().await {
+        Ok((bytes, _)) => gdk::Texture::from_bytes(&bytes).ok(),
+        Err(e) => {
+            tracing::error!(
+                "Failed to load avatar from {}: {e}",
+                path.as_ref().display()
+            );
+
+            None
+        }
+    }
 }

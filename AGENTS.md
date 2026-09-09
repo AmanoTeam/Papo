@@ -23,7 +23,11 @@ src/
 ├── components/              # Relm4 UI components (AsyncComponent/SimpleAsyncComponent)
 │   ├── mod.rs               # Re-exports ChatList, ChatView, Login and their I/O types
 │   ├── chat_list.rs         # Sidebar chat list with AdwToggleGroup filters, TypedListView rows
-│   ├── chat_view.rs         # Chat history with bidirectional infinite scroll, message input, read receipts
+|   ├-- chat_view/           # Chat history with bidirectional infinite scroll, message input, read receipts
+|   |   ├-- history.rs       # ChatHistory: message list, row metadata, pagination cursors, fill/prepend/append/trim
+|   |   ├-- mod.rs           # ChatView model, I/O enums, view!, update/update_cmd, helpers
+|   |   ├-- momentum.rs      # Momentum: touchpad flick continuation across prepended batches
+|   |   └-- rows.rs          # ChatRow enum, ChatRowWidgets, RelmListItem impl (setup/bind)
 │   └── login.rs             # QR-code + phone-number pairing flow, pair-code cells
 │
 ├── modals/                  # SimpleComponent dialogs launched from Application actions
@@ -47,9 +51,11 @@ src/
 │   └── database.rs          # Schema creation, CRUD for chats/messages/contacts, search queries
 │
 └── widgets/                 # Custom GTK widgets reused in components
-    ├── mod.rs               # Re-exports PairStep, PairingCell
+    ├── mod.rs               # Re-exports MessageTail, PairStep, PairingCell, TypingDots
+    ├── message_tail.rs      # Cairo-drawn message bubble tail for grouping
     ├── pair_step.rs         # Single character cell for phone-number pair code
-    └── pairing_cell.rs      # Character display widget for pair code grid
+    ├── pairing_cell.rs      # Character display widget for pair code grid
+    └── typing_dots.rs       # Animated typing indicator dots
 
 data/
 ├── com.amanoteam.Papo.desktop.in.in      # Desktop entry template

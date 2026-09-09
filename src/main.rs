@@ -50,7 +50,7 @@ mod icon_names {
     include!(concat!(env!("OUT_DIR"), "/icon_names.rs"));
 }
 
-use std::{fs::create_dir_all, path::PathBuf, sync::LazyLock};
+use std::{env, fs::create_dir_all, path::PathBuf, sync::LazyLock};
 
 use gettextrs::LocaleCategory;
 use gtk::{gio, glib, prelude::ApplicationExt};
@@ -117,6 +117,12 @@ fn main() {
     RELM_THREADS
         .set(4)
         .expect("Failed to set the number of threads");
+
+    if env::var_os("GTK_IM_MODULE").is_none() {
+        unsafe {
+            env::set_var("GTK_IM_MODULE", "gtk-im-context-simple");
+        }
+    }
 
     // Set app name and initialize libadwaita.
     glib::set_application_name(&i18n!("Papo"));
