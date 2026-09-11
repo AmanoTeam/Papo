@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use adw::prelude::*;
 use chrono::Local;
-use gtk::{gdk::Texture, glib, pango};
+use gtk::{gdk::Texture, gio, glib, pango};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
@@ -268,40 +268,34 @@ impl SimpleAsyncComponent for ChatList {
                         avatar_texture,
                     };
 
-                    let adj = self.list_view_wrapper.view.vadjustment();
-                    let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
+                    let store = self.store();
+                    let object = glib::BoxedAnyObject::new(updated_row);
 
-                    if move_to_top {
-                        // Insert the new updated row.
-                        self.list_view_wrapper.insert(0, updated_row);
-                        let old_index = index + 1;
+                    if move_to_top && index > 0 {
+                        // Move the updated row to the top with a single splice.
+                        let mut objects = vec![object.upcast::<glib::Object>()];
+                        for position in 0..index {
+                            objects.push(store.item(position).expect("position below index"));
+                        }
+                        store.splice(0, index + 1, &objects);
 
                         // Re-select the row and scroll to the top if it's the selected chat.
                         if self.chat_jid.as_deref() == Some(&chat.jid) {
                             self.list_view_wrapper.selection_model.select_item(0, true);
 
-                            if let Some(adj) = adj {
+                            if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
                                 glib::idle_add_local_once(move || adj.set_value(adj.lower()));
                             }
                         }
-
-                        // Remove the old row.
-                        self.list_view_wrapper.remove(old_index);
                     } else {
-                        // Update the row in-place.
-                        self.list_view_wrapper.remove(index);
-                        self.list_view_wrapper.insert(index, updated_row);
+                        // Replace the row in place, covering a chat already on top.
+                        store.splice(index, 1, &[object]);
 
                         // Re-select the row.
                         if self.chat_jid.as_deref() == Some(&chat.jid) {
                             self.list_view_wrapper
                                 .selection_model
                                 .select_item(index, true);
-                        }
-
-                        // Scroll back to where it was before.
-                        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
-                            glib::idle_add_local_once(move || adj.set_value(value));
                         }
                     }
                 }
@@ -344,20 +338,14 @@ impl SimpleAsyncComponent for ChatList {
                         avatar_texture,
                     };
 
-                    let adj = self.list_view_wrapper.view.vadjustment();
-                    let saved_scroll = adj.as_ref().map(AdjustmentExt::value);
+                    let object = glib::BoxedAnyObject::new(updated_row);
+                    self.store().splice(index, 1, &[object]);
 
-                    self.list_view_wrapper.remove(index);
-                    self.list_view_wrapper.insert(index, updated_row);
-
+                    // Re-select the row.
                     if self.chat_jid.as_deref() == Some(&chat_jid) {
                         self.list_view_wrapper
                             .selection_model
                             .select_item(index, true);
-                    }
-
-                    if let (Some(adj), Some(value)) = (adj, saved_scroll) {
-                        glib::idle_add_local_once(move || adj.set_value(value));
                     }
                 }
             }
@@ -428,6 +416,25 @@ impl SimpleAsyncComponent for ChatList {
 }
 
 impl ChatList {
+    /// The backing `gio::ListStore`, recovered by descending the
+    /// selection and filter model chain, so row updates can be spliced
+    /// with a single items-changed emission.
+    fn store(&self) -> gio::ListStore {
+        let mut model = self.list_view_wrapper.selection_model.model();
+        while let Some(current) = model {
+            if let Ok(store) = current.clone().downcast::<gio::ListStore>() {
+                return store;
+            }
+
+            model = current
+                .downcast::<gtk::FilterListModel>()
+                .ok()
+                .and_then(|filter_model| filter_model.model());
+        }
+
+        unreachable!("selection model chain wraps the raw store")
+    }
+
     /// Find the index by its chat JID.
     fn get_index_by_jid(&self, jid: &str) -> Option<u32> {
         for (i, row) in self.list_view_wrapper.iter().enumerate() {
