@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use jiff::Timestamp;
 use uuid::Uuid;
 use whatsapp_rust::{types::presence::ReceiptType, waproto::whatsapp as wa};
 
@@ -36,7 +36,7 @@ pub struct Message {
     /// Server unique message identifier.
     pub server_id: String,
     /// When the message was sent/received.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// Sender's display name (push name, for group chats).
     pub sender_name: Option<String>,
 }

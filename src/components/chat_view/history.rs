@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, time::Duration};
 
 use adw::prelude::*;
-use chrono::{Local, NaiveDate};
 use gtk::{gio, glib};
+use jiff::{civil::Date, tz::TimeZone};
 use relm4::{prelude::*, typed_view::list::TypedListView};
 
 use super::rows::ChatRow;
@@ -18,12 +18,13 @@ fn build_prepend_rows(
 ) -> (Vec<ChatRow>, Vec<RowMetadata>) {
     let mut rows = Vec::with_capacity(messages.len());
     let mut metas = Vec::with_capacity(messages.len());
-    let mut prev_date: Option<NaiveDate> = None;
+    let mut prev_date: Option<Date> = None;
     let mut prev_msg: Option<&ChatMessage> = None;
+    let tz = TimeZone::system();
 
     // Reverse messages to get chronological order for prepending.
     for (i, msg) in messages.iter().enumerate().rev() {
-        let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+        let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
 
         let first = if prev_date == Some(msg_date)
             && let Some(prev) = prev_msg
@@ -44,11 +45,11 @@ fn build_prepend_rows(
             !boundary_group
         } else {
             let next = &messages[i - 1];
-            let next_date = next.timestamp.with_timezone(&Local).date_naive();
+            let next_date = next.timestamp.to_zoned(tz.clone()).date();
             next_date != msg_date || !same_group(msg, next)
         };
 
-        let ts = msg.timestamp.timestamp();
+        let ts = msg.timestamp.as_second();
         rows.push(ChatRow::Message {
             last,
             first,
@@ -68,7 +69,7 @@ pub(crate) enum RowMetadata {
     /// A message row, with its Unix timestamp.
     Message(i64),
     /// A date separator row.
-    Separator(NaiveDate),
+    Separator(Date),
     /// The unread messages divider row.
     UnreadDivider,
 }
@@ -91,9 +92,9 @@ pub(crate) struct ChatHistory {
     /// Timestamp of the newest loaded message (bottom cursor).
     newest_loaded_timestamp: Option<i64>,
     /// Date of the first displayed message (top), for prepend separator logic.
-    first_message_date: Option<NaiveDate>,
+    first_message_date: Option<Date>,
     /// Date of the last appended message (bottom), for append separator logic.
-    last_message_date: Option<NaiveDate>,
+    last_message_date: Option<Date>,
 }
 
 impl ChatHistory {
@@ -172,21 +173,22 @@ impl ChatHistory {
 
         // Track the oldest loaded timestamp for pagination.
         if let Some(oldest) = messages.last() {
-            self.oldest_loaded_timestamp = Some(oldest.timestamp.timestamp());
+            self.oldest_loaded_timestamp = Some(oldest.timestamp.as_second());
         }
 
         // Track the newest loaded timestamp for downward pagination.
         if let Some(newest) = messages.first() {
-            self.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
+            self.newest_loaded_timestamp = Some(newest.timestamp.as_second());
         }
 
         let unread_boundary = messages.iter().rposition(|msg| {
             !msg.outgoing && matches!(msg.status, MessageStatus::Sent | MessageStatus::Delivered)
         });
 
+        let tz = TimeZone::system();
         for (i, msg) in messages.iter().enumerate().rev() {
             // Convert to local date for separator comparison.
-            let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+            let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
 
             // Insert a date separator if the date changed.
             if self.last_message_date != Some(msg_date) {
@@ -214,11 +216,11 @@ impl ChatHistory {
                 true
             } else {
                 let next = &messages[i - 1];
-                let next_date = next.timestamp.with_timezone(&Local).date_naive();
+                let next_date = next.timestamp.to_zoned(tz.clone()).date();
                 next_date != msg_date || !same_group(msg, next)
             };
 
-            let ts = msg.timestamp.timestamp();
+            let ts = msg.timestamp.as_second();
             self.list.append(ChatRow::Message {
                 last,
                 first,
@@ -234,7 +236,7 @@ impl ChatHistory {
     /// cursor.
     pub(crate) fn append_live(&mut self, message: ChatMessage) {
         // Convert to local date for separator comparison.
-        let msg_date = message.timestamp.with_timezone(&Local).date_naive();
+        let msg_date = message.timestamp.to_zoned(TimeZone::system()).date();
 
         let mut first = true;
         if self.last_message_date == Some(msg_date)
@@ -268,7 +270,7 @@ impl ChatHistory {
         }
 
         // Update newest loaded timestamp to this message.
-        let ts = message.timestamp.timestamp();
+        let ts = message.timestamp.as_second();
         self.newest_loaded_timestamp = Some(ts);
 
         self.list.append(ChatRow::Message {
@@ -287,11 +289,11 @@ impl ChatHistory {
 
         // Update the oldest loaded timestamp cursor.
         if let Some(oldest) = messages.last() {
-            self.oldest_loaded_timestamp = Some(oldest.timestamp.timestamp());
+            self.oldest_loaded_timestamp = Some(oldest.timestamp.as_second());
         }
 
         let newest = &messages[0];
-        let newest_date = newest.timestamp.with_timezone(&Local).date_naive();
+        let newest_date = newest.timestamp.to_zoned(TimeZone::system()).date();
 
         let old_top_idx = self
             .row_metadata
@@ -372,7 +374,8 @@ impl ChatHistory {
 
         // Update first_message_date to the oldest prepended message's date.
         if let Some(oldest_msg) = messages.last() {
-            self.first_message_date = Some(oldest_msg.timestamp.with_timezone(&Local).date_naive());
+            self.first_message_date =
+                Some(oldest_msg.timestamp.to_zoned(TimeZone::system()).date());
         }
     }
 
@@ -383,7 +386,8 @@ impl ChatHistory {
         }
 
         let oldest_batch = &messages[0];
-        let oldest_batch_date = oldest_batch.timestamp.with_timezone(&Local).date_naive();
+        let tz = TimeZone::system();
+        let oldest_batch_date = oldest_batch.timestamp.to_zoned(tz.clone()).date();
 
         let old_bottom_idx = self.list.len().checked_sub(1);
         let old_bottom_row = old_bottom_idx.and_then(|i| self.get_row(i));
@@ -400,7 +404,7 @@ impl ChatHistory {
         let mut prev_msg: Option<&ChatMessage> = None;
 
         for (i, msg) in messages.iter().enumerate() {
-            let msg_date = msg.timestamp.with_timezone(&Local).date_naive();
+            let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
 
             let mut first = true;
             if i == 0 {
@@ -419,11 +423,11 @@ impl ChatHistory {
             }
 
             let last = messages.get(i + 1).is_none_or(|next| {
-                let next_date = next.timestamp.with_timezone(&Local).date_naive();
+                let next_date = next.timestamp.to_zoned(tz.clone()).date();
                 next_date != msg_date || !same_group(msg, next)
             });
 
-            let ts = msg.timestamp.timestamp();
+            let ts = msg.timestamp.as_second();
             rows.push(ChatRow::Message {
                 last,
                 first,
@@ -462,7 +466,7 @@ impl ChatHistory {
 
         // Update the newest loaded timestamp cursor.
         if let Some(newest) = messages.last() {
-            self.newest_loaded_timestamp = Some(newest.timestamp.timestamp());
+            self.newest_loaded_timestamp = Some(newest.timestamp.as_second());
         }
 
         true

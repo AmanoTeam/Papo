@@ -5,8 +5,8 @@ mod rows;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use adw::prelude::*;
-use chrono::{DateTime, Local, Utc};
 use gtk::{gdk, glib, pango};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use relm4::prelude::*;
 use tokio::time;
 use uuid::Uuid;
@@ -73,7 +73,7 @@ pub enum ChatViewInput {
     PresenceUpdate {
         jid: String,
         available: bool,
-        last_seen: Option<DateTime<Utc>>,
+        last_seen: Option<Timestamp>,
     },
     TypingUpdate {
         chat_jid: String,
@@ -886,8 +886,9 @@ impl ChatView {
             } else if chat.available.unwrap_or_default() {
                 self.state.presence = Some(i18n!("online"));
             } else if let Some(last_seen) = chat.last_seen {
-                let today = Local::now().date_naive();
-                let last_date = last_seen.with_timezone(&Local).date_naive();
+                let today = Zoned::now().date();
+                let last_seen_local = last_seen.to_zoned(TimeZone::system());
+                let last_date = last_seen_local.date();
 
                 let presence = if last_date == today {
                     format!(
@@ -895,9 +896,9 @@ impl ChatView {
                         i18n!("Last seen"),
                         i18n!("today"),
                         i18n!("at"),
-                        last_date.format("%H:%M")
+                        last_seen_local.strftime("%H:%M")
                     )
-                } else if let Some(yesterday) = today.pred_opt()
+                } else if let Some(yesterday) = today.yesterday().ok()
                     && last_date == yesterday
                 {
                     format!(
@@ -905,15 +906,15 @@ impl ChatView {
                         i18n!("Last seen"),
                         i18n!("yesterday"),
                         i18n!("at"),
-                        last_date.format("%H:%M")
+                        last_seen_local.strftime("%H:%M")
                     )
                 } else {
                     format!(
                         "{} {} {} {}",
                         i18n!("Last seen"),
-                        last_date.format("%d/%m"),
+                        last_date.strftime("%d/%m"),
                         i18n!("at"),
-                        last_date.format("%H:%M")
+                        last_seen_local.strftime("%H:%M")
                     )
                 };
                 self.state.presence = Some(presence);

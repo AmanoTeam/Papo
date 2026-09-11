@@ -1,9 +1,9 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use adw::{NavigationSplitView, prelude::*};
-use chrono::{DateTime, Utc};
 use gtk::{gio, glib};
 use indexmap::IndexMap;
+use jiff::Timestamp;
 use relm4::{
     abstractions::Toaster,
     actions::{AccelsPlus, RelmAction, RelmActionGroup},
@@ -175,7 +175,7 @@ pub enum AppMsg {
     PresenceUpdate {
         jid: String,
         available: bool,
-        last_seen: Option<DateTime<Utc>>,
+        last_seen: Option<Timestamp>,
     },
     /// Chat presence updated.
     ChatPresenceUpdate {
@@ -1419,7 +1419,8 @@ impl AsyncComponent for Application {
                             content,
                             outgoing,
                             reactions: IndexMap::new(),
-                            timestamp: info.timestamp,
+                            timestamp: Timestamp::from_second(info.timestamp.timestamp())
+                                .expect("Invalid timestamp"),
 
                             db: Arc::clone(&self.db),
                         };
@@ -1475,7 +1476,7 @@ impl AsyncComponent for Application {
             AppMsg::SendTextMessage { text, recipient } => {
                 // Get the chat if it exists and is loaded.
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == recipient).cloned() {
-                    let timestamp = Utc::now();
+                    let timestamp = Timestamp::now();
                     let message = ChatMessage {
                         local_id: Uuid::new_v4(),
                         server_id: String::new(), // will be replaced later by the client.
@@ -1733,8 +1734,8 @@ impl AsyncComponent for Application {
 
                 // Create last message time from timestamp (already in seconds).
                 let last_message_time = last_message_time
-                    .and_then(|ts| DateTime::from_timestamp(ts.cast_signed(), 0))
-                    .unwrap_or_else(Utc::now);
+                    .and_then(|ts| Timestamp::from_second(ts.cast_signed()).ok())
+                    .unwrap_or_else(Timestamp::now);
 
                 // Create participants map for groups.
                 let mut participants_map = HashMap::new();
@@ -1845,9 +1846,8 @@ impl AsyncComponent for Application {
                         };
 
                         // Timestamp is already in seconds (Unix timestamp).
-                        let timestamp =
-                            DateTime::from_timestamp(synced_msg.timestamp.cast_signed(), 0)
-                                .unwrap_or_else(Utc::now);
+                        let timestamp = Timestamp::from_second(synced_msg.timestamp.cast_signed())
+                            .unwrap_or_else(|_| Timestamp::now());
 
                         let message = ChatMessage {
                             local_id: Uuid::new_v4(),

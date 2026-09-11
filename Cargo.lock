@@ -2326,6 +2326,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link",
 ]
 
 [[package]]
@@ -3111,12 +3112,12 @@ dependencies = [
 name = "papo"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "fast_qr",
  "futures-util",
  "gettext-rs",
  "glycin",
  "indexmap 2.14.1",
+ "jiff",
  "libadwaita",
  "libsql",
  "os_info",

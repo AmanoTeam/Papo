@@ -33,7 +33,7 @@ libsql = { version = "0.9", features = ["encryption"] }
 rand = "0.10"
 uuid = { version = "1.26", features = ["v4"] }
 strum = { version = "0.28", features = ["derive"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
 os_info = "3.15"
 indexmap = "2.14"
 rlibphonenumber = "1.1"

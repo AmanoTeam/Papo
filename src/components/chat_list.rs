@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use adw::prelude::*;
-use chrono::Local;
 use gtk::{gdk::Texture, gio, glib, pango};
+use jiff::{Zoned, tz::TimeZone};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
@@ -738,14 +738,14 @@ impl RelmListItem for ChatRow {
             }
 
             // Get last message's timestamp.
-            let now = Local::now();
-            let timestamp = msg.timestamp.with_timezone(&Local);
+            let now = Zoned::now();
+            let timestamp = msg.timestamp.to_zoned(TimeZone::system());
 
-            let sent_today = (now - timestamp).num_days() == 0;
+            let sent_today = now.date() == timestamp.date();
             let time = if sent_today {
-                timestamp.format("%H:%M").to_string()
+                timestamp.strftime("%H:%M").to_string()
             } else {
-                timestamp.format("%d/%m").to_string()
+                timestamp.strftime("%d/%m").to_string()
             };
             widgets.timestamp_label.set_label(&time);
         } else {

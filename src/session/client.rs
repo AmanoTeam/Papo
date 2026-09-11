@@ -6,7 +6,7 @@ use std::{
 };
 
 use adw::prelude::*;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use relm4::prelude::*;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -174,7 +174,7 @@ pub enum ClientOutput {
     PresenceUpdate {
         jid: String,
         available: bool,
-        last_seen: Option<DateTime<Utc>>,
+        last_seen: Option<Timestamp>,
     },
     /// Chat presence updated.
     ChatPresenceUpdate {
@@ -711,7 +711,10 @@ impl AsyncComponent for Client {
                                     Event::Presence(presence) => {
                                         let jid = presence.from.to_string();
                                         let available = !presence.unavailable;
-                                        let last_seen = presence.last_seen;
+                                        let last_seen = presence.last_seen.map(|ts| {
+                                            Timestamp::from_second(ts.timestamp())
+                                                .expect("Invalid timestamp")
+                                        });
 
                                         let _ = sender.output(ClientOutput::PresenceUpdate {
                                             jid,

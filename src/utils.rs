@@ -1,7 +1,6 @@
 use std::{error::Error, path::Path};
 
 use adw::prelude::*;
-use chrono::{Datelike, Local, NaiveDate};
 use fast_qr::{
     ECL, QRBuilder,
     convert::{Builder, Shape, image::ImageBuilder},
@@ -9,6 +8,7 @@ use fast_qr::{
 use glib::Bytes;
 use glycin::Loader;
 use gtk::{gdk, gio, glib};
+use jiff::{Zoned, civil::Date};
 use relm4::prelude::*;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
@@ -55,14 +55,14 @@ pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box
 }
 
 /// Formats a date into a human-readable label for date separators.
-pub fn format_date_label(date: NaiveDate) -> String {
-    let today = Local::now().date_naive();
+pub fn format_date_label(date: Date) -> String {
+    let today = Zoned::now().date();
 
     if date == today {
         return i18n!("Today");
     }
 
-    if let Some(yesterday) = today.pred_opt()
+    if let Some(yesterday) = today.yesterday().ok()
         && date == yesterday
     {
         return i18n!("Yesterday");
@@ -70,9 +70,9 @@ pub fn format_date_label(date: NaiveDate) -> String {
 
     // Same year: "February 23", different year: "February 23, 2024".
     if date.year() == today.year() {
-        date.format("%B %-e").to_string()
+        date.strftime("%B %-e").to_string()
     } else {
-        date.format("%B %-e, %Y").to_string()
+        date.strftime("%B %-e, %Y").to_string()
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::{state::ChatMessage, store::Database, utils::format_lid_as_number};
@@ -22,13 +22,13 @@ pub struct Chat {
     /// Whether the user is currently online.
     pub available: Option<bool>,
     /// Last time the user has been seen.
-    pub last_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<Timestamp>,
     /// Path to the cached avatar image.
     pub avatar_path: Option<String>,
     /// Participants names in groups (JID -> name).
     pub participants: HashMap<String, String>,
     /// Time of the last sent message.
-    pub last_message_time: DateTime<Utc>,
+    pub last_message_time: Timestamp,
 }
 
 impl Chat {

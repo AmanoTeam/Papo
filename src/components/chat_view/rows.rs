@@ -1,5 +1,5 @@
 use adw::prelude::*;
-use chrono::{Local, NaiveDate};
+use jiff::{civil::Date, tz::TimeZone};
 use relm4::{RelmWidgetExt, gtk, gtk::pango, typed_view::list::RelmListItem};
 
 use crate::{
@@ -20,7 +20,7 @@ pub enum ChatRow {
         message: ChatMessage,
     },
     /// A date separator label (e.g. "Today", "Yesterday").
-    DateSeparator(NaiveDate),
+    DateSeparator(Date),
     /// A service/system event (e.g. "someone added xxx").
     ServiceEvent { text: String },
     /// The unread messages divider.
@@ -247,10 +247,10 @@ impl RelmListItem for ChatRow {
                 widgets.message_box.set_focusable(false);
                 widgets.content_label.set_label(&msg.content);
                 // Convert UTC timestamp to local time for display
-                let local_time = msg.timestamp.with_timezone(&Local);
+                let local_time = msg.timestamp.to_zoned(TimeZone::system());
                 widgets
                     .timestamp_label
-                    .set_label(&local_time.format("%H:%M").to_string());
+                    .set_label(&local_time.strftime("%H:%M").to_string());
 
                 widgets.bubble_box.remove_css_class("incoming");
                 widgets.bubble_box.remove_css_class("outgoing");

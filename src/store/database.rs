@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use jiff::Timestamp;
 use libsql::{Builder, Cipher, Connection, EncryptionConfig, params::IntoParams};
 use uuid::Uuid;
 
@@ -137,7 +137,7 @@ impl Database {
             .get_last_message()
             .await
             .expect("Failed to get the last message of a chat")
-            .map_or(0, |m| m.timestamp.timestamp());
+            .map_or(0, |m| m.timestamp.as_second());
 
         self.conn
             .execute(
@@ -205,7 +205,7 @@ impl Database {
                 last_seen: None,
                 avatar_path: None,
                 participants: HashMap::new(),
-                last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
+                last_message_time: Timestamp::from_second(row.get::<i64>(4)?)
                     .expect("Invalid timestamp"),
 
                 db: Arc::new(self.clone()),
@@ -243,7 +243,7 @@ impl Database {
                 last_seen: None,
                 avatar_path: None,
                 participants: HashMap::new(),
-                last_message_time: DateTime::from_timestamp(row.get::<i64>(4)?, 0)
+                last_message_time: Timestamp::from_second(row.get::<i64>(4)?)
                     .expect("Invalid timestamp"),
 
                 db: Arc::new(self.clone()),
@@ -293,7 +293,7 @@ impl Database {
                     msg.content.clone(),
                     i32::from(msg.outgoing),
                     msg.status as i32,
-                    msg.timestamp.timestamp(),
+                    msg.timestamp.as_second(),
                     media_type,
                     media_data
                 ],
@@ -304,7 +304,7 @@ impl Database {
         self.conn
             .execute(
                 "UPDATE chats SET last_message_time = ?1 WHERE jid = ?2",
-                libsql::params![msg.timestamp.timestamp(), chat_jid],
+                libsql::params![msg.timestamp.as_second(), chat_jid],
             )
             .await?;
 
@@ -341,7 +341,7 @@ impl Database {
                     msg.content.clone(),
                     i32::from(msg.outgoing),
                     msg.status as i32,
-                    msg.timestamp.timestamp(),
+                    msg.timestamp.as_second(),
                     media_type,
                     media_data
                 ],
@@ -352,7 +352,7 @@ impl Database {
             self.conn
                 .execute(
                     "UPDATE chats SET last_message_time = ?1 WHERE jid = ?2",
-                    libsql::params![msg.timestamp.timestamp(), chat_jid],
+                    libsql::params![msg.timestamp.as_second(), chat_jid],
                 )
                 .await?;
         }
@@ -401,7 +401,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -452,7 +453,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -504,7 +506,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -548,7 +551,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -592,7 +596,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -667,7 +672,8 @@ impl Database {
                 status: MessageStatus::from(row.get::<i32>(7)?),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
@@ -708,7 +714,7 @@ impl Database {
                     contact.name.clone(),
                     contact.push_name.clone(),
                     i32::from(contact.is_registered),
-                    Utc::now().timestamp()
+                    Timestamp::now().as_second()
                 ],
             )
             .await?;
@@ -823,7 +829,8 @@ impl Database {
                 status: row.get::<i32>(7)?.into(),
                 content: row.get(5)?,
                 outgoing: row.get::<i32>(6)? != 0,
-                timestamp: DateTime::from_timestamp(row.get::<i64>(8)?, 0).unwrap_or_else(Utc::now),
+                timestamp: Timestamp::from_second(row.get::<i64>(8)?)
+                    .unwrap_or_else(|_| Timestamp::now()),
                 reactions: IndexMap::new(),
 
                 db: Arc::new(self.clone()),
