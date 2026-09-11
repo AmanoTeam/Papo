@@ -412,6 +412,7 @@ impl AsyncComponent for Client {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn init(
         _init: Self::Init,
         root: Self::Root,

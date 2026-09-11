@@ -164,6 +164,7 @@ impl SimpleAsyncComponent for ChatList {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn init(
         _init: Self::Init,
         root: Self::Root,

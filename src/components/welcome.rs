@@ -71,9 +71,10 @@ impl SimpleAsyncComponent for Welcome {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn init(
         _init: Self::Init,
-        _root: Self::Root,
+        root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let model = Self;

@@ -339,6 +339,7 @@ impl AsyncComponent for ChatView {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn init(
         _init: Self::Init,
         root: Self::Root,
@@ -455,6 +456,7 @@ impl AsyncComponent for ChatView {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     #[allow(clippy::too_many_lines)]
     async fn update(
         &mut self,
@@ -700,6 +702,7 @@ impl AsyncComponent for ChatView {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     #[allow(clippy::too_many_lines)]
     async fn update_cmd(
         &mut self,

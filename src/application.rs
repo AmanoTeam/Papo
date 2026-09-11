@@ -1637,11 +1637,9 @@ impl AsyncComponent for Application {
                     AppPage::Login => {
                         self.login.emit(LoginInput::Error { message });
                     }
-                    AppPage::Session => {
+                    AppPage::Session | AppPage::Welcome | AppPage::Error => {
                         // TODO: display error
                     }
-                    AppPage::Welcome => {}
-                    AppPage::Error => {}
                 }
             }
             AppMsg::Quit => main_application().quit(),

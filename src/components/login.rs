@@ -451,6 +451,7 @@ impl AsyncComponent for Login {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn init(
         _init: Self::Init,
         root: Self::Root,
@@ -488,6 +489,7 @@ impl AsyncComponent for Login {
         AsyncComponentParts { model, widgets }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn update(
         &mut self,
         input: Self::Input,
