@@ -1,6 +1,7 @@
 pub mod connection;
 pub mod entities;
 pub mod keyring;
+pub mod media;
 pub mod migrations;
 pub mod session;
 pub mod session_manager;

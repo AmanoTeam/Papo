@@ -1,6 +1,6 @@
 use std::{fs, io, path::PathBuf};
 
-use crate::DATA_DIR;
+use crate::CACHE_DIR;
 
 /// Cache for chat avatars downloaded from `WhatsApp`.
 #[derive(Clone, Debug)]
@@ -12,7 +12,7 @@ pub struct AvatarCache {
 impl AvatarCache {
     /// Create a new avatar cache.
     pub fn new() -> Result<Self, io::Error> {
-        let cache_dir = DATA_DIR.join("avatars");
+        let cache_dir = CACHE_DIR.join("avatars");
         fs::create_dir_all(&cache_dir)?;
 
         Ok(Self { cache_dir })

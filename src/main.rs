@@ -64,6 +64,10 @@ use config::{APP_ID, GETTEXT_PACKAGE, LOCALEDIR, PROFILE, RESOURCES_FILE, VERSIO
 /// Papo's data directory path (e.g., ~/.local/share/papo on Linux).
 pub static DATA_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_data_dir().join("papo"));
 
+/// Papo's cache directory path (e.g., ~/.cache/papo on Linux).
+/// Used for re-downloadable data like avatars.
+pub static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| glib::user_cache_dir().join("papo"));
+
 relm4::new_action_group!(AppActionGroup, "app");
 relm4::new_stateless_action!(QuitAction, AppActionGroup, "quit");
 
