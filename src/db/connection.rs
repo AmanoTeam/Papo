@@ -12,6 +12,10 @@ use crate::{
     db::{DbError, entities::Session, keyring::KeyringService},
 };
 
+/// Opens the central `papo.db` database with AES-256-GCM encryption.
+///
+/// The encryption key is fetched or created via the keyring service.
+/// The database stores session metadata (one row per `WhatsApp` account).
 pub async fn open_main_db(keyring: &KeyringService) -> Result<Db, DbError> {
     let key = keyring.get_or_create_main_key().await?;
     let path = DATA_DIR.join("papo.db");
@@ -19,6 +23,11 @@ pub async fn open_main_db(keyring: &KeyringService) -> Result<Db, DbError> {
     open_encrypted_db(&path, &key, || toasty::models!(Session)).await
 }
 
+/// Opens (or creates) an encrypted database file with the given models.
+///
+/// If the file is corrupt or was encrypted with a different key,
+/// it is quarantined (renamed to `{name}.corrupt-{timestamp}`) and a
+/// fresh database is created in its place.
 pub(crate) async fn open_encrypted_db(
     path: &Path,
     hexkey: &str,
@@ -39,6 +48,7 @@ pub(crate) async fn open_encrypted_db(
     Ok(db)
 }
 
+/// Creates a Turso driver with AES-256-GCM page encryption enabled.
 pub(crate) fn create_driver(path: &Path, hexkey: &str) -> Turso {
     Turso::file(path).experimental_encryption(EncryptionOpts {
         cipher: "aes256gcm".into(),
@@ -46,6 +56,8 @@ pub(crate) fn create_driver(path: &Path, hexkey: &str) -> Turso {
     })
 }
 
+/// Renames a corrupt or unreadable database file to `{name}.corrupt-{timestamp}`
+/// and removes its WAL/SHM sidecars. Does nothing if the file does not exist.
 pub(crate) fn quarantine_file(path: &Path) {
     if !path.exists() {
         return;

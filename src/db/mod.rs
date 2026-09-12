@@ -3,11 +3,16 @@ pub mod entities;
 pub mod keyring;
 pub mod migrations;
 pub mod session;
+pub mod session_manager;
 
 use std::{fmt, io};
 
 use self::keyring::KeyringError;
 
+/// Errors that can occur during database operations.
+///
+/// Wraps I/O, Toasty ORM, and keyring errors into a single type
+/// so callers can handle all database failures uniformly.
 #[derive(Debug)]
 pub enum DbError {
     Io(io::Error),

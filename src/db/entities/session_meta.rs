@@ -1,12 +1,12 @@
 use toasty::Model;
 
-#[derive(Debug, Model)]
+#[derive(Clone, Debug, Model)]
 pub struct Session {
-    name: Option<String>,
-    path: String,
+    pub name: Option<String>,
+    pub path: String,
     #[key]
-    uuid: String,
-    phone: Option<String>,
-    created_at: i64,
-    last_active: i64,
+    pub uuid: String,
+    pub phone: Option<String>,
+    pub created_at: i64,
+    pub last_active: i64,
 }

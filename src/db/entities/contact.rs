@@ -3,12 +3,12 @@ use toasty::Model;
 #[derive(Debug, Model)]
 pub struct Contact {
     #[key]
-    jid: String,
+    pub jid: String,
     #[index]
-    name: Option<String>,
-    push_name: Option<String>,
-    last_updated: i64,
-    phone_number: Option<String>,
-    is_registered: bool,
-    profile_picture_url: Option<String>,
+    pub name: Option<String>,
+    pub push_name: Option<String>,
+    pub last_updated: i64,
+    pub phone_number: Option<String>,
+    pub is_registered: bool,
+    pub profile_picture_url: Option<String>,
 }

@@ -5,21 +5,21 @@ use super::Chat;
 #[derive(Debug, Model)]
 pub struct Message {
     #[belongs_to(key = chat_jid, references = jid)]
-    chat: Deferred<Chat>,
-    status: i64,
-    content: Option<String>,
+    pub chat: Deferred<Chat>,
+    pub status: i64,
+    pub content: Option<String>,
     #[index]
-    chat_jid: String,
+    pub chat_jid: String,
     #[key]
-    local_id: String,
-    outgoing: bool,
+    pub local_id: String,
+    pub outgoing: bool,
     #[unique]
-    server_id: Option<String>,
+    pub server_id: Option<String>,
     #[index]
-    timestamp: i64,
-    media_mime: Option<String>,
-    media_path: Option<String>,
-    media_type: Option<String>,
-    sender_jid: String,
-    sender_name: Option<String>,
+    pub timestamp: i64,
+    pub media_mime: Option<String>,
+    pub media_path: Option<String>,
+    pub media_type: Option<String>,
+    pub sender_jid: String,
+    pub sender_name: Option<String>,
 }

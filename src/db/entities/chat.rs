@@ -5,12 +5,12 @@ use super::Message;
 #[derive(Debug, Model)]
 pub struct Chat {
     #[key]
-    jid: String,
-    name: String,
-    muted: bool,
-    pinned: bool,
-    archived: bool,
+    pub jid: String,
+    pub name: String,
+    pub muted: bool,
+    pub pinned: bool,
+    pub archived: bool,
     #[has_many]
-    messages: Deferred<Vec<Message>>,
-    last_message_time: Option<i64>,
+    pub messages: Deferred<Vec<Message>>,
+    pub last_message_time: Option<i64>,
 }

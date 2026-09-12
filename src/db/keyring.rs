@@ -5,6 +5,7 @@ use rand::Rng;
 
 use crate::{i18n, i18n_f};
 
+/// Errors that can occur when interacting with the system keyring.
 #[derive(Debug)]
 pub enum KeyringError {
     Backend(Box<oo7::Error>),
@@ -32,6 +33,14 @@ impl From<oo7::Error> for KeyringError {
     }
 }
 
+/// A wrapper around the system keyring for storing and retrieving
+/// database encryption keys.
+///
+/// Uses [`oo7`] which auto-selects the `Secret Service` (`DBus`) backend on
+/// the host system and the encrypted-file backend when sandboxed
+/// (e.g. inside Flatpak). Each database (main + per-session) gets a
+/// 32-byte random key, hex-encoded and stored as a keyring item keyed by
+/// the session UUID.
 pub struct KeyringService {
     keyring: Keyring,
 }
