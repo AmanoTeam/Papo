@@ -47,7 +47,7 @@ pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box
 
     // Load the image through glycin.
     let loader = Loader::new_bytes(Bytes::from_owned(bytes));
-    let image_doc = loader.load().await?;
+    let mut image_doc = loader.load().await?;
     let frame = image_doc.next_frame().await?;
     let texture = frame.texture();
 
