@@ -4,6 +4,7 @@ pub mod keyring;
 pub mod migrations;
 pub mod session;
 pub mod session_manager;
+pub mod store;
 
 use std::{fmt, io};
 

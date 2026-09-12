@@ -9,6 +9,7 @@ pub struct Chat {
     pub name: String,
     pub muted: bool,
     pub pinned: bool,
+    #[index]
     pub archived: bool,
     #[has_many]
     pub messages: Deferred<Vec<Message>>,

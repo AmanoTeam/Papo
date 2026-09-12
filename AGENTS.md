@@ -162,6 +162,8 @@ Follow the existing structure in `src/components/`:
   ```
 - **Imports**: Always import structs directly (e.g., `use crate::state::Chat;`). Only use fully-qualified names (`crate::state::Chat`) when there is a naming clash with another imported type. Use module aliases (e.g., `use waproto::whatsapp as wa;`) when the imported name conflicts with a local type.
 - **Import groups**: Order imports as: (1) `std`, (2) external crates, (3) internal `crate::` imports. Keep each group separated by a blank line.
+- **Collect**: Prefer `.collect::<Vec<_>>()` over `let v: Vec<_> = ...collect()`. Let the turbofish carry the type.
+- **Documentation**: Document all public structs, enums, and functions with `///` doc comments. Keep docs clear and direct — describe what the thing does, not what it replaces. Do NOT reference implementation technologies (e.g. "libsql", "toasty") in prose. Use backticks for identifiers (`JID`, `local_id`, `FK`).
 
 ## Common Mistakes to Avoid
 
@@ -172,3 +174,4 @@ Follow the existing structure in `src/components/`:
 - Forgetting to update `meson.build` or Flatpak manifest when adding system deps.
 - Adding `allow` attributes to silence clippy without a WIP/FIXME justification.
 - Adding struct fields in random order instead of length-then-alphabetical.
+- Using `let v: Vec<_> = ...collect()` instead of `.collect::<Vec<_>>()`.
