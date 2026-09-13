@@ -580,26 +580,17 @@ impl SessionStore {
         limit: u32,
     ) -> Result<Vec<(String, ChatMessage)>, toasty::Error> {
         let mut db = self.db.clone();
-        let q = query.to_lowercase();
 
-        let mut matches = MessageEntity::all()
-            .exec(&mut db)
-            .await?
-            .into_iter()
-            .filter_map(|entity| {
-                let content = entity.content.as_ref()?;
-                content
-                    .to_lowercase()
-                    .contains(&q)
-                    .then(|| (entity.chat_jid.clone(), self.message_from_entity(entity)))
-            })
-            .collect::<Vec<_>>();
-
-        matches.sort_by_key(|(_, message)| std::cmp::Reverse(message.timestamp));
-
-        matches.truncate(limit as usize);
-
-        Ok(matches)
+        Ok(
+            MessageEntity::filter(MessageEntity::fields().content().like(format!("%{query}%")))
+                .order_by(MessageEntity::fields().timestamp().desc())
+                .limit(limit as usize)
+                .exec(&mut db)
+                .await?
+                .into_iter()
+                .map(|entity| (entity.chat_jid.clone(), self.message_from_entity(entity)))
+                .collect::<Vec<_>>(),
+        )
     }
 }
 
