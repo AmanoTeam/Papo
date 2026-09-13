@@ -141,7 +141,9 @@ pub enum ClientOutput {
     Disconnected,
 
     /// Self push name updated.
-    SelfPushNameUpdated { push_name: String },
+    SelfPushNameUpdated {
+        push_name: String,
+    },
 
     /// 8-character pairing code or qr code received.
     PairCode {
@@ -162,7 +164,9 @@ pub enum ClientOutput {
         is_video: bool,
     },
     /// Call ended.
-    CallEnded { call_id: String },
+    CallEnded {
+        call_id: String,
+    },
 
     /// Message receipt updated.
     ReceiptUpdate {
@@ -186,40 +190,23 @@ pub enum ClientOutput {
     },
 
     /// Message was sent successfully.
-    MessageSent { chat_jid: String, msg_id: Uuid },
+    MessageSent {
+        chat_jid: String,
+        msg_id: Uuid,
+    },
     /// Message failed to send.
-    MessageFailed { chat_jid: String, msg_id: Uuid },
+    MessageFailed {
+        chat_jid: String,
+        msg_id: Uuid,
+    },
     /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
     },
 
-    /// Chat synced from history.
-    ChatSynced {
-        /// Chat JID.
-        jid: String,
-        /// Display name.
-        name: Option<String>,
-        /// Whether chat is pinned.
-        pinned: bool,
-        /// Whether chat is archived.
-        archived: bool,
-        /// Unread message count.
-        unread_count: Option<u32>,
-        /// Group participants (for groups).
-        participants: Vec<(String, Option<String>)>,
-        /// Mute end time (if muted).
-        mute_end_time: Option<u64>,
-        /// Last message timestamp.
-        last_message_time: Option<u64>,
-    },
-    /// Messages synced from history for a chat.
-    MessagesSynced {
-        /// Chat JID.
-        chat_jid: String,
-        /// Synced messages.
-        messages: Vec<SyncedMessage>,
+    ChatsSynced {
+        entries: Vec<ChatsSyncedEntry>,
     },
 
     /// Chat property updated (pin, mute, archive).
@@ -266,7 +253,9 @@ pub enum ClientOutput {
     },
 
     /// Error occurred.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// A message synced from history.
@@ -286,6 +275,19 @@ pub struct SyncedMessage {
     pub sender_jid: String,
     /// Sender push name.
     pub sender_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatsSyncedEntry {
+    pub jid: String,
+    pub name: Option<String>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub messages: Vec<SyncedMessage>,
+    pub participants: Vec<(String, Option<String>)>,
+    pub unread_count: Option<u32>,
+    pub mute_end_time: Option<u64>,
+    pub last_message_time: Option<u64>,
 }
 
 /// Delete the `WhatsApp` database files to clear stored credentials.
@@ -1105,6 +1107,8 @@ impl AsyncComponent for Client {
                         return;
                     };
 
+                    let mut entries = Vec::new();
+
                     for conv in &sync.conversations {
                         let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
                         let is_group = chat_jid.ends_with("@g.us");
@@ -1117,27 +1121,22 @@ impl AsyncComponent for Client {
                             }
                         }
 
-                        let _ = sender_clone.output(ClientOutput::ChatSynced {
-                            jid: chat_jid.clone(),
+                        let messages = extract_synced_messages(conv, &chat_jid);
+
+                        entries.push(ChatsSyncedEntry {
+                            jid: chat_jid,
                             name: conv.name.clone(),
                             pinned: conv.pinned.is_some_and(|p| p > 0),
                             archived: conv.archived.unwrap_or(false),
-                            unread_count: conv.unread_count,
+                            messages,
                             participants,
+                            unread_count: conv.unread_count,
                             mute_end_time: conv.mute_end_time,
                             last_message_time: conv.last_msg_timestamp,
                         });
-
-                        let synced_messages = extract_synced_messages(conv, &chat_jid);
-
-                        if !synced_messages.is_empty() {
-                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
-                                chat_jid,
-                                messages: synced_messages,
-                            });
-                        }
                     }
 
+                    let _ = sender_clone.output(ClientOutput::ChatsSynced { entries });
                     let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
             }

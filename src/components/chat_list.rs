@@ -205,10 +205,13 @@ impl SimpleAsyncComponent for ChatList {
                         move_to_top: at_top,
                     });
                 } else {
-                    let last_message = chat
-                        .get_last_message()
-                        .await
-                        .expect("Failed to get chat last message");
+                    let last_message = match chat.get_last_message().await {
+                        Ok(message) => message,
+                        Err(e) => {
+                            tracing::error!("Failed to get chat last message: {}", e);
+                            None
+                        }
+                    };
 
                     if last_message.is_none() {
                         return;
@@ -244,10 +247,13 @@ impl SimpleAsyncComponent for ChatList {
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
                 if let Some(index) = self.get_index_by_jid(&chat.jid) {
-                    let last_message = chat
-                        .get_last_message()
-                        .await
-                        .expect("Failed to get chat last message");
+                    let last_message = match chat.get_last_message().await {
+                        Ok(message) => message,
+                        Err(e) => {
+                            tracing::error!("Failed to get chat last message: {}", e);
+                            None
+                        }
+                    };
                     let unread_count = chat
                         .get_unread_count()
                         .await
