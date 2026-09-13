@@ -40,130 +40,86 @@ use crate::{
 };
 
 pub struct Application {
-    /// Papo's own database.
     db: SessionStore,
-    /// Page main stack is displaying.
     page: AppPage,
-    /// Current chats' data.
     chats: Vec<Chat>,
-    /// User login component.
     login: AsyncController<Login>,
-    /// Current app state.
     state: AppState,
-    /// `WhatsApp` client wrapper.
     client: AsyncController<Client>,
-    /// The app's own sender.
     sender: AsyncComponentSender<Self>,
-    /// Typing state from chats.
     typing: HashMap<String, ChatTypingState>,
-    /// Current session metadata.
     session: Session,
     /// Resolved contact list (JID -> name).
     contacts: HashMap<String, String>,
 
-    /// Toaster overlay.
     toaster: Toaster,
-    /// JID from the connected user.
     user_jid: Option<String>,
-    /// Welcome page component.
     welcome: AsyncController<Welcome>,
-    /// Chat list component.
     chat_list: AsyncController<ChatList>,
-    /// Chat view component.
     chat_view: AsyncController<ChatView>,
-    /// The `SplitView` widget from the session page.
     split_view: NavigationSplitView,
-    /// Page session view is displaying.
     session_page: AppSessionPage,
-    /// Push name from the connected user.
     user_push_name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
 #[strum(serialize_all = "lowercase")]
 enum AppPage {
-    /// Login view.
     Login,
-    /// Session view.
     Session,
-    /// Welcome page.
     Welcome,
-    /// Error page.
     Error,
 }
 
 #[derive(Debug, PartialEq)]
 enum AppState {
-    /// Application is loading.
     Loading,
 
-    /// Client is ready.
     Ready,
-    /// Client is pairing.
     Pairing,
-    /// Client is syncing.
     Syncing,
-    /// Client is disconnected.
     Disconnected,
 
-    /// Error state.
     Error(String),
 }
 
 #[derive(AsRefStr, Clone, Copy, Debug, EnumString, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
 enum AppSessionPage {
-    /// No chat selected view.
     Empty,
-    /// Chat history view.
     ChatHistory,
 }
 
 #[derive(Debug)]
 pub enum AppMsg {
-    /// User has been connected.
     Connected {
         jid: Option<String>,
         push_name: String,
     },
-    /// Client has been logged out.
     LoggedOut,
-    /// Reset the client session.
     ResetSession,
-    /// Client has been disconnected.
     Disconnected,
-    /// Self push name updated.
     SelfPushNameUpdated {
         push_name: String,
     },
 
-    /// Pair device.
     PairDevice {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Device has successfully paired.
     DevicePaired,
-    /// Pair with a phone number.
     PairWithPhoneNumber {
         phone_number: String,
     },
-    /// Switch to the login page.
     SwitchToLoginQrCode,
-    /// Switch to the login page with phone number pairing.
     SwitchToLoginPhoneNumber,
 
-    /// A chat was open.
     ChatOpen,
-    /// The open chat was closed.
     ChatClosed,
-    /// Select a chat.
     ChatSelected(String),
-    /// Mark a chat as read.
     MarkChatRead(String),
 
-    /// Avatar updated for a chat.
     AvatarUpdate {
         jid: String,
         path: String,
@@ -175,19 +131,16 @@ pub enum AppMsg {
         push_name: Option<String>,
         phone_number: String,
     },
-    /// Message receipt updated.
     ReceiptUpdate {
         chat_jid: String,
         message_ids: Vec<String>,
         receipt_type: ReceiptType,
     },
-    /// User presence updated.
     PresenceUpdate {
         jid: String,
         available: bool,
         last_seen: Option<Timestamp>,
     },
-    /// Chat presence updated.
     ChatPresenceUpdate {
         chat_jid: String,
         active: bool,
@@ -195,20 +148,17 @@ pub enum AppMsg {
         sender_jid: String,
         sender_alt: Option<String>,
     },
-    /// Message status updated.
     MessageStatusUpdate {
         chat_jid: String,
         msg_id: Uuid,
         status: MessageStatus,
     },
 
-    /// LID-PN resolved.
     LidPnResolved {
         chat_jid: String,
         lid: String,
         phone: Option<String>,
     },
-    /// Typing status expired.
     TypingExpired {
         chat_jid: String,
         sender_jid: String,
@@ -219,76 +169,58 @@ pub enum AppMsg {
         composing: bool,
     },
 
-    /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
     },
 
-    /// Send a text message.
     SendTextMessage {
-        /// The content of the message.
         text: String,
-        /// Message recipient.
         recipient: String,
     },
 
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
-    /// Sync completed, fetch avatars for chats.
     SyncCompleted {
-        /// List of JIDs that need avatar fetching.
         chats_needing_avatars: Vec<String>,
     },
 
-    /// Chat property updated (pin, mute, archive).
     ChatPropertyUpdate {
-        /// Chat JID.
         jid: String,
-        /// Whether the chat is pinned.
         pinned: Option<bool>,
-        /// Whether the chat is muted.
         muted: Option<bool>,
-        /// Whether the chat is archived.
         archived: Option<bool>,
     },
-    /// History sync completed.
     HistorySyncCompleted,
-    /// Offline sync completed.
     OfflineSyncCompleted,
 
     Unknown,
-    /// Error occurred.
     Error {
         message: String,
     },
-    /// Quit the application.
     Quit,
 }
 
 #[derive(Debug)]
 pub enum AppCmd {
     /// Sync cache from database.
-    Sync,
-    /// Switch to a new session and store.
+    LoadCache,
     SwitchSession {
-        /// New session store.
         db: SessionStore,
-        /// New session metadata.
         session: Session,
     },
 
-    ProcessChatsSync {
+    SyncChats {
         entries: Vec<ChatsSyncedEntry>,
     },
 
-    AddChatToList {
-        chat: Chat,
-    },
-    UpdateChatList {
+    UpdateChat {
         chat: Chat,
         move_to_top: bool,
+    },
+    AddChatToList {
+        chat: Chat,
     },
 }
 
@@ -323,7 +255,7 @@ impl Application {
         // Save the chat in the database.
         let chat_clone = chat.clone();
         relm4::spawn(async move {
-            if let Err(e) = chat_clone.save().await {
+            if let Err(e) = chat_clone.upsert().await {
                 tracing::error!("Failed to save chat: {}", e);
             }
         });
@@ -428,7 +360,7 @@ impl Application {
         // Save the chat in the database.
         let chat_clone = chat.clone();
         relm4::spawn(async move {
-            if let Err(e) = chat_clone.save().await {
+            if let Err(e) = chat_clone.upsert().await {
                 tracing::error!("Failed to update chat: {}", e);
             }
         });
@@ -440,11 +372,11 @@ impl Application {
         let sender = self.sender.clone();
         let chat_clone = chat.clone();
         sender.oneshot_command(async move {
-            if let Err(e) = message.save().await {
+            if let Err(e) = message.upsert().await {
                 tracing::error!("Failed to save message: {}", e);
             }
 
-            AppCmd::UpdateChatList {
+            AppCmd::UpdateChat {
                 chat: chat_clone,
                 move_to_top: true,
             }
@@ -455,7 +387,6 @@ impl Application {
         }
     }
 
-    /// Mark a chat as read.
     async fn mark_chat_read(&mut self, chat_jid: &str) {
         // Find the chat.
         if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
@@ -490,7 +421,7 @@ impl Application {
                     tracing::error!("Failed to mark a chat as read: {e}");
                 }
 
-                AppCmd::UpdateChatList {
+                AppCmd::UpdateChat {
                     chat: chat_clone,
                     move_to_top: false,
                 }
@@ -938,7 +869,7 @@ impl AsyncComponent for Application {
                 self.user_push_name = Some(push_name);
 
                 // Sync in background.
-                sender.oneshot_command(async { AppCmd::Sync });
+                sender.oneshot_command(async { AppCmd::LoadCache });
 
                 if self.page != AppPage::Session {
                     self.page = AppPage::Session;
@@ -1129,7 +1060,7 @@ impl AsyncComponent for Application {
                         let chat_clone = chat.clone();
 
                         relm4::spawn(async move {
-                            if let Err(e) = chat_clone.save().await {
+                            if let Err(e) = chat_clone.upsert().await {
                                 tracing::error!(
                                     "Failed to update chat name for {}: {}",
                                     jid_clone,
@@ -1164,7 +1095,7 @@ impl AsyncComponent for Application {
                                     // Update the message in the database.
                                     let msg_clone = message.clone();
                                     relm4::spawn(async move {
-                                        if let Err(e) = msg_clone.save().await {
+                                        if let Err(e) = msg_clone.upsert().await {
                                             tracing::error!("Failed to update message: {}", e);
                                         }
                                     });
@@ -1311,7 +1242,7 @@ impl AsyncComponent for Application {
                     // Update the message in the database.
                     let msg_clone = message.clone();
                     relm4::spawn(async move {
-                        if let Err(e) = msg_clone.save().await {
+                        if let Err(e) = msg_clone.upsert().await {
                             tracing::error!("Failed to update message: {}", e);
                         }
                     });
@@ -1512,7 +1443,7 @@ impl AsyncComponent for Application {
                     // Save the message in the database.
                     let msg_clone = message.clone();
                     relm4::spawn(async move {
-                        if let Err(e) = msg_clone.save().await {
+                        if let Err(e) = msg_clone.upsert().await {
                             tracing::error!("Failed to save message: {}", e);
                         }
                     });
@@ -1530,7 +1461,7 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::ChatsSynced { entries } => {
-                sender.oneshot_command(async move { AppCmd::ProcessChatsSync { entries } });
+                sender.oneshot_command(async move { AppCmd::SyncChats { entries } });
             }
 
             AppMsg::ChatPropertyUpdate {
@@ -1553,7 +1484,7 @@ impl AsyncComponent for Application {
                     // Always save the chat to the database (including archive state).
                     let chat_clone = chat.clone();
                     relm4::spawn(async move {
-                        if let Err(e) = chat_clone.save().await {
+                        if let Err(e) = chat_clone.upsert().await {
                             tracing::error!("Failed to save chat property update: {}", e);
                         }
                     });
@@ -1619,7 +1550,7 @@ impl AsyncComponent for Application {
         _root: &Self::Root,
     ) {
         match command {
-            AppCmd::Sync => {
+            AppCmd::LoadCache => {
                 self.state = AppState::Syncing;
                 let mut chats_needing_avatars = Vec::new();
 
@@ -1676,7 +1607,7 @@ impl AsyncComponent for Application {
                 self.session = session;
             }
 
-            AppCmd::ProcessChatsSync { entries } => {
+            AppCmd::SyncChats { entries } => {
                 for entry in entries {
                     let ChatsSyncedEntry {
                         jid,
@@ -1746,7 +1677,7 @@ impl AsyncComponent for Application {
 
                         // Save the chat to database in blocking thread (fire and forget).
                         relm4::spawn(async move {
-                            if let Err(e) = chat.save().await {
+                            if let Err(e) = chat.upsert().await {
                                 tracing::error!("Failed to save synced chat {}: {}", chat.jid, e);
                             } else {
                                 tracing::debug!(
@@ -1872,7 +1803,7 @@ impl AsyncComponent for Application {
                                     .oneshot_command(async move { AppCmd::AddChatToList { chat } });
                             } else {
                                 sender.oneshot_command(async move {
-                                    AppCmd::UpdateChatList {
+                                    AppCmd::UpdateChat {
                                         chat,
                                         move_to_top: false,
                                     }
@@ -1883,13 +1814,13 @@ impl AsyncComponent for Application {
                 }
             }
 
+            AppCmd::UpdateChat { chat, move_to_top } => {
+                self.chat_list
+                    .emit(ChatListInput::UpdateChat { chat, move_to_top });
+            }
             AppCmd::AddChatToList { chat } => {
                 self.chat_list
                     .emit(ChatListInput::AddChat { chat, at_top: true });
-            }
-            AppCmd::UpdateChatList { chat, move_to_top } => {
-                self.chat_list
-                    .emit(ChatListInput::UpdateChat { chat, move_to_top });
             }
         }
     }

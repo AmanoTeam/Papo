@@ -23,21 +23,14 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Login {
-    /// Page main stack is displaying.
     page: LoginPage,
-    /// Current login state.
     state: LoginState,
-    /// Current QR code texture.
     qr_code: Option<gdk::Paintable>,
     /// Error dialog (TODO: use a custom alert dialog).
     error_dialog: Connector<Alert>,
-    /// Pairing box containing all pair cells.
     pairing_box: gtk::Box,
-    /// Pair code character.
     pairing_cells: Option<[PairingCell; 8]>,
-    /// Input entry containing the user phone number.
     phone_number_entry: adw::EntryRow,
-    /// Current pair phone number view.
     phone_number_view: LoginPhoneNumberView,
 }
 
@@ -50,27 +43,18 @@ enum LoginPage {
 
 #[derive(Clone, Debug, Default)]
 struct LoginState {
-    /// 8-character pair code.
     code: Option<[char; 8]>,
-    /// Current pair state.
     pair_state: PairState,
-    /// QR code scan attempts.
     scan_attempts: u8,
-    /// QR code expiration bar's progress.
     progress_fraction: f64,
-    /// Whether the phone number is valid.
     valid_phone_number: Arc<AtomicBool>,
-    /// Whether all QR codes from session has been expired.
     session_scan_expired: Arc<AtomicBool>,
-    /// Phone number country emoji.
     phone_number_country_emoji: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum PairState {
-    /// The client was paired successfully.
     Paired,
-    /// The client is still pairing.
     #[default]
     Pairing,
 }
@@ -78,32 +62,26 @@ pub enum PairState {
 #[derive(Clone, Copy, Debug, AsRefStr, EnumString)]
 #[strum(serialize_all = "kebab-case")]
 enum LoginPhoneNumberView {
-    /// Confirm code view.
     ConfirmCode,
-    /// Enter phone number view.
     EnterPhoneNumber,
 }
 
 #[derive(Debug)]
 pub enum LoginInput {
-    /// 8-character pairing code received.
     PairCode {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Client has paired successfully.
     PairSuccess,
-    /// Request the login to change the page to `QrCode`.
     PairWithQrCode,
-    /// Request the login to change the page to `PhoneNumber`.
     PairWithPhoneNumber {
-        /// Change the view to `EnterPhoneNumber`.
         edit: bool,
     },
 
-    /// Error occurred.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug)]
@@ -111,8 +89,9 @@ pub enum LoginOutput {
     /// Reset the session to be able to receive new qr codes.
     ResetSession,
 
-    /// Request the session to pair with a phone number.
-    PairWithPhoneNumber { phone_number: String },
+    PairWithPhoneNumber {
+        phone_number: String,
+    },
 }
 
 #[derive(Debug)]
@@ -120,19 +99,18 @@ pub enum LoginCommand {
     /// Reset the session to be able to receive new qr codes.
     ResetSession,
 
-    /// Update the QR Code.
-    UpdateQrCode { data: String, timeout: Duration },
-    /// QR code expired by timeout.
+    UpdateQrCode {
+        data: String,
+        timeout: Duration,
+    },
     QrCodeExpired,
-    /// Update the expiration bar.
     UpdateExpirationBar(f32),
-    /// Request the session to pair with a phone number.
-    PairWithPhoneNumber { phone_number: String },
+    PairWithPhoneNumber {
+        phone_number: String,
+    },
 
-    /// Validate the phone number.
     ValidatePhoneNumber,
 
-    /// Ignore the command.
     Ignore,
 }
 

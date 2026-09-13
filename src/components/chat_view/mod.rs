@@ -18,27 +18,20 @@ use crate::{
     widgets::TypingDots,
 };
 
-/// Number of messages to load when scrolling.
 const LOAD_MORE_COUNT: u32 = 70;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
-/// Number of messages to load on initial chat open.
 const INITIAL_LOAD_COUNT: u32 = 120;
 
 #[derive(Debug)]
 pub struct ChatView {
-    /// Currently open chat.
     chat: Option<Chat>,
-    /// Current chat view state.
     state: ChatViewState,
-    /// Owned message list + pagination state.
     history: ChatHistory,
-    /// Touchpad flick continuation across prepended batches.
     momentum: Momentum,
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
-    /// Text input for sending messages.
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
 }
@@ -48,9 +41,7 @@ pub struct ChatViewState {
     typing: Vec<TypingSender>,
     presence: Option<String>,
     is_typing: bool,
-    /// Whether a load operation is currently in progress.
     is_loading: bool,
-    /// Whether the scroll is at the bottom.
     is_at_bottom: bool,
     unread_count: usize,
     typing_generation: u64,
@@ -58,18 +49,13 @@ pub struct ChatViewState {
 
 #[derive(Debug)]
 pub enum ChatViewInput {
-    /// Open a chat.
     Open(Chat),
-    /// Close the open chat.
     Close,
 
-    /// Send a message.
     SendMessage,
     EntryChanged,
-    /// New message received.
     MessageReceived(Box<ChatMessage>),
 
-    /// User presence updated.
     PresenceUpdate {
         jid: String,
         available: bool,
@@ -79,68 +65,48 @@ pub enum ChatViewInput {
         chat_jid: String,
         senders: Vec<TypingSender>,
     },
-    /// Message status updated.
     MessageStatusUpdate {
         status: MessageStatus,
         local_id: Uuid,
     },
 
-    /// Scroll to the bottom of the chat.
     ScrollToBottom,
 }
 
 #[derive(Debug)]
 pub enum ChatViewOutput {
-    /// A chat was open.
     ChatOpen,
-    /// The open chat was closed.
     ChatClosed,
-    /// Mark the open chat as read.
     MarkChatRead(String),
 
-    /// Send a text message.
-    SendTextMessage {
-        /// The content of the message.
-        text: String,
-        /// Message recipient.
-        recipient: String,
-    },
+    SendTextMessage { text: String, recipient: String },
 
-    TypingStateChanged {
-        chat_jid: String,
-        composing: bool,
-    },
+    TypingStateChanged { chat_jid: String, composing: bool },
 }
 
 #[derive(Debug)]
 pub enum ChatViewCommand {
-    /// Initial batch of messages loaded for a newly opened chat.
     InitialMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
         had_unread: bool,
     },
-    /// Older messages loaded for upward pagination.
     OlderMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
-    /// Newer messages loaded for downward pagination.
     NewerMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
-    /// Fresh batch loaded for a jump-to-bottom reload.
     JumpLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
 
-    /// Scroll anchoring finished after a prepend-driven reallocation.
     ScrollSettled {
         generation: u64,
     },
-    /// The scroll position has changed.
     ScrollPositionChanged {
         at_top: bool,
         at_bottom: bool,
@@ -878,7 +844,6 @@ impl AsyncComponent for ChatView {
 }
 
 impl ChatView {
-    /// Update the user presence.
     fn update_presence(&mut self) {
         if let Some(ref mut chat) = self.chat {
             if chat.is_group() {

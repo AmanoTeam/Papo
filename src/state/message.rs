@@ -11,37 +11,26 @@ use crate::{
 /// Maximum number of unique emoji reactions per message to prevent spam.
 const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 
-/// Represents a chat message.
 #[derive(Clone, Debug)]
-pub struct Message {
+pub struct ChatMessage {
     pub db: SessionStore,
-    /// Media attached to this message.
     pub media: Option<Media>,
-    /// Actual state of the message.
-    pub status: Status,
-    /// Message text.
+    pub status: MessageStatus,
     pub content: String,
-    /// JID (Jabbed ID) - unique chat identifier.
     pub chat_jid: String,
-    /// Local unique message identifier.
     pub local_id: Uuid,
-    /// Whether the message was sent by the current user.
     pub outgoing: bool,
     /// Reactions on this message (emoji -> [sender JID]).
     pub reactions: IndexMap<String, Vec<String>>,
-    /// Sender identifier.
     pub sender_jid: String,
-    /// Server unique message identifier.
     pub server_id: String,
-    /// When the message was sent/received.
     pub timestamp: Timestamp,
     /// Sender's display name (push name, for group chats).
     pub sender_name: Option<String>,
 }
 
-impl Message {
-    /// Insert or update the current message in the database.
-    pub async fn save(&self) -> Result<(), toasty::Error> {
+impl ChatMessage {
+    pub async fn upsert(&self) -> Result<(), toasty::Error> {
         self.db.save_message(&self.chat_jid, self).await
     }
 
@@ -52,7 +41,6 @@ impl Message {
         self.db.save_synced_message(&self.chat_jid, self).await
     }
 
-    /// Load the chat this message is attached to.
     pub async fn load_chat(&self) -> Result<Chat, toasty::Error> {
         self.db
             .load_chat(&self.chat_jid)
@@ -60,19 +48,18 @@ impl Message {
             .map(|c| c.expect("Failed to get chat attached to message"))
     }
 
-    /// Mark this message as read locally.
     pub async fn mark_read(&mut self) -> Result<(), toasty::Error> {
-        if self.status == Status::Read {
+        if self.status == MessageStatus::Read {
             Ok(())
         } else {
-            self.status = Status::Read;
-            self.save().await
+            self.status = MessageStatus::Read;
+            self.upsert().await
         }
     }
 }
 
-impl From<Message> for wa::Message {
-    fn from(value: Message) -> Self {
+impl From<ChatMessage> for wa::Message {
+    fn from(value: ChatMessage) -> Self {
         let conversation = if value.content.is_empty() {
             None
         } else {
@@ -86,33 +73,29 @@ impl From<Message> for wa::Message {
     }
 }
 
-impl From<&Message> for wa::Message {
-    fn from(value: &Message) -> Self {
+impl From<&ChatMessage> for wa::Message {
+    fn from(value: &ChatMessage) -> Self {
         value.to_owned().into()
     }
 }
 
-/// Represents a message status.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[repr(u8)]
-pub enum Status {
+pub enum MessageStatus {
     /// The message was sent, but no one has received it yet.
     #[default]
     Sent,
     /// The message was read by all.
     Read,
-    /// The message has failed to send.
     Failed,
     /// The message's media has been played.
     Played,
-    /// The message is being sent.
     Sending,
     /// The recipient(s) has received the message.
     Delivered,
 }
 
-impl Status {
-    /// Get the corresponding status icon name.
+impl MessageStatus {
     pub fn icon_name(&self) -> &str {
         match self {
             Self::Sent => "check-round-outline-symbolic",
@@ -123,7 +106,7 @@ impl Status {
     }
 }
 
-impl From<i32> for Status {
+impl From<i32> for MessageStatus {
     fn from(value: i32) -> Self {
         match value {
             0 => Self::Sent,
@@ -137,7 +120,7 @@ impl From<i32> for Status {
     }
 }
 
-impl TryFrom<ReceiptType> for Status {
+impl TryFrom<ReceiptType> for MessageStatus {
     type Error = String;
 
     fn try_from(value: ReceiptType) -> Result<Self, Self::Error> {

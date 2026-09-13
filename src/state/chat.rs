@@ -5,44 +5,32 @@ use uuid::Uuid;
 
 use crate::{db::store::SessionStore, state::ChatMessage, utils::format_lid_as_number};
 
-/// Represents a chat/conversation.
 #[derive(Clone, Debug)]
 pub struct Chat {
     pub db: SessionStore,
-    /// JID (Jabbed ID) - unique chat identifier.
     pub jid: String,
-    /// Display name.
     pub name: String,
-    /// Whether the chat is muted.
     pub muted: bool,
-    /// Whether this chat is pinned.
     pub pinned: bool,
     /// Whether this chat is archived.
     pub archived: bool,
-    /// Whether the user is currently online.
     pub available: Option<bool>,
-    /// Last time the user has been seen.
     pub last_seen: Option<Timestamp>,
-    /// Path to the cached avatar image.
     pub avatar_path: Option<String>,
     /// Participants names in groups (JID -> name).
     pub participants: HashMap<String, String>,
-    /// Time of the last sent message.
     pub last_message_time: Timestamp,
 }
 
 impl Chat {
-    /// Insert or update the current chat in the database.
-    pub async fn save(&self) -> Result<(), toasty::Error> {
+    pub async fn upsert(&self) -> Result<(), toasty::Error> {
         self.db.save_chat(self).await
     }
 
-    /// Check if the chat is a group.
     pub fn is_group(&self) -> bool {
         self.jid.ends_with("@g.us")
     }
 
-    /// Mark all messages in this chat as read.
     pub async fn mark_read(&self) -> Result<(), toasty::Error> {
         self.db.mark_chat_read(&self.jid).await
     }
@@ -56,17 +44,14 @@ impl Chat {
         }
     }
 
-    /// Get the last sent message in this chat.
     pub async fn get_last_message(&self) -> Result<Option<ChatMessage>, toasty::Error> {
         self.load_messages(1).await.map(|mut m| m.pop())
     }
 
-    /// Load a specified amount of messages in this chat.
     pub async fn load_messages(&self, limit: u32) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db.load_messages(&self.jid, limit as usize).await
     }
 
-    /// Load messages newer than a given timestamp.
     pub async fn load_messages_after(
         &self,
         after_timestamp: i64,
@@ -77,7 +62,6 @@ impl Chat {
             .await
     }
 
-    /// Load messages older than a given timestamp.
     pub async fn load_messages_before(
         &self,
         before_timestamp: i64,
@@ -88,12 +72,10 @@ impl Chat {
             .await
     }
 
-    /// Find a message in this chat by its server ID.
     pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, toasty::Error> {
         self.db.load_message_by_server_id(&self.jid, msg_id).await
     }
 
-    /// Find a message in this chat by its local ID.
     pub async fn find_message_by_local_id(
         &self,
         msg_id: &Uuid,
@@ -101,12 +83,10 @@ impl Chat {
         self.db.load_message_by_local_id(&self.jid, msg_id).await
     }
 
-    /// Get the count of unread messages in this chat.
     pub async fn get_unread_count(&self) -> Result<usize, toasty::Error> {
         self.db.get_unread_count(&self.jid).await
     }
 
-    /// Get all unread messages in this chat.
     pub async fn get_unread_messages(&self) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db.get_unread_messages(&self.jid).await
     }

@@ -18,20 +18,15 @@ use crate::{
 #[derive(Debug)]
 pub struct ChatList {
     typing: HashMap<String, Vec<TypingSender>>,
-    /// Currently selected chat JID.
     chat_jid: Option<String>,
-    /// `ListView` widget wrapper containing all chat rows.
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
 #[derive(Debug, Default)]
 pub enum ChatListFilter {
-    /// All existing chat.
     #[default]
     All,
-    /// Only groups.
     Groups,
-    /// Chats that have unread messages.
     Unreads,
 }
 
@@ -47,16 +42,12 @@ impl From<&str> for ChatListFilter {
 
 #[derive(Debug)]
 pub enum ChatListInput {
-    /// Add a chat.
     AddChat {
         chat: Chat,
-        /// Whether add the chat in the top of the list.
         at_top: bool,
     },
-    /// Update a chat in place.
     UpdateChat {
         chat: Chat,
-        /// Whether move the chat to the top of the list.
         move_to_top: bool,
     },
     UpdateTyping {
@@ -64,25 +55,18 @@ pub enum ChatListInput {
         senders: Vec<TypingSender>,
     },
 
-    /// Apply a filter.
     ApplyFilter(ChatListFilter),
 
-    /// Select a chat.
     Select(String),
-    /// Select a chat by its position.
     SelectPosition(u32),
-    /// Remove a chat from the list.
     RemoveChat {
-        /// Chat JID.
         jid: String,
     },
-    /// Clear the chat selection.
     ClearSelection,
 }
 
 #[derive(Debug)]
 pub enum ChatListOutput {
-    /// A chat has been selected.
     ChatSelected(String),
 }
 
@@ -442,7 +426,6 @@ impl ChatList {
         unreachable!("selection model chain wraps the raw store")
     }
 
-    /// Find the index by its chat JID.
     fn get_index_by_jid(&self, jid: &str) -> Option<u32> {
         for (i, row) in self.list_view_wrapper.iter().enumerate() {
             if row.borrow().chat.jid == jid {
@@ -461,15 +444,12 @@ impl ChatList {
     }
 }
 
-/// A single row in the chat history list.
 #[derive(Clone, Debug)]
 pub struct ChatRow {
     chat: Chat,
     is_typing: bool,
     typing_senders: Vec<TypingSender>,
-    /// The last sent message in the chat.
     last_message: Option<ChatMessage>,
-    /// How many messages are unread.
     unread_count: u32,
     avatar_texture: Option<Texture>,
 }
@@ -496,24 +476,16 @@ impl ChatRow {
 }
 
 pub struct ChatRowWidgets {
-    /// Chat avatar.
     avatar: adw::Avatar,
-    /// Muted icon.
     muted_icon: gtk::Image,
-    /// Pinned icon.
     pinned_icon: gtk::Image,
-    /// Message status icon (e.g. "Sending", "Sent").
     status_icon: gtk::Image,
     typing_box: gtk::Box,
     suffix_dots: TypingDots,
-    /// Chat title.
     title_label: gtk::Label,
     typing_label: gtk::Label,
-    /// Chat last message's content.
     subtitle_label: gtk::Label,
-    /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
-    /// Unread count badge.
     unread_count_badge: gtk::Label,
 }
 

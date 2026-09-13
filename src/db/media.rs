@@ -13,19 +13,16 @@ pub struct MediaStorage {
 }
 
 impl MediaStorage {
-    /// Creates a new media storage helper for the given session.
     pub fn new(session_uuid: &str) -> Self {
         Self {
             session_uuid: session_uuid.to_string(),
         }
     }
 
-    /// Returns the base media directory for this session.
     pub fn base_dir(&self) -> PathBuf {
         DATA_DIR.join("media").join(&self.session_uuid)
     }
 
-    /// Returns the media directory for a specific chat.
     fn chat_dir(&self, chat_jid: &str) -> PathBuf {
         self.base_dir().join(sanitize_component(chat_jid))
     }
@@ -64,30 +61,25 @@ impl MediaStorage {
         Ok(relative)
     }
 
-    /// Loads media bytes from a relative path stored in the database.
     pub fn load_media(relative_path: &str) -> Result<Vec<u8>, io::Error> {
         let path = Self::resolve_path(relative_path);
         fs::read(&path)
     }
 
-    /// Resolves a relative path stored in the database to a full filesystem path.
     pub fn resolve_path(relative_path: &str) -> PathBuf {
         DATA_DIR.join(relative_path)
     }
 
-    /// Deletes a media file by its relative path.
     pub fn delete_media(relative_path: &str) {
         let path = Self::resolve_path(relative_path);
         let _ = fs::remove_file(&path);
     }
 
-    /// Deletes all media for a specific chat.
     pub fn delete_chat_media(&self, chat_jid: &str) {
         let dir = self.chat_dir(chat_jid);
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Deletes all media for this session.
     pub fn delete_session_media(&self) {
         let dir = self.base_dir();
         let _ = fs::remove_dir_all(&dir);

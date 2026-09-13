@@ -53,17 +53,14 @@ impl SessionStore {
         }
     }
 
-    /// Returns a reference to the underlying database handle.
     pub fn db(&self) -> &Db {
         &self.db
     }
 
-    /// Returns the media file storage helper for this session.
     fn media_storage(&self) -> MediaStorage {
         MediaStorage::new(&self.session)
     }
 
-    /// Converts a stored chat entity into the runtime `Chat` state struct.
     fn chat_from_entity(&self, entity: ChatEntity) -> Chat {
         Chat {
             archived: entity.archived,
@@ -335,7 +332,6 @@ impl SessionStore {
         Ok(true)
     }
 
-    /// Loads a message by its `local_id` within a specific chat.
     pub async fn load_message_by_local_id(
         &self,
         chat_jid: &str,
@@ -350,7 +346,6 @@ impl SessionStore {
             .map(|entity| self.message_from_entity(entity)))
     }
 
-    /// Loads a message by its `server_id` within a specific chat.
     pub async fn load_message_by_server_id(
         &self,
         chat_jid: &str,
@@ -430,7 +425,6 @@ impl SessionStore {
             .collect::<Vec<_>>())
     }
 
-    /// Deletes a message by its `server_id`.
     pub async fn delete_message(&self, server_id: &str) -> Result<(), toasty::Error> {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
@@ -506,7 +500,6 @@ impl SessionStore {
 // ── Contact operations ──────────────────────────────────────────
 
 impl SessionStore {
-    /// Upserts a contact by `JID`.
     pub async fn save_contact(&self, contact: &Contact) -> Result<(), toasty::Error> {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
@@ -523,13 +516,11 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Loads a contact by `JID`.
     pub async fn get_contact(&self, jid: &str) -> Result<Option<Contact>, toasty::Error> {
         let mut db = self.db.clone();
         Contact::filter_by_jid(jid).first().exec(&mut db).await
     }
 
-    /// Loads all contacts.
     pub async fn get_all_contacts(&self) -> Result<Vec<Contact>, toasty::Error> {
         let mut db = self.db.clone();
         let mut contacts = Contact::all().exec(&mut db).await?;
@@ -596,7 +587,6 @@ impl SessionStore {
     }
 }
 
-/// Maps a media type to a common file extension.
 fn media_type_extension(media_type: MediaType) -> &'static str {
     match media_type {
         MediaType::Audio => "ogg",

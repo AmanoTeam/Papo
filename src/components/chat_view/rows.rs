@@ -9,46 +9,34 @@ use crate::{
     widgets::{MessageTail, TailDirection},
 };
 
-/// A single row in the chat history list.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ChatRow {
-    /// A regular chat message bubble.
     Message {
         last: bool,
         first: bool,
         message: ChatMessage,
     },
-    /// A date separator label (e.g. "Today", "Yesterday").
     DateSeparator(Date),
-    /// A service/system event (e.g. "someone added xxx").
-    ServiceEvent { text: String },
-    /// The unread messages divider.
+    ServiceEvent {
+        text: String,
+    },
     UnreadDivider,
 }
 
 pub struct ChatRowWidgets {
     avatar: adw::Avatar,
     tail_left: MessageTail,
-    /// The message bubble itself.
     bubble_box: gtk::Box,
     tail_right: MessageTail,
     avatar_slot: gtk::Box,
-    /// Outer container for message bubbles.
     message_box: gtk::Box,
-    /// Message status icon (e.g. "Sending", "Sent").
     status_icon: gtk::Image,
-    /// Sender name label (visible in group chats for incoming messages).
     sender_label: gtk::Label,
-    /// Message text content.
     content_label: gtk::Label,
-    /// Unread messages divider label.
     divider_label: gtk::Label,
-    /// Service event label (e.g. "someone added xxx").
     service_label: gtk::Label,
-    /// Date separator label (e.g. "Today", "Yesterday").
     separator_label: gtk::Label,
-    /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
 }
 

@@ -68,13 +68,11 @@ pub(crate) struct Momentum {
 }
 
 impl Momentum {
-    /// Creates a new momentum tracker.
     #[must_use]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Attaches the tracker to a scrolled window.
     pub(crate) fn attach(&self, sw: &ScrolledWindow) {
         let adj = sw.vadjustment();
         let mut inner = self.inner.borrow_mut();
@@ -152,7 +150,6 @@ impl Momentum {
         (baseline, velocity)
     }
 
-    /// Continues a captured flick after the prepend splice.
     pub(crate) fn continue_from(&self, baseline: f64, velocity: Option<f64>) {
         let Some(velocity) = velocity else {
             return;
@@ -236,7 +233,6 @@ impl Momentum {
         }
     }
 
-    /// Stops any running momentum animation.
     pub(crate) fn stop(&self) {
         let mut inner = self.inner.borrow_mut();
         if let Some(id) = inner.tick_id.take() {

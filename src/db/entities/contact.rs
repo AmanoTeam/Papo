@@ -1,6 +1,5 @@
 use toasty::Model;
 
-/// A contact entry with names, phone number, and registration state.
 #[derive(Debug, Model)]
 pub struct Contact {
     #[key]

@@ -68,28 +68,21 @@ fn build_prepend_rows(
 pub(crate) enum RowMetadata {
     /// A message row, with its Unix timestamp.
     Message(i64),
-    /// A date separator row.
     Separator(Date),
-    /// The unread messages divider row.
     UnreadDivider,
 }
 
 /// Owns the message list view and all pagination state for a single open chat.
 #[derive(Debug)]
 pub(crate) struct ChatHistory {
-    /// The list view wrapper holding all chat rows.
     list: TypedListView<ChatRow, gtk::NoSelection>,
     /// Metadata mirror of `list`, used for cursor tracking.
     row_metadata: VecDeque<RowMetadata>,
 
-    /// Whether there might be older messages to load (above the current top).
     has_older: bool,
-    /// Whether there might be newer messages to load (below the current bottom).
     has_newer: bool,
 
-    /// Timestamp of the oldest loaded message (top cursor).
     oldest_loaded_timestamp: Option<i64>,
-    /// Timestamp of the newest loaded message (bottom cursor).
     newest_loaded_timestamp: Option<i64>,
     /// Date of the first displayed message (top), for prepend separator logic.
     first_message_date: Option<Date>,
@@ -98,7 +91,6 @@ pub(crate) struct ChatHistory {
 }
 
 impl ChatHistory {
-    /// Create an empty `ChatHistory`.
     pub(crate) fn new() -> Self {
         Self {
             list: TypedListView::new(),
@@ -112,7 +104,6 @@ impl ChatHistory {
         }
     }
 
-    /// Borrow the underlying list view.
     pub(crate) fn view(&self) -> &TypedListView<ChatRow, gtk::NoSelection> {
         &self.list
     }

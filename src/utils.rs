@@ -14,7 +14,6 @@ use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
 use crate::i18n;
 
-/// Gets only the first name from a full name.
 pub fn get_first_name(name: &str) -> String {
     if name.is_empty() {
         String::new()
@@ -27,7 +26,6 @@ pub fn get_first_name(name: &str) -> String {
     }
 }
 
-/// Generates a QR code texture.
 pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box<dyn Error>> {
     let data = data.to_string();
     let bytes = relm4::spawn_blocking(move || {

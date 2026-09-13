@@ -8,9 +8,7 @@ pub struct Welcome;
 
 #[derive(Debug)]
 pub enum WelcomeOutput {
-    /// User chose to pair with QR code.
     PairWithQrCode,
-    /// User chose to pair with phone number.
     PairWithPhoneNumber,
 }
 

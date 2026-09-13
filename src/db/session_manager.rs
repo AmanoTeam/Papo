@@ -163,12 +163,10 @@ impl SessionManager {
         Ok(best)
     }
 
-    /// Returns a reference to the central database handle.
     pub fn main_db(&self) -> &Db {
         &self.main_db
     }
 
-    /// Returns a reference to the keyring service.
     pub fn keyring(&self) -> &KeyringService {
         &self.keyring
     }

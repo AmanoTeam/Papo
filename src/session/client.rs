@@ -31,53 +31,37 @@ use whatsapp_rust::{
 
 use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
 
-/// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
 
-/// `WhatsApp` client wrapper that manages the connection and provides
-/// a clean interface for UI operations.
 #[derive(Clone)]
 pub struct Client {
-    /// Client connection state.
     pub state: ClientState,
-    /// Shared client reference.
     handle: ClientHandle,
-    /// System OS type.
     os_type: String,
 
     /// Avatar cache for downloading and storing profile pictures.
     avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
 }
 
-/// Current state of the client connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientState {
-    /// Client is loading.
     Loading,
-    /// Client is connected and authenticated.
     Connected,
-    /// Client is logged out.
     LoggedOut,
-    /// Connection in progress.
     Connecting,
-    /// Client is disconnected.
     Disconnected,
 
-    /// Pairing in progress.
     Pairing {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Syncing in progress.
     Syncing,
 
-    /// Error state.
     Error(String),
 }
 
 impl ClientState {
-    /// Checks if the client is paired.
     pub fn is_paired(&self) -> bool {
         matches!(self, Self::Connected | Self::Syncing)
     }
@@ -85,102 +69,92 @@ impl ClientState {
 
 #[derive(Debug)]
 pub enum ClientInput {
-    /// Start the client connection.
     Start,
-    /// Stop the client connection.
     Stop,
-    /// Restart the client connection.
     Restart,
 
-    /// Pair with a phone number.
-    PairWithPhoneNumber { phone_number: String },
+    PairWithPhoneNumber {
+        phone_number: String,
+    },
 
-    /// Start a new call.
-    StartCall { jid: String, is_video: bool },
-    /// Accept an incoming call.
-    AcceptCall { call_id: String },
-    /// Decline an incoming call.
-    DeclineCall { call_id: String },
+    StartCall {
+        jid: String,
+        is_video: bool,
+    },
+    AcceptCall {
+        call_id: String,
+    },
+    DeclineCall {
+        call_id: String,
+    },
 
-    /// Send typing indicator.
-    SendTyping { jid: String },
-    /// Stop typing indicator.
-    StopTyping { jid: String },
+    SendTyping {
+        jid: String,
+    },
+    StopTyping {
+        jid: String,
+    },
 
-    /// Mark messages as read.
     MarkRead {
         chat_jid: String,
         sender_jid: Option<String>,
         message_ids: Vec<String>,
     },
-    /// Send a message.
-    SendMessage { message: Box<ChatMessage> },
-    /// Fetch avatar for a chat.
+    SendMessage {
+        message: Box<ChatMessage>,
+    },
     FetchAvatar {
-        /// Chat JID.
         jid: String,
     },
-    /// Resolve a LID-PN from a chat.
-    ResolveLidPn { chat_jid: String, lid: String },
+    ResolveLidPn {
+        chat_jid: String,
+        lid: String,
+    },
 }
 
 #[derive(Debug)]
 pub enum ClientOutput {
-    /// Client is loading.
     Loading,
-    /// Client has been successfully connected and authenticated.
     Connected {
         jid: Option<String>,
         push_name: String,
     },
-    /// Client has been logged out.
     LoggedOut,
-    /// Client is connecting.
     Connecting,
-    /// Client has been disconnected.
     Disconnected,
 
-    /// Self push name updated.
     SelfPushNameUpdated {
         push_name: String,
     },
 
-    /// 8-character pairing code or qr code received.
     PairCode {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Client has paired successfully.
     PairSuccess,
 
-    /// Syncing in progress.
     Syncing,
 
-    /// Incoming call offer.
     CallOffer {
         call_id: String,
         from_jid: String,
         is_video: bool,
     },
-    /// Call ended.
     CallEnded {
         call_id: String,
     },
 
-    /// Message receipt updated.
     ReceiptUpdate {
         chat_jid: String,
         message_ids: Vec<String>,
         receipt_type: ReceiptType,
     },
-    /// User presence updated.
     PresenceUpdate {
         jid: String,
         available: bool,
         last_seen: Option<Timestamp>,
     },
-    /// Chat presence updated.
     ChatPresenceUpdate {
         chat_jid: String,
         active: bool,
@@ -189,17 +163,14 @@ pub enum ClientOutput {
         sender_alt: Option<String>,
     },
 
-    /// Message was sent successfully.
     MessageSent {
         chat_jid: String,
         msg_id: Uuid,
     },
-    /// Message failed to send.
     MessageFailed {
         chat_jid: String,
         msg_id: Uuid,
     },
-    /// New message received.
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
@@ -209,71 +180,46 @@ pub enum ClientOutput {
         entries: Vec<ChatsSyncedEntry>,
     },
 
-    /// Chat property updated (pin, mute, archive).
     ChatPropertyUpdate {
-        /// Chat JID.
         jid: String,
-        /// Whether the chat is pinned.
         pinned: Option<bool>,
-        /// Whether the chat is muted.
         muted: Option<bool>,
-        /// Whether the chat is archived.
         archived: Option<bool>,
     },
 
-    /// History sync completed.
     HistorySyncCompleted,
-    /// Offline sync completed.
     OfflineSyncCompleted,
 
-    /// Avatar updated for a chat.
     AvatarUpdate {
-        /// Chat JID.
         jid: String,
-        /// Path to the cached avatar image.
         path: String,
     },
-    /// Contact updated (from sync or individual update).
     ContactUpdate {
-        /// Contact JID.
         jid: String,
-        /// Full name from address book.
         name: Option<String>,
-        /// Push name (first name).
         push_name: Option<String>,
-        /// Phone number (from JID user part).
         phone_number: String,
     },
 
-    /// LID-PN resolved.
     LidPnResolved {
         chat_jid: String,
         lid: String,
         phone: Option<String>,
     },
 
-    /// Error occurred.
     Error {
         message: String,
     },
 }
 
-/// A message synced from history.
 #[derive(Debug, Clone)]
 pub struct SyncedMessage {
-    /// Message ID.
     pub id: String,
-    /// Whether message is unread.
     pub unread: bool,
-    /// Message content (text).
     pub content: Option<String>,
-    /// Whether message was sent by current user.
     pub outgoing: bool,
-    /// Message timestamp.
     pub timestamp: u64,
-    /// Sender JID.
     pub sender_jid: String,
-    /// Sender push name.
     pub sender_name: Option<String>,
 }
 
@@ -290,7 +236,6 @@ pub struct ChatsSyncedEntry {
     pub last_message_time: Option<u64>,
 }
 
-/// Delete the `WhatsApp` database files to clear stored credentials.
 fn clear_whatsapp_credentials() {
     let db_path = DATA_DIR.join("whatsapp.db");
     let wal_path = format!("{}-wal", db_path.display());
@@ -309,8 +254,6 @@ fn clear_whatsapp_credentials() {
     }
 }
 
-/// Extract synced messages from a conversation's message list.
-/// Used by `ProcessHistorySync`.
 fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
     for hist_msg in &conv.messages {
@@ -357,44 +300,33 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
 
 #[derive(Debug)]
 pub enum ClientCommand {
-    /// Start the client connection.
     Start,
-    /// Stop the client connection.
     Stop,
-    /// Restart the client connection.
     Restart,
-    /// Client has been successfully connected and authenticated.
     Connected,
-    /// Client has been logged out.
     LoggedOut,
-    /// Client has been disconnected.
     Disconnected,
 
-    /// Pair the account.
     Pair {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Client has paired successfully.
     PairSuccess,
 
-    /// Fetch avatar for a JID in background.
     FetchAvatar {
-        /// Chat JID.
         jid: String,
     },
-    /// Resolve a LID-PN from a chat.
-    ResolveLidPn { chat_jid: String, lid: String },
-    /// Process a `HistorySync` event in background.
-    ProcessHistorySync {
-        /// History sync payload.
+    HistorySync {
         history_sync: Box<LazyHistorySync>,
+    },
+    ResolveLidPn {
+        chat_jid: String,
+        lid: String,
     },
 }
 
 impl Client {
-    /// Update `WhatsApp` client state.
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
     }
@@ -568,7 +500,7 @@ impl AsyncComponent for Client {
                             message.server_id = result.message_id;
 
                             // Update the message in the database.
-                            if let Err(e) = message.save().await {
+                            if let Err(e) = message.upsert().await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
 
@@ -762,7 +694,7 @@ impl AsyncComponent for Client {
                                         let history_sync = history_sync.clone();
 
                                         sender.oneshot_command(async move {
-                                            ClientCommand::ProcessHistorySync { history_sync }
+                                            ClientCommand::HistorySync { history_sync }
                                         });
                                     }
                                     Event::OfflineSyncPreview(_) => {
@@ -1077,29 +1009,7 @@ impl AsyncComponent for Client {
                     let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
                 });
             }
-            ClientCommand::ResolveLidPn { chat_jid, lid } => {
-                let handle = self.handle.lock().await;
-                if let Some(client) = handle.as_ref() {
-                    let Ok(jid) = lid.parse::<Jid>() else {
-                        tracing::error!("Failed to parse JID for LID-PN resolve: {lid}");
-                        return;
-                    };
-                    let phone = match client.get_lid_pn_entry(&jid).await {
-                        Ok(Some(entry)) => Some(entry.phone_number.to_string()),
-                        Ok(None) => None,
-                        Err(e) => {
-                            tracing::warn!("Failed to resolve LID-PN for {lid}: {e}");
-                            None
-                        }
-                    };
-                    let _ = sender.output(ClientOutput::LidPnResolved {
-                        chat_jid,
-                        lid,
-                        phone,
-                    });
-                }
-            }
-            ClientCommand::ProcessHistorySync { history_sync } => {
+            ClientCommand::HistorySync { history_sync } => {
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
                     let Some(sync) = history_sync.get() else {
@@ -1139,6 +1049,28 @@ impl AsyncComponent for Client {
                     let _ = sender_clone.output(ClientOutput::ChatsSynced { entries });
                     let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
+            }
+            ClientCommand::ResolveLidPn { chat_jid, lid } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(jid) = lid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID for LID-PN resolve: {lid}");
+                        return;
+                    };
+                    let phone = match client.get_lid_pn_entry(&jid).await {
+                        Ok(Some(entry)) => Some(entry.phone_number.to_string()),
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!("Failed to resolve LID-PN for {lid}: {e}");
+                            None
+                        }
+                    };
+                    let _ = sender.output(ClientOutput::LidPnResolved {
+                        chat_jid,
+                        lid,
+                        phone,
+                    });
+                }
             }
         }
     }

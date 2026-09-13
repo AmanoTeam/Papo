@@ -4,4 +4,4 @@ mod message;
 
 pub use chat::{Chat, TypingSender};
 pub use media::{Media, MediaType};
-pub use message::{Message as ChatMessage, Status as MessageStatus};
+pub use message::{ChatMessage, MessageStatus};
