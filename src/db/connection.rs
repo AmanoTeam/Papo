@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,18 +26,22 @@ pub async fn open_main_db(keyring: &KeyringService) -> Result<Db, DbError> {
 
 /// Opens (or creates) an encrypted database file with the given models.
 ///
-/// If the file is corrupt or was encrypted with a different key,
-/// it is quarantined (renamed to `{name}.corrupt-{timestamp}`) and a
-/// fresh database is created in its place.
+/// The schema is only pushed on first creation; existing databases are
+/// opened as-is. If the file is corrupt or was encrypted with a different
+/// key, it is quarantined (renamed to `{name}.corrupt-{timestamp}`) and
+/// a fresh database is created in its place.
 pub(crate) async fn open_encrypted_db(
     path: &Path,
     hexkey: &str,
     models: impl Fn() -> ModelSet,
 ) -> Result<Db, DbError> {
+    let is_fresh = !path.exists();
     let driver = create_driver(path, hexkey);
 
     if let Ok(db) = Db::builder().models(models()).build(driver).await {
-        db.push_schema().await?;
+        if is_fresh {
+            db.push_schema().await?;
+        }
         return Ok(db);
     }
 
@@ -50,10 +55,12 @@ pub(crate) async fn open_encrypted_db(
 
 /// Creates a Turso driver with AES-256-GCM page encryption enabled.
 pub(crate) fn create_driver(path: &Path, hexkey: &str) -> Turso {
-    Turso::file(path).experimental_encryption(EncryptionOpts {
-        cipher: "aes256gcm".into(),
-        hexkey: hexkey.into(),
-    })
+    Turso::file(path)
+        .concurrent_writes()
+        .experimental_encryption(EncryptionOpts {
+            cipher: "aes256gcm".into(),
+            hexkey: hexkey.into(),
+        })
 }
 
 /// Renames a corrupt or unreadable database file to `{name}.corrupt-{timestamp}`
@@ -65,11 +72,33 @@ pub(crate) fn quarantine_file(path: &Path) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
+    remove_sidecars(path);
 
     let corrupt = path.with_extension(format!("corrupt-{timestamp}"));
     let _ = fs::rename(path, &corrupt);
-    let _ = fs::remove_file(format!("{}-wal", path.display()));
-    let _ = fs::remove_file(format!("{}-shm", path.display()));
+}
+
+/// Removes journal sidecar files sharing the database file's stem,
+/// leaving the main file itself intact.
+fn remove_sidecars(path: &Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
+        return;
+    };
+
+    let main_name = path.file_name().unwrap_or_default();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        if name != main_name && name.to_str().is_some_and(|name| name.starts_with(stem)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +125,7 @@ mod tests {
 
     #[test]
     fn encrypted_at_rest() {
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
+        Runtime::new().unwrap().block_on(async {
             let dir = env::temp_dir().join(format!("papo-encrypt-{}", Uuid::new_v4()));
             fs::create_dir_all(&dir).unwrap();
 
@@ -113,6 +142,30 @@ mod tests {
 
             let header = fs::read(&path).unwrap();
             assert!(!header.starts_with(b"SQLite format 3"));
+
+            fs::remove_dir_all(&dir).ok();
+        });
+    }
+
+    #[test]
+    fn reopen_existing_database() {
+        Runtime::new().unwrap().block_on(async {
+            let dir = env::temp_dir().join(format!("papo-reopen-{}", Uuid::new_v4()));
+            fs::create_dir_all(&dir).unwrap();
+
+            let path = dir.join("test.db");
+            let key = "2".repeat(64);
+
+            // First open: fresh file, schema pushed.
+            let db = open_encrypted_db(&path, &key, || toasty::models!(Chat, Message))
+                .await
+                .unwrap();
+            drop(db);
+
+            // Second open: existing file, schema push must be skipped.
+            open_encrypted_db(&path, &key, || toasty::models!(Chat, Message))
+                .await
+                .unwrap();
 
             fs::remove_dir_all(&dir).ok();
         });

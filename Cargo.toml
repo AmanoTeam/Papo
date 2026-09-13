@@ -27,7 +27,6 @@ relm4-icons = "0.11"
 relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
-libsql = { version = "0.9", features = ["encryption"] }
 oo7 = "0.7.0-alpha"
 toasty = { version = "0.10", default-features = false, features = ["migration", "turso"] }
 toasty-driver-turso = "0.10"

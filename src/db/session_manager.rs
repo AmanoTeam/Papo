@@ -70,11 +70,10 @@ impl SessionManager {
 
     /// Lists all sessions in the central database.
     ///
-    /// Returns sessions ordered by last activity (most recent first).
-    pub fn list_sessions() -> Vec<Session> {
-        // TODO: implement with toasty `Session::all()` or equivalent query once
-        // the toasty list-all API is confirmed.
-        Vec::new()
+    /// The order is unspecified; callers pick the most recent by `last_active`.
+    pub async fn list_sessions(&self) -> Result<Vec<Session>, toasty::Error> {
+        let mut db = self.main_db.clone();
+        Session::all().exec(&mut db).await
     }
 
     /// Updates the `last_active` timestamp of the given session to now.
@@ -91,8 +90,11 @@ impl SessionManager {
                 "session not found",
             )))?;
 
-        session.last_active = timestamp;
-        session.update().exec(&mut self.main_db).await?;
+        session
+            .update()
+            .last_active(timestamp)
+            .exec(&mut self.main_db)
+            .await?;
 
         Ok(())
     }
@@ -117,10 +119,18 @@ impl SessionManager {
         session.delete().exec(&mut self.main_db).await?;
         self.keyring.delete_session_key(uuid).await.ok();
 
-        if !path.is_empty() {
-            let _ = fs::remove_file(&path);
-            let _ = fs::remove_file(format!("{path}-wal"));
-            let _ = fs::remove_file(format!("{path}-shm"));
+        if !path.is_empty()
+            && let Ok(entries) = fs::read_dir(&*DATA_DIR)
+        {
+            for entry in entries.filter_map(Result::ok) {
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(uuid))
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
         }
 
         let media_dir = DATA_DIR.join("media").join(uuid);
@@ -134,8 +144,8 @@ impl SessionManager {
     /// Used at startup for auto-login: if a valid session is found,
     /// the app skips the login screen and opens that session directly.
     /// Sessions whose database file is missing or corrupt are skipped.
-    pub fn last_valid_session() -> Option<Session> {
-        let sessions = Self::list_sessions();
+    pub async fn last_valid_session(&self) -> Result<Option<Session>, toasty::Error> {
+        let sessions = self.list_sessions().await?;
         let mut best = None::<Session>;
 
         for session in sessions {
@@ -150,7 +160,7 @@ impl SessionManager {
             }
         }
 
-        best
+        Ok(best)
     }
 
     /// Returns a reference to the central database handle.

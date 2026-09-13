@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use indexmap::IndexMap;
 use jiff::Timestamp;
 use uuid::Uuid;
 use whatsapp_rust::{types::presence::ReceiptType, waproto::whatsapp as wa};
 
 use crate::{
+    db::store::SessionStore,
     state::{Chat, Media},
-    store::Database,
 };
 
 /// Maximum number of unique emoji reactions per message to prevent spam.
@@ -16,7 +14,7 @@ const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 /// Represents a chat message.
 #[derive(Clone, Debug)]
 pub struct Message {
-    pub db: Arc<Database>,
+    pub db: SessionStore,
     /// Media attached to this message.
     pub media: Option<Media>,
     /// Actual state of the message.
@@ -43,19 +41,19 @@ pub struct Message {
 
 impl Message {
     /// Insert or update the current message in the database.
-    pub async fn save(&self) -> Result<(), libsql::Error> {
+    pub async fn save(&self) -> Result<(), toasty::Error> {
         self.db.save_message(&self.chat_jid, self).await
     }
 
     /// Insert the message, skipping if a duplicate `server_id` already exists.
     /// Also ensures the chat exists for foreign key satisfaction.
     /// Returns `true` if inserted, `false` if skipped as duplicate.
-    pub async fn save_or_ignore(&self) -> Result<bool, libsql::Error> {
+    pub async fn save_or_ignore(&self) -> Result<bool, toasty::Error> {
         self.db.save_synced_message(&self.chat_jid, self).await
     }
 
     /// Load the chat this message is attached to.
-    pub async fn load_chat(&self) -> Result<Chat, libsql::Error> {
+    pub async fn load_chat(&self) -> Result<Chat, toasty::Error> {
         self.db
             .load_chat(&self.chat_jid)
             .await
@@ -63,7 +61,7 @@ impl Message {
     }
 
     /// Mark this message as read locally.
-    pub async fn mark_read(&mut self) -> Result<(), libsql::Error> {
+    pub async fn mark_read(&mut self) -> Result<(), toasty::Error> {
         if self.status == Status::Read {
             Ok(())
         } else {

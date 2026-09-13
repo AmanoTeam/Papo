@@ -1,14 +1,14 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use jiff::Timestamp;
 use uuid::Uuid;
 
-use crate::{state::ChatMessage, store::Database, utils::format_lid_as_number};
+use crate::{db::store::SessionStore, state::ChatMessage, utils::format_lid_as_number};
 
 /// Represents a chat/conversation.
 #[derive(Clone, Debug)]
 pub struct Chat {
-    pub db: Arc<Database>,
+    pub db: SessionStore,
     /// JID (Jabbed ID) - unique chat identifier.
     pub jid: String,
     /// Display name.
@@ -33,7 +33,7 @@ pub struct Chat {
 
 impl Chat {
     /// Insert or update the current chat in the database.
-    pub async fn save(&self) -> Result<(), libsql::Error> {
+    pub async fn save(&self) -> Result<(), toasty::Error> {
         self.db.save_chat(self).await
     }
 
@@ -43,18 +43,8 @@ impl Chat {
     }
 
     /// Mark all messages in this chat as read.
-    pub async fn mark_read(&self) -> Result<(), libsql::Error> {
-        if self.get_unread_count().await.is_ok_and(|count| count > 0) {
-            self.db
-                .execute(
-                    "UPDATE messages SET status = 1 WHERE chat_jid = ?1 AND (status == 0 OR status == 5)",
-                    [self.jid.as_str()],
-                )
-                .await
-                .map(drop)
-        } else {
-            Ok(())
-        }
+    pub async fn mark_read(&self) -> Result<(), toasty::Error> {
+        self.db.mark_chat_read(&self.jid).await
     }
 
     /// Get the chat name or phone number if empty.
@@ -67,13 +57,13 @@ impl Chat {
     }
 
     /// Get the last sent message in this chat.
-    pub async fn get_last_message(&self) -> Result<Option<ChatMessage>, libsql::Error> {
+    pub async fn get_last_message(&self) -> Result<Option<ChatMessage>, toasty::Error> {
         self.load_messages(1).await.map(|mut m| m.pop())
     }
 
     /// Load a specified amount of messages in this chat.
-    pub async fn load_messages(&self, limit: u32) -> Result<Vec<ChatMessage>, libsql::Error> {
-        self.db.load_messages(&self.jid, limit).await
+    pub async fn load_messages(&self, limit: u32) -> Result<Vec<ChatMessage>, toasty::Error> {
+        self.db.load_messages(&self.jid, limit as usize).await
     }
 
     /// Load messages newer than a given timestamp.
@@ -81,9 +71,9 @@ impl Chat {
         &self,
         after_timestamp: i64,
         limit: u32,
-    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+    ) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db
-            .load_messages_after(&self.jid, after_timestamp, limit)
+            .load_messages_after(&self.jid, after_timestamp, limit as usize)
             .await
     }
 
@@ -92,14 +82,14 @@ impl Chat {
         &self,
         before_timestamp: i64,
         limit: u32,
-    ) -> Result<Vec<ChatMessage>, libsql::Error> {
+    ) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db
-            .load_messages_before(&self.jid, before_timestamp, limit)
+            .load_messages_before(&self.jid, before_timestamp, limit as usize)
             .await
     }
 
     /// Find a message in this chat by its server ID.
-    pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, libsql::Error> {
+    pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, toasty::Error> {
         self.db.load_message_by_server_id(&self.jid, msg_id).await
     }
 
@@ -107,21 +97,22 @@ impl Chat {
     pub async fn find_message_by_local_id(
         &self,
         msg_id: &Uuid,
-    ) -> Result<Option<ChatMessage>, libsql::Error> {
+    ) -> Result<Option<ChatMessage>, toasty::Error> {
         self.db.load_message_by_local_id(&self.jid, msg_id).await
     }
 
     /// Get the count of unread messages in this chat.
-    pub async fn get_unread_count(&self) -> Result<usize, libsql::Error> {
+    pub async fn get_unread_count(&self) -> Result<usize, toasty::Error> {
         self.db.get_unread_count(&self.jid).await
     }
 
     /// Get all unread messages in this chat.
-    pub async fn get_unread_messages(&self) -> Result<Vec<ChatMessage>, libsql::Error> {
+    pub async fn get_unread_messages(&self) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db.get_unread_messages(&self.jid).await
     }
 }
 
+/// A user currently typing in a chat, and whether they are recording audio.
 #[derive(Clone, Debug)]
 pub struct TypingSender {
     pub name: String,

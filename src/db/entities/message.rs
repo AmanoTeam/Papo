@@ -2,6 +2,7 @@ use toasty::{Deferred, Model};
 
 use super::Chat;
 
+/// A single chat message, including media file references.
 #[derive(Debug, Model)]
 pub struct Message {
     #[belongs_to(key = chat_jid, references = jid)]

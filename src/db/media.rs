@@ -141,12 +141,12 @@ mod tests {
         let session = Uuid::new_v4().to_string();
         let storage = MediaStorage::new(&session);
         let path = storage.media_path("user/..%2Fevil", "msg@id", "jpg");
-        let path_str = path.to_string_lossy();
         let chat_component = path
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("");
+
         assert!(!chat_component.contains(".."));
         assert!(!chat_component.contains('/'));
     }

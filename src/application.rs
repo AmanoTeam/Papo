@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use adw::{NavigationSplitView, prelude::*};
 use gtk::{gio, glib};
@@ -25,17 +25,23 @@ use crate::{
         LoginInput, LoginOutput, Welcome, WelcomeOutput,
     },
     config::{APP_ID, PROFILE},
+    db::{
+        entities::{Contact, Session},
+        keyring::KeyringService,
+        session::open_session_db,
+        session_manager::SessionManager,
+        store::SessionStore,
+    },
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{Client, ClientInput, ClientOutput, SyncedMessage},
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
-    store::{Contact, Database},
     utils::{format_lid_as_number, get_first_name},
 };
 
 pub struct Application {
     /// Papo's own database.
-    db: Arc<Database>,
+    db: SessionStore,
     /// Page main stack is displaying.
     page: AppPage,
     /// Current chats' data.
@@ -46,8 +52,12 @@ pub struct Application {
     state: AppState,
     /// `WhatsApp` client wrapper.
     client: AsyncController<Client>,
+    /// The app's own sender.
+    sender: AsyncComponentSender<Self>,
     /// Typing state from chats.
     typing: HashMap<String, ChatTypingState>,
+    /// Current session metadata.
+    session: Session,
     /// Resolved contact list (JID -> name).
     contacts: HashMap<String, String>,
 
@@ -276,6 +286,14 @@ pub enum AppMsg {
 pub enum AppCmd {
     /// Sync cache from database.
     Sync,
+    /// Switch to a new session and store.
+    SwitchSession {
+        /// New session store.
+        db: SessionStore,
+        /// New session metadata.
+        session: Session,
+    },
+
     /// Process chat sync from history (background task).
     ProcessChatSync {
         jid: String,
@@ -291,6 +309,9 @@ pub enum AppCmd {
         is_group: bool,
         messages: Vec<SyncedMessage>,
     },
+
+    /// Update a chat in the chat list.
+    UpdateChatList { chat: Chat, move_to_top: bool },
 }
 
 #[derive(Debug, Default)]
@@ -396,7 +417,7 @@ impl Application {
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
 
-                db: Arc::clone(&self.db),
+                db: self.db.clone(),
             });
 
             self.client.emit(ClientInput::FetchAvatar {
@@ -437,17 +458,18 @@ impl Application {
         self.chat_view
             .emit(ChatViewInput::MessageReceived(Box::new(message.clone())));
 
-        // Save the message in the database.
-        relm4::spawn(async move {
+        // Save the message in the database, then update the chat list.
+        let sender = self.sender.clone();
+        let chat_clone = chat.clone();
+        sender.oneshot_command(async move {
             if let Err(e) = message.save().await {
                 tracing::error!("Failed to save message: {}", e);
             }
-        });
 
-        // Update the chat in the chat list.
-        self.chat_list.emit(ChatListInput::UpdateChat {
-            chat: chat.clone(),
-            move_to_top: true,
+            AppCmd::UpdateChatList {
+                chat: chat_clone,
+                move_to_top: true,
+            }
         });
 
         if typing_cleared {
@@ -482,18 +504,18 @@ impl Application {
                 });
             }
 
-            // Mark chat as read locally.
+            // Mark chat as read locally, then update the chat list.
+            let sender = self.sender.clone();
             let chat_clone = chat.clone();
-            relm4::spawn(async move {
+            sender.oneshot_command(async move {
                 if let Err(e) = chat_clone.mark_read().await {
                     tracing::error!("Failed to mark a chat as read: {e}");
                 }
-            });
 
-            // Update the chat in the chat list.
-            self.chat_list.emit(ChatListInput::UpdateChat {
-                chat: chat.clone(),
-                move_to_top: false,
+                AppCmd::UpdateChatList {
+                    chat: chat_clone,
+                    move_to_top: false,
+                }
             });
         }
     }
@@ -668,11 +690,24 @@ impl AsyncComponent for Application {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let db = Arc::new(
-            Database::new()
+        let keyring = KeyringService::new()
+            .await
+            .expect("Failed to access keyring");
+        let mut session_manager = SessionManager::new(keyring)
+            .await
+            .expect("Failed to open main database");
+        let session = match session_manager.last_valid_session().await {
+            Ok(Some(session)) => session,
+            _ => session_manager
+                .create_session()
                 .await
-                .expect("Failed to initialize database"),
-        );
+                .expect("Failed to create session"),
+        };
+
+        let db = open_session_db(&session.uuid, session_manager.keyring())
+            .await
+            .expect("Failed to open session database");
+        let db = SessionStore::new(db, &session.uuid);
 
         let login =
             Login::builder()
@@ -875,7 +910,9 @@ impl AsyncComponent for Application {
             login,
             state: AppState::Loading,
             client,
+            sender: sender.clone(),
             typing: HashMap::new(),
+            session,
             toaster: Toaster::default(),
             contacts,
             user_jid: None,
@@ -963,16 +1000,36 @@ impl AsyncComponent for Application {
             AppMsg::LoggedOut => {
                 self.page = AppPage::Welcome;
                 self.state = AppState::Pairing;
+                self.chats.clear();
 
                 // Start a fresh client — the old credentials have been cleared
                 // by the ClientCommand::LoggedOut handler.
                 self.client.emit(ClientInput::Start);
 
-                let db = self.db.clone();
-                let chats = std::mem::take(&mut self.chats);
-                relm4::spawn(async move {
-                    for chat in chats {
-                        let _ = db.delete_chat(&chat.jid).await;
+                let session_uuid = self.session.uuid.clone();
+                sender.oneshot_command(async move {
+                    let keyring = KeyringService::new()
+                        .await
+                        .expect("Failed to access keyring");
+                    let mut session_manager = SessionManager::new(keyring)
+                        .await
+                        .expect("Failed to open main database");
+                    session_manager
+                        .delete_session(&session_uuid)
+                        .await
+                        .expect("Failed to delete session");
+
+                    let session = session_manager
+                        .create_session()
+                        .await
+                        .expect("Failed to create session");
+                    let db = open_session_db(&session.uuid, session_manager.keyring())
+                        .await
+                        .expect("Failed to open session database");
+
+                    AppCmd::SwitchSession {
+                        db: SessionStore::new(db, &session.uuid),
+                        session,
                     }
                 });
             }
@@ -1054,7 +1111,7 @@ impl AsyncComponent for Application {
                         move_to_top: false,
                     });
 
-                    tracing::info!("Updated avatar for chat: {}", jid);
+                    tracing::debug!("Updated avatar for chat: {}", jid);
                 }
             }
             AppMsg::ContactUpdate {
@@ -1072,7 +1129,7 @@ impl AsyncComponent for Application {
                 }
 
                 // Save contact to database in background.
-                let db = Arc::clone(&self.db);
+                let db = self.db.clone();
                 let jid_for_contact = jid.clone();
                 let name_for_contact = name.clone();
 
@@ -1080,8 +1137,10 @@ impl AsyncComponent for Application {
                     jid: jid.clone(),
                     name: name.clone(),
                     push_name,
+                    last_updated: 0,
                     phone_number: Some(phone_number),
                     is_registered: true,
+                    profile_picture_url: None,
                 };
 
                 relm4::spawn(async move {
@@ -1422,7 +1481,7 @@ impl AsyncComponent for Application {
                             timestamp: Timestamp::from_second(info.timestamp.timestamp())
                                 .expect("Invalid timestamp"),
 
-                            db: Arc::clone(&self.db),
+                            db: self.db.clone(),
                         };
 
                         self.add_message(&chat_jid, chat_message);
@@ -1707,6 +1766,10 @@ impl AsyncComponent for Application {
                     });
                 }
             }
+            AppCmd::SwitchSession { db, session } => {
+                self.db = db;
+                self.session = session;
+            }
 
             AppCmd::ProcessChatSync {
                 jid,
@@ -1755,7 +1818,7 @@ impl AsyncComponent for Application {
                     participants: participants_map,
                     last_message_time,
 
-                    db: Arc::clone(&self.db),
+                    db: self.db.clone(),
                 };
 
                 // Add to cached list (keep in memory for property updates even if archived).
@@ -1781,7 +1844,7 @@ impl AsyncComponent for Application {
                     if let Err(e) = chat.save().await {
                         tracing::error!("Failed to save synced chat {}: {}", chat.jid, e);
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             "Synced chat from history: {} (archived: {}, pinned: {})",
                             chat.jid,
                             archived,
@@ -1790,13 +1853,12 @@ impl AsyncComponent for Application {
                     }
                 });
             }
-
             AppCmd::ProcessMessagesSync {
                 chat_jid,
                 is_group,
                 messages,
             } => {
-                let db = Arc::clone(&self.db);
+                let db = self.db.clone();
 
                 // Collect sender info for participant updates.
                 let sender_info: Vec<(String, Option<String>)> = if is_group {
@@ -1823,6 +1885,9 @@ impl AsyncComponent for Application {
                         }
                     }
                 }
+
+                let chat_clone = self.chats.iter().find(|c| c.jid == chat_jid).cloned();
+                let sender = self.sender.clone();
 
                 // Spawn database operations in background task.
                 relm4::spawn(async move {
@@ -1863,7 +1928,7 @@ impl AsyncComponent for Application {
                             reactions: IndexMap::new(),
                             timestamp,
 
-                            db: Arc::clone(&db),
+                            db: db.clone(),
                         };
 
                         // Save the message, skipping duplicates on server_id.
@@ -1874,7 +1939,7 @@ impl AsyncComponent for Application {
                         }
                     }
 
-                    tracing::info!(
+                    tracing::debug!(
                         "Synced {} messages for chat: {} (of {} received, {} duplicates, {} without content)",
                         saved_count,
                         chat_jid,
@@ -1882,7 +1947,21 @@ impl AsyncComponent for Application {
                         dup_count,
                         skip_count
                     );
+
+                    if let Some(chat) = chat_clone {
+                        sender.oneshot_command(async move {
+                            AppCmd::UpdateChatList {
+                                chat,
+                                move_to_top: false,
+                            }
+                        });
+                    }
                 });
+            }
+
+            AppCmd::UpdateChatList { chat, move_to_top } => {
+                self.chat_list
+                    .emit(ChatListInput::UpdateChat { chat, move_to_top });
             }
         }
     }

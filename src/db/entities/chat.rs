@@ -2,6 +2,7 @@ use toasty::{Deferred, Model};
 
 use super::Message;
 
+/// A chat conversation stored in the per-session database.
 #[derive(Debug, Model)]
 pub struct Chat {
     #[key]

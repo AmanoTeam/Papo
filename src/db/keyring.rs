@@ -46,21 +46,25 @@ pub struct KeyringService {
 }
 
 impl KeyringService {
+    /// Connects to the system keyring, auto-selecting the appropriate backend.
     pub async fn new() -> Result<Self, KeyringError> {
         Ok(Self {
             keyring: Keyring::new().await?,
         })
     }
 
+    /// Wraps an existing keyring handle (used by tests to inject a file backend).
     fn with_keyring(keyring: Keyring) -> Self {
         Self { keyring }
     }
 
+    /// Retrieves the main database encryption key, creating a new one if absent.
     pub async fn get_or_create_main_key(&self) -> Result<String, KeyringError> {
         self.get_or_create(&[("papo", "main")], &i18n!("Papo database encryption key"))
             .await
     }
 
+    /// Retrieves the encryption key for the given session, creating one if absent.
     pub async fn get_or_create_session_key(&self, uuid: &str) -> Result<String, KeyringError> {
         self.get_or_create(
             &[("papo", "session"), ("uuid", uuid)],
@@ -69,6 +73,7 @@ impl KeyringService {
         .await
     }
 
+    /// Removes the encryption key for the given session from the keyring.
     pub async fn delete_session_key(&self, uuid: &str) -> Result<(), KeyringError> {
         Ok(self
             .keyring
@@ -76,6 +81,7 @@ impl KeyringService {
             .await?)
     }
 
+    /// Looks up a keyring item by attributes; creates a new random key if missing.
     async fn get_or_create(
         &self,
         attributes: &impl AsAttributes,

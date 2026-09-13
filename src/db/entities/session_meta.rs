@@ -1,5 +1,6 @@
 use toasty::Model;
 
+/// A `WhatsApp` account session, tracked in the central `papo.db` metadata table.
 #[derive(Clone, Debug, Model)]
 pub struct Session {
     pub name: Option<String>,
