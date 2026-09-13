@@ -326,7 +326,7 @@ impl RelmListItem for ChatRow {
 
                 widgets
                     .bubble_box
-                    .set_margin_top(if *first { 8 } else { 1 });
+                    .set_margin_top(if *first { 4 } else { 1 });
                 widgets.bubble_box.set_margin_bottom(2);
             }
         }
