@@ -38,7 +38,12 @@ pub(crate) async fn open_encrypted_db(
     let is_fresh = !path.exists();
     let driver = create_driver(path, hexkey);
 
-    if let Ok(db) = Db::builder().models(models()).build(driver).await {
+    if let Ok(db) = Db::builder()
+        .models(models())
+        .max_pool_size(2)
+        .build(driver)
+        .await
+    {
         if is_fresh {
             db.push_schema().await?;
         }
@@ -47,7 +52,11 @@ pub(crate) async fn open_encrypted_db(
 
     quarantine_file(path);
     let driver = create_driver(path, hexkey);
-    let db = Db::builder().models(models()).build(driver).await?;
+    let db = Db::builder()
+        .models(models())
+        .max_pool_size(2)
+        .build(driver)
+        .await?;
     db.push_schema().await?;
 
     Ok(db)
