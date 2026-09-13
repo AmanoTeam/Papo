@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use whatsapp_rust::download::MediaType as DownloadMediaType;
+use whatsapp_rust::{download::MediaType as DownloadMediaType, waproto::whatsapp as wa};
 
 use crate::i18n;
 
@@ -31,6 +31,42 @@ impl Media {
 
     pub fn can_download(&self) -> bool {
         self.downloadable.is_some()
+    }
+
+    pub(crate) fn from_wa_message(msg: &wa::Message) -> Option<Self> {
+        msg.image_message
+            .as_option()
+            .map(|image| Self {
+                r#type: MediaType::Image,
+                caption: image.caption.clone().filter(|c| !c.is_empty()),
+                ..Self::default()
+            })
+            .or_else(|| {
+                msg.video_message.as_option().map(|video| Self {
+                    r#type: MediaType::Video,
+                    caption: video.caption.clone().filter(|c| !c.is_empty()),
+                    ..Self::default()
+                })
+            })
+            .or_else(|| {
+                msg.audio_message.as_option().map(|_| Self {
+                    r#type: MediaType::Audio,
+                    ..Self::default()
+                })
+            })
+            .or_else(|| {
+                msg.sticker_message.as_option().map(|_| Self {
+                    r#type: MediaType::Sticker,
+                    ..Self::default()
+                })
+            })
+            .or_else(|| {
+                msg.document_message.as_option().map(|document| Self {
+                    r#type: MediaType::Document,
+                    caption: document.file_name.clone().filter(|n| !n.is_empty()),
+                    ..Self::default()
+                })
+            })
     }
 }
 

@@ -70,6 +70,20 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
     }
 }
 
+fn bind_content_label(widgets: &ChatRowWidgets, msg: &ChatMessage) {
+    let Some(media) = &msg.media else {
+        widgets.content_label.set_label(&msg.content);
+        return;
+    };
+
+    let label = media.r#type.display_label();
+    widgets.content_label.set_label(&if msg.content.is_empty() {
+        label
+    } else {
+        format!("{label}\n{}", msg.content)
+    });
+}
+
 impl RelmListItem for ChatRow {
     type Root = gtk::Box;
     type Widgets = ChatRowWidgets;
@@ -233,7 +247,8 @@ impl RelmListItem for ChatRow {
             } => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
-                widgets.content_label.set_label(&msg.content);
+                bind_content_label(widgets, msg);
+
                 // Convert UTC timestamp to local time for display
                 let local_time = msg.timestamp.to_zoned(TimeZone::system());
                 widgets

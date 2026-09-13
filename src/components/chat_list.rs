@@ -374,7 +374,6 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
             ChatListInput::SelectPosition(position) => {
-                // Get the chat row.
                 if let Some(item) = self.list_view_wrapper.get_visible(position) {
                     let row = item.borrow();
 
@@ -664,8 +663,7 @@ impl RelmListItem for ChatRow {
         }
 
         if let Some(msg) = &self.last_message {
-            // Get last message's content.
-            let mut content = msg.content.clone();
+            let mut content = last_message_content(msg);
             let mut first_line = if content.contains('\n') {
                 content
                     .split_once('\n')
@@ -680,7 +678,6 @@ impl RelmListItem for ChatRow {
             } else {
                 content.clone()
             };
-
             if let Some(ref name) = msg.sender_name
                 && self.chat.is_group()
             {
@@ -696,7 +693,6 @@ impl RelmListItem for ChatRow {
             widgets.subtitle_label.set_label(&first_line);
             root.set_tooltip_text(Some(&content));
 
-            // Get last message's status.
             if msg.outgoing {
                 widgets.status_icon.set_visible(true);
                 widgets
@@ -715,10 +711,8 @@ impl RelmListItem for ChatRow {
                 widgets.status_icon.set_visible(false);
             }
 
-            // Get last message's timestamp.
             let now = Zoned::now();
             let timestamp = msg.timestamp.to_zoned(TimeZone::system());
-
             let sent_today = now.date() == timestamp.date();
             let time = if sent_today {
                 timestamp.strftime("%H:%M").to_string()
@@ -732,6 +726,20 @@ impl RelmListItem for ChatRow {
             root.set_tooltip_text(None);
         }
     }
+}
+
+fn last_message_content(msg: &ChatMessage) -> String {
+    msg.media.as_ref().map_or_else(
+        || msg.content.clone(),
+        |media| {
+            let label = media.r#type.display_label();
+            if msg.content.is_empty() {
+                label
+            } else {
+                format!("{label}\n{}", msg.content)
+            }
+        },
+    )
 }
 
 fn build_typing_widgets() -> (gtk::Box, gtk::Label) {

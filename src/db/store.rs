@@ -11,6 +11,7 @@ use crate::{
     db::{
         entities::{Chat as ChatEntity, Contact, Message as MessageEntity},
         media::MediaStorage,
+        protocol::LidMapping,
     },
     state::{Chat, ChatMessage, Media, MediaType, MessageStatus},
 };
@@ -85,13 +86,15 @@ impl SessionStore {
     }
 
     /// Converts a stored message entity into the runtime `ChatMessage`,
-    /// loading media bytes from disk when a media path is present.
+    /// loading media bytes from disk when a media path is present, or
+    /// building a metadata-only placeholder when only `media_type` is set.
     fn message_from_entity(&self, entity: MessageEntity) -> ChatMessage {
-        let media = entity
+        let media = if let Some(data) = entity
             .media_path
             .as_ref()
             .and_then(|path| MediaStorage::load_media(path).ok())
-            .map(|data| Media {
+        {
+            Some(Media {
                 data: Arc::new(data),
                 mime_type: entity.media_mime.clone().unwrap_or_default(),
                 r#type: entity
@@ -99,7 +102,14 @@ impl SessionStore {
                     .as_deref()
                     .map_or(MediaType::Image, |t| MediaType::from(t.to_string())),
                 ..Media::default()
-            });
+            })
+        } else {
+            entity.media_type.as_deref().map(|t| Media {
+                r#type: MediaType::from(t),
+                mime_type: entity.media_mime.clone().unwrap_or_default(),
+                ..Media::default()
+            })
+        };
 
         ChatMessage {
             chat_jid: entity.chat_jid,
@@ -366,6 +376,18 @@ impl SessionStore {
         .await?
         .filter(|m| m.chat_jid == chat_jid)
         .map(|entity| self.message_from_entity(entity)))
+    }
+
+    pub async fn lid_to_pn_jid(&self, lid_jid: &str) -> Option<String> {
+        let lid = lid_jid.strip_suffix("@lid")?;
+        let mut db = self.db.clone();
+
+        LidMapping::filter_by_lid(lid.to_string())
+            .first()
+            .exec(&mut db)
+            .await
+            .ok()?
+            .map(|entry| format!("{}@s.whatsapp.net", entry.phone_number))
     }
 
     /// Loads messages for a chat, most recent first, up to `limit`.

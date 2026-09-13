@@ -35,7 +35,7 @@ use crate::{
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{ChatsSyncedEntry, Client, ClientInput, ClientOutput},
-    state::{Chat, ChatMessage, MessageStatus, TypingSender},
+    state::{Chat, ChatMessage, Media, MediaType, MessageStatus, TypingSender},
     utils::{format_lid_as_number, get_first_name},
 };
 
@@ -308,11 +308,13 @@ impl Application {
                 format!("{} {}", i18n!("Group"), &chat_jid[..8])
             } else if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
                 i18n!("You")
-            } else {
+            } else if !message.outgoing {
                 message
                     .sender_name
                     .clone()
                     .unwrap_or_else(|| format_lid_as_number(chat_jid))
+            } else {
+                format_lid_as_number(chat_jid)
             };
 
             self.add_chat(Chat {
@@ -341,7 +343,6 @@ impl Application {
                 .get_mut(chat_jid)
                 .is_some_and(|state| state.senders.shift_remove(&message.sender_jid).is_some());
 
-        // Get the chat.
         let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) else {
             return;
         };
@@ -1337,7 +1338,14 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppMsg::MessageReceived { info, message } => {
+            AppMsg::MessageReceived { info, mut message } => {
+                if let Some(mut sent) = message.device_sent_message.take()
+                    && let Some(inner) = sent.message.take()
+                {
+                    *message = inner;
+                }
+
+                let media = Media::from_wa_message(&message);
                 let content = message
                     .conversation
                     .clone()
@@ -1347,16 +1355,21 @@ impl AsyncComponent for Application {
                             .extended_text_message
                             .as_option()
                             .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                    });
+                    })
+                    .or_else(|| media.as_ref().and_then(|m| m.caption.clone()));
 
-                if let Some(content) = content {
-                    if content == "status@broadcast" {
+                if content.is_some() || media.is_some() {
+                    if content.as_deref() == Some("status@broadcast") {
                         // TODO: handle status events
                     } else {
-                        let chat_jid = info.source.chat.to_string();
+                        let mut chat_jid = info.source.chat.to_string();
+                        if chat_jid.ends_with("@lid")
+                            && let Some(pn_jid) = self.db.lid_to_pn_jid(&chat_jid).await
+                        {
+                            chat_jid = pn_jid;
+                        }
                         let outgoing = info.source.is_from_me;
 
-                        let status = MessageStatus::Sent;
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.clone(),
@@ -1376,9 +1389,9 @@ impl AsyncComponent for Application {
                             },
                             sender_name: Some(info.push_name.clone()),
 
-                            media: None,
-                            status,
-                            content,
+                            media,
+                            status: MessageStatus::Sent,
+                            content: content.unwrap_or_default(),
                             outgoing,
                             reactions: IndexMap::new(),
                             timestamp: Timestamp::from_second(info.timestamp.timestamp())
@@ -1386,8 +1399,8 @@ impl AsyncComponent for Application {
 
                             db: self.db.clone(),
                         };
-
                         self.add_message(&chat_jid, chat_message);
+
                         if !outgoing {
                             let sender_jid = info.source.sender.to_string();
                             let name =
@@ -1414,18 +1427,6 @@ impl AsyncComponent for Application {
                             }
                         }
                     }
-                } else if let Some(sent_message) = message.device_sent_message.as_option() {
-                    if let Some(_chat_jid) = sent_message.destination_jid.as_ref() {
-                        if let Some(msg) = sent_message.message.as_option() {
-                            if let Some(_reaction) = msg.reaction_message.as_option() {
-                                // TODO: handle
-                            } else if let Some(_sticker) = msg.sticker_message.as_option() {
-                                // TODO: handle
-                            }
-                        }
-                    } else {
-                        // TODO: maybe add message to "You" chat?
-                    }
                 } else {
                     tracing::trace!(
                         "Message without content received: info = {:#?}, message = {:#?}",
@@ -1436,7 +1437,6 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::SendTextMessage { text, recipient } => {
-                // Get the chat if it exists and is loaded.
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == recipient).cloned() {
                     let timestamp = Timestamp::now();
                     let message = ChatMessage {
@@ -1761,11 +1761,17 @@ impl AsyncComponent for Application {
                         let total = messages.len();
 
                         for synced_msg in messages {
+                            let media = synced_msg.media_type.map(|t| Media {
+                                r#type: MediaType::from(t),
+                                ..Media::default()
+                            });
+                            let content = synced_msg.content;
+
                             // Skip messages without content for now.
-                            let Some(content) = synced_msg.content else {
+                            if content.is_none() && media.is_none() {
                                 skip_count += 1;
                                 continue;
-                            };
+                            }
 
                             // Select message status based on `unread` and `outgoing` fields.
                             let status = match (synced_msg.unread, synced_msg.outgoing) {
@@ -1786,9 +1792,9 @@ impl AsyncComponent for Application {
                                 sender_jid: synced_msg.sender_jid.clone(),
                                 sender_name: synced_msg.sender_name.clone(),
 
-                                media: None,
+                                media,
                                 status,
-                                content,
+                                content: content.unwrap_or_default(),
                                 outgoing: synced_msg.outgoing,
                                 reactions: IndexMap::new(),
                                 timestamp,

@@ -30,7 +30,7 @@ use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
     session::AvatarCache,
-    state::ChatMessage,
+    state::{ChatMessage, Media},
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -222,6 +222,7 @@ pub struct SyncedMessage {
     pub content: Option<String>,
     pub outgoing: bool,
     pub timestamp: u64,
+    pub media_type: Option<String>,
     pub sender_jid: String,
     pub sender_name: Option<String>,
 }
@@ -259,6 +260,7 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                     .as_secs()
             });
 
+            let media = Media::from_wa_message(msg);
             let content = msg
                 .conversation
                 .clone()
@@ -267,7 +269,8 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                     msg.extended_text_message
                         .as_option()
                         .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                });
+                })
+                .or_else(|| media.as_ref().and_then(|m| m.caption.clone()));
 
             synced_messages.push(SyncedMessage {
                 id: msg_id,
@@ -275,6 +278,7 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                 content,
                 outgoing,
                 timestamp,
+                media_type: media.as_ref().map(|m| format!("{:?}", m.r#type)),
                 sender_jid,
                 sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
             });
