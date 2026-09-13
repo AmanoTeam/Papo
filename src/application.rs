@@ -1088,22 +1088,36 @@ impl AsyncComponent for Application {
                     match MessageStatus::try_from(receipt_type) {
                         Ok(status) => {
                             for msg_id in message_ids {
-                                if let Ok(Some(mut message)) = chat.find_message(&msg_id).await {
-                                    // Update message status.
-                                    message.status = status;
+                                match chat.find_message(&msg_id).await {
+                                    Ok(Some(mut message)) => {
+                                        // Update message status.
+                                        message.status = status;
 
-                                    // Update the message in the database.
-                                    let msg_clone = message.clone();
-                                    relm4::spawn(async move {
-                                        if let Err(e) = msg_clone.upsert().await {
-                                            tracing::error!("Failed to update message: {}", e);
-                                        }
-                                    });
+                                        self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                                            status: message.status,
+                                            local_id: message.local_id,
+                                        });
 
-                                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
-                                        status: message.status,
-                                        local_id: message.local_id,
-                                    });
+                                        // Update the message in the database.
+                                        let db = self.db.clone();
+                                        let local_id = message.local_id;
+                                        relm4::spawn(async move {
+                                            if let Err(e) =
+                                                db.set_message_status(local_id, status).await
+                                            {
+                                                tracing::error!(
+                                                    "Failed to update message status: {}",
+                                                    e
+                                                );
+                                            }
+                                        });
+                                    }
+                                    Ok(None) => {
+                                        tracing::warn!("Message {} not found", msg_id);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Message {} not found: {e}", msg_id);
+                                    }
                                 }
                             }
 
@@ -1232,24 +1246,21 @@ impl AsyncComponent for Application {
                 msg_id,
                 status,
             } => {
-                // Get the chat and message altogether.
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
                     && let Ok(Some(mut message)) = chat.find_message_by_local_id(&msg_id).await
                 {
-                    // Update the message status in-place.
                     message.status = status;
-
-                    // Update the message in the database.
-                    let msg_clone = message.clone();
-                    relm4::spawn(async move {
-                        if let Err(e) = msg_clone.upsert().await {
-                            tracing::error!("Failed to update message: {}", e);
-                        }
-                    });
 
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
                         status: message.status,
-                        local_id: msg_id,
+                        local_id: message.local_id,
+                    });
+
+                    let db = self.db.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = db.set_message_status(msg_id, status).await {
+                            tracing::error!("Failed to update message status: {}", e);
+                        }
                     });
                 }
             }

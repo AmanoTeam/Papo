@@ -447,6 +447,22 @@ impl SessionStore {
         Ok(())
     }
 
+    pub async fn set_message_status(
+        &self,
+        local_id: Uuid,
+        status: MessageStatus,
+    ) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+        let mut message = MessageEntity::filter_by_local_id(local_id.to_string())
+            .one()
+            .exec(&mut db)
+            .await?;
+        message.update().status(status as i64).exec(&mut db).await?;
+
+        Ok(())
+    }
+
     /// Counts unread messages in a chat (status != `Read` and not outgoing).
     pub async fn get_unread_count(&self, chat_jid: &str) -> Result<usize, toasty::Error> {
         let mut db = self.db.clone();
@@ -467,6 +483,7 @@ impl SessionStore {
             .exec(&mut db)
             .await
     }
+
     /// Returns all unread messages in a chat (status != `Read` and not outgoing).
     pub async fn get_unread_messages(
         &self,
@@ -541,23 +558,19 @@ impl SessionStore {
 impl SessionStore {
     /// Searches contacts by name, `push_name`, or `JID` (case-insensitive).
     pub async fn search_contacts(&self, query: &str) -> Result<Vec<Contact>, toasty::Error> {
-        let q = query.to_lowercase();
         let mut db = self.db.clone();
 
-        Ok(Contact::all()
-            .exec(&mut db)
-            .await?
-            .into_iter()
-            .filter(|c| {
-                c.name
-                    .as_deref()
-                    .is_some_and(|n| n.to_lowercase().contains(&q))
-                    || c.push_name
-                        .as_deref()
-                        .is_some_and(|n| n.to_lowercase().contains(&q))
-                    || c.jid.to_lowercase().contains(&q)
-            })
-            .collect::<Vec<_>>())
+        Ok(Contact::filter(
+            Contact::fields()
+                .name()
+                .like(format!("%{query}%"))
+                .or(Contact::fields().push_name().like(format!("%{query}%")))
+                .or(Contact::fields().jid().like(format!("%{query}%"))),
+        )
+        .exec(&mut db)
+        .await?
+        .into_iter()
+        .collect::<Vec<_>>())
     }
 
     /// Searches messages by content (case-insensitive), most recent first.
@@ -566,24 +579,27 @@ impl SessionStore {
         query: &str,
         limit: u32,
     ) -> Result<Vec<(String, ChatMessage)>, toasty::Error> {
-        let q = query.to_lowercase();
         let mut db = self.db.clone();
-        let mut results = MessageEntity::all()
+        let q = query.to_lowercase();
+
+        let mut matches = MessageEntity::all()
             .exec(&mut db)
             .await?
             .into_iter()
-            .filter(|m| {
-                m.content
-                    .as_deref()
-                    .is_some_and(|c| c.to_lowercase().contains(&q))
+            .filter_map(|entity| {
+                let content = entity.content.as_ref()?;
+                content
+                    .to_lowercase()
+                    .contains(&q)
+                    .then(|| (entity.chat_jid.clone(), self.message_from_entity(entity)))
             })
-            .map(|entity| (entity.chat_jid.clone(), self.message_from_entity(entity)))
             .collect::<Vec<_>>();
 
-        results.sort_by_key(|(_, m)| cmp::Reverse(m.timestamp.as_second()));
-        results.truncate(limit as usize);
+        matches.sort_by_key(|(_, message)| std::cmp::Reverse(message.timestamp));
 
-        Ok(results)
+        matches.truncate(limit as usize);
+
+        Ok(matches)
     }
 }
 
