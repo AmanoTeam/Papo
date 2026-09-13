@@ -3,6 +3,7 @@ pub mod entities;
 pub mod keyring;
 pub mod media;
 pub mod migrations;
+pub mod protocol;
 pub mod session;
 pub mod session_manager;
 pub mod store;

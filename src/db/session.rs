@@ -3,10 +3,7 @@ use toasty::Db;
 use crate::{
     DATA_DIR,
     db::{
-        DbError,
-        connection::open_encrypted_db,
-        entities::{Chat, Contact, Message},
-        keyring::KeyringService,
+        DbError, connection::open_encrypted_db, keyring::KeyringService, protocol::session_models,
     },
 };
 
@@ -19,5 +16,5 @@ pub async fn open_session_db(uuid: &str, keyring: &KeyringService) -> Result<Db,
     let key = keyring.get_or_create_session_key(uuid).await?;
     let path = DATA_DIR.join(format!("{uuid}.session"));
 
-    open_encrypted_db(&path, &key, || toasty::models!(Chat, Message, Contact)).await
+    open_encrypted_db(&path, &key, session_models).await
 }

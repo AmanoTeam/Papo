@@ -9,8 +9,9 @@ use crate::{
     db::{
         DbError,
         connection::{open_encrypted_db, open_main_db},
-        entities::{Chat, Contact, Message, Session},
+        entities::Session,
         keyring::KeyringService,
+        protocol::session_models,
     },
 };
 
@@ -46,7 +47,7 @@ impl SessionManager {
         let uuid = Uuid::new_v4().to_string();
         let path = DATA_DIR.join(format!("{uuid}.session"));
         let key = self.keyring.get_or_create_session_key(&uuid).await?;
-        open_encrypted_db(&path, &key, || toasty::models!(Chat, Message, Contact)).await?;
+        open_encrypted_db(&path, &key, session_models).await?;
 
         let timestamp = Timestamp::now().as_second();
         Session::create()
