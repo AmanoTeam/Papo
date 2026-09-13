@@ -57,6 +57,10 @@ impl SessionStore {
         &self.db
     }
 
+    pub(crate) fn write_lock(&self) -> &Arc<Mutex<()>> {
+        &self.write_lock
+    }
+
     fn media_storage(&self) -> MediaStorage {
         MediaStorage::new(&self.session)
     }
