@@ -1,6 +1,4 @@
 use std::{
-    fs,
-    path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -15,7 +13,6 @@ use whatsapp_rust::{
     bot::Bot,
     http::{HttpRequest, UreqHttpClient},
     pair_code::{CompanionWebClientType, PairCodeOptions},
-    store::SqliteStore,
     transport::TokioWebSocketTransportFactory,
     types::{
         events::{Event, LazyHistorySync},
@@ -29,13 +26,19 @@ use whatsapp_rust::{
     },
 };
 
-use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
+use crate::{
+    db::{protocol::backend::ProtocolBackend, store::SessionStore},
+    i18n, i18n_f,
+    session::AvatarCache,
+    state::ChatMessage,
+};
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
 
 #[derive(Clone)]
 pub struct Client {
     pub state: ClientState,
+    store: SessionStore,
     handle: ClientHandle,
     os_type: String,
 
@@ -236,24 +239,6 @@ pub struct ChatsSyncedEntry {
     pub last_message_time: Option<u64>,
 }
 
-fn clear_whatsapp_credentials() {
-    let db_path = DATA_DIR.join("whatsapp.db");
-    let wal_path = format!("{}-wal", db_path.display());
-    let shm_path = format!("{}-shm", db_path.display());
-
-    for path in [
-        db_path.as_path(),
-        Path::new(&wal_path),
-        Path::new(&shm_path),
-    ] {
-        if path.exists()
-            && let Err(e) = fs::remove_file(path)
-        {
-            tracing::warn!("Failed to delete {}: {}", path.display(), e);
-        }
-    }
-}
-
 fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
     for hist_msg in &conv.messages {
@@ -334,7 +319,7 @@ impl Client {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for Client {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ClientInput;
     type Output = ClientOutput;
     type CommandOutput = ClientCommand;
@@ -348,7 +333,7 @@ impl AsyncComponent for Client {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        init: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
@@ -368,6 +353,7 @@ impl AsyncComponent for Client {
 
         let model = Self {
             state: ClientState::Loading,
+            store: init,
             handle: Arc::new(Mutex::new(None)),
             os_type,
             avatar_cache: Arc::new(Mutex::new(avatar_cache)),
@@ -553,20 +539,8 @@ impl AsyncComponent for Client {
                     self.state,
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
-                    // Initialize SQLite backend.
-                    let path = DATA_DIR.join("whatsapp.db").to_string_lossy().into_owned();
-                    let backend = match SqliteStore::new(&path).await {
-                        Ok(store) => store,
-                        Err(e) => {
-                            tracing::error!("Failed to initialize SQLite storage: {e}");
-                            let _ = sender.output(ClientOutput::Error {
-                                message: i18n_f!("Database error: {0}", e),
-                            });
-
-                            return;
-                        }
-                    };
-                    tracing::info!("SQLite storage initialized successfully");
+                    let backend = ProtocolBackend::new(self.store.clone());
+                    tracing::info!("Protocol backend initialized");
 
                     // Get application version from cargo package.
                     let app_version = (
@@ -827,9 +801,6 @@ impl AsyncComponent for Client {
                 }
                 tracing::info!("Disconnected from WhatsApp");
 
-                // Clear credentials for a fresh start.
-                clear_whatsapp_credentials();
-
                 // Reset the client state.
                 self.update_state(ClientState::Loading);
 
@@ -861,9 +832,6 @@ impl AsyncComponent for Client {
                         *handle = None;
                     }
                 }
-
-                // Clear stale credentials so the next start begins fresh pairing.
-                clear_whatsapp_credentials();
 
                 self.update_state(ClientState::LoggedOut);
                 let _ = sender.output(ClientOutput::LoggedOut);

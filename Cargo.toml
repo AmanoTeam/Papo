@@ -62,7 +62,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 
 # WhatsApp
-whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "535732f4" }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "535732f4", default-features = false, features = ["signal", "tokio-native", "tokio-transport", "ureq-client"] }
 
 [build-dependencies]
 relm4-icons-build = "0.11"

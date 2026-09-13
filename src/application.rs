@@ -648,116 +648,121 @@ impl AsyncComponent for Application {
             }
         }
 
-        let client = Client::builder()
-            .launch(())
-            .forward(sender.input_sender(), |output| match output {
-                ClientOutput::Connected { jid, push_name } => AppMsg::Connected { jid, push_name },
-                ClientOutput::LoggedOut => AppMsg::LoggedOut,
-                ClientOutput::Disconnected => AppMsg::Disconnected,
-                ClientOutput::SelfPushNameUpdated { push_name } => {
-                    AppMsg::SelfPushNameUpdated { push_name }
-                }
+        let client =
+            Client::builder()
+                .launch(db.clone())
+                .forward(sender.input_sender(), |output| match output {
+                    ClientOutput::Connected { jid, push_name } => {
+                        AppMsg::Connected { jid, push_name }
+                    }
+                    ClientOutput::LoggedOut => AppMsg::LoggedOut,
+                    ClientOutput::Disconnected => AppMsg::Disconnected,
+                    ClientOutput::SelfPushNameUpdated { push_name } => {
+                        AppMsg::SelfPushNameUpdated { push_name }
+                    }
 
-                ClientOutput::PairCode {
-                    code,
-                    qr_code,
-                    timeout,
-                } => AppMsg::PairDevice {
-                    code,
-                    qr_code,
-                    timeout,
-                },
-                ClientOutput::PairSuccess => AppMsg::DevicePaired,
+                    ClientOutput::PairCode {
+                        code,
+                        qr_code,
+                        timeout,
+                    } => AppMsg::PairDevice {
+                        code,
+                        qr_code,
+                        timeout,
+                    },
+                    ClientOutput::PairSuccess => AppMsg::DevicePaired,
 
-                ClientOutput::ReceiptUpdate {
-                    chat_jid,
-                    message_ids,
-                    receipt_type,
-                } => AppMsg::ReceiptUpdate {
-                    chat_jid,
-                    message_ids,
-                    receipt_type,
-                },
-                ClientOutput::PresenceUpdate {
-                    jid,
-                    available,
-                    last_seen,
-                } => AppMsg::PresenceUpdate {
-                    jid,
-                    available,
-                    last_seen,
-                },
-                ClientOutput::ChatPresenceUpdate {
-                    chat_jid,
-                    active,
-                    recording,
-                    sender_jid,
-                    sender_alt,
-                } => AppMsg::ChatPresenceUpdate {
-                    chat_jid,
-                    active,
-                    recording,
-                    sender_jid,
-                    sender_alt,
-                },
+                    ClientOutput::ReceiptUpdate {
+                        chat_jid,
+                        message_ids,
+                        receipt_type,
+                    } => AppMsg::ReceiptUpdate {
+                        chat_jid,
+                        message_ids,
+                        receipt_type,
+                    },
+                    ClientOutput::PresenceUpdate {
+                        jid,
+                        available,
+                        last_seen,
+                    } => AppMsg::PresenceUpdate {
+                        jid,
+                        available,
+                        last_seen,
+                    },
+                    ClientOutput::ChatPresenceUpdate {
+                        chat_jid,
+                        active,
+                        recording,
+                        sender_jid,
+                        sender_alt,
+                    } => AppMsg::ChatPresenceUpdate {
+                        chat_jid,
+                        active,
+                        recording,
+                        sender_jid,
+                        sender_alt,
+                    },
 
-                ClientOutput::MessageReceived { info, message } => {
-                    AppMsg::MessageReceived { info, message }
-                }
-                ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
-                    chat_jid,
-                    msg_id,
-                    status: MessageStatus::Sent,
-                },
-                ClientOutput::MessageFailed { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
-                    chat_jid,
-                    msg_id,
-                    status: MessageStatus::Failed,
-                },
+                    ClientOutput::MessageReceived { info, message } => {
+                        AppMsg::MessageReceived { info, message }
+                    }
+                    ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
+                        chat_jid,
+                        msg_id,
+                        status: MessageStatus::Sent,
+                    },
+                    ClientOutput::MessageFailed { chat_jid, msg_id } => {
+                        AppMsg::MessageStatusUpdate {
+                            chat_jid,
+                            msg_id,
+                            status: MessageStatus::Failed,
+                        }
+                    }
 
-                ClientOutput::ChatsSynced { entries } => AppMsg::ChatsSynced { entries },
+                    ClientOutput::ChatsSynced { entries } => AppMsg::ChatsSynced { entries },
 
-                ClientOutput::ChatPropertyUpdate {
-                    jid,
-                    pinned,
-                    muted,
-                    archived,
-                } => AppMsg::ChatPropertyUpdate {
-                    jid,
-                    pinned,
-                    muted,
-                    archived,
-                },
+                    ClientOutput::ChatPropertyUpdate {
+                        jid,
+                        pinned,
+                        muted,
+                        archived,
+                    } => AppMsg::ChatPropertyUpdate {
+                        jid,
+                        pinned,
+                        muted,
+                        archived,
+                    },
 
-                ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
-                ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
+                    ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
+                    ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
-                ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
-                ClientOutput::ContactUpdate {
-                    jid,
-                    name,
-                    push_name,
-                    phone_number,
-                } => AppMsg::ContactUpdate {
-                    jid,
-                    name,
-                    push_name,
-                    phone_number,
-                },
+                    ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
+                    ClientOutput::ContactUpdate {
+                        jid,
+                        name,
+                        push_name,
+                        phone_number,
+                    } => AppMsg::ContactUpdate {
+                        jid,
+                        name,
+                        push_name,
+                        phone_number,
+                    },
 
-                ClientOutput::LidPnResolved {
-                    chat_jid,
-                    lid,
-                    phone,
-                } => AppMsg::LidPnResolved {
-                    chat_jid,
-                    lid,
-                    phone,
-                },
+                    ClientOutput::LidPnResolved {
+                        chat_jid,
+                        lid,
+                        phone,
+                    } => AppMsg::LidPnResolved {
+                        chat_jid,
+                        lid,
+                        phone,
+                    },
 
-                ClientOutput::Error { message } => AppMsg::Error { message },
-                _ => AppMsg::Unknown,
-            });
+                    ClientOutput::Error { message } => AppMsg::Error { message },
+                    _ => AppMsg::Unknown,
+                });
 
         let welcome = Welcome::builder()
             .launch(())
