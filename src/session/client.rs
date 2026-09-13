@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -42,8 +43,8 @@ pub struct Client {
     handle: ClientHandle,
     os_type: String,
 
-    /// Avatar cache for downloading and storing profile pictures.
     avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
+    inflight_avatars: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -343,7 +344,6 @@ impl AsyncComponent for Client {
     ) -> AsyncComponentParts<Self> {
         let os_type = os_info::get().os_type().to_string();
 
-        // Initialize avatar cache.
         let avatar_cache = match AvatarCache::new() {
             Ok(cache) => {
                 tracing::info!("Avatar cache initialized");
@@ -361,6 +361,7 @@ impl AsyncComponent for Client {
             handle: Arc::new(Mutex::new(None)),
             os_type,
             avatar_cache: Arc::new(Mutex::new(avatar_cache)),
+            inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
         };
 
         let widgets = view_output!();
@@ -494,10 +495,7 @@ impl AsyncComponent for Client {
 
                     match Box::pin(client.send_message(jid, (*message).clone().into())).await {
                         Ok(result) => {
-                            // Update the message server id in-place.
                             message.server_id = result.message_id;
-
-                            // Update the message in the database.
                             if let Err(e) = message.upsert().await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
@@ -766,13 +764,10 @@ impl AsyncComponent for Client {
                         }
                     };
 
-                    // Extract client from bot.
                     let client = bot.client();
                     *self.handle.lock().await = Some(client);
-
                     self.update_state(ClientState::Connecting);
 
-                    // Start the client.
                     relm4::spawn(async move {
                         bot.run().await;
                     });
@@ -784,8 +779,6 @@ impl AsyncComponent for Client {
                     // TODO: graceful shutdown
                     if let Some(client) = handle.as_ref() {
                         client.disconnect().await;
-
-                        // Clear client reference on disconnect.
                         *handle = None;
                     }
                 }
@@ -795,7 +788,6 @@ impl AsyncComponent for Client {
                 let _ = sender.output(ClientOutput::Disconnected);
             }
             ClientCommand::Restart => {
-                // Stop the client.
                 {
                     let mut handle = self.handle.lock().await;
                     if let Some(client) = handle.as_ref() {
@@ -805,10 +797,7 @@ impl AsyncComponent for Client {
                 }
                 tracing::info!("Disconnected from WhatsApp");
 
-                // Reset the client state.
                 self.update_state(ClientState::Loading);
-
-                // Start the client.
                 sender.oneshot_command(async { ClientCommand::Start });
             }
             ClientCommand::Connected => {
@@ -828,7 +817,6 @@ impl AsyncComponent for Client {
             ClientCommand::LoggedOut => {
                 tracing::info!("Logged out from WhatsApp");
 
-                // Disconnect and clear client reference.
                 {
                     let mut handle = self.handle.lock().await;
                     if let Some(client) = handle.as_ref() {
@@ -887,106 +875,111 @@ impl AsyncComponent for Client {
                 let _ = sender.output(ClientOutput::PairSuccess);
             }
 
-            ClientCommand::FetchAvatar { jid } => {
-                // Spawn avatar fetching as a separate task to avoid blocking command queue.
+            ClientCommand::FetchAvatar { jid: jid_str } => {
+                let inserted = self.inflight_avatars.lock().await.insert(jid_str.clone());
+                if !inserted {
+                    return;
+                }
+
                 let avatar_cache = Arc::clone(&self.avatar_cache);
                 let client_handle = Arc::clone(&self.handle);
+                let inflight = Arc::clone(&self.inflight_avatars);
                 let sender_clone = sender.clone();
 
                 relm4::spawn(async move {
-                    // Check if already cached (release lock immediately after).
-                    let cached_path = {
-                        let cache_guard = avatar_cache.lock().await;
+                    let result = async {
+                        let cached_path = {
+                            let guard = avatar_cache.lock().await;
 
-                        if let Some(cache) = cache_guard.as_ref() {
-                            cache.get_cached_path(&jid)
-                        } else {
-                            tracing::warn!("Avatar cache not available");
-                            return;
-                        }
-                    };
-
-                    if let Some(path) = cached_path {
-                        tracing::debug!("Avatar already cached for {jid}");
-
-                        let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
-                        return;
-                    }
-
-                    // Get the client handle (clone Arc to release lock).
-                    let client = {
-                        let handle = client_handle.lock().await;
-
-                        if let Some(c) = handle.as_ref() {
-                            Arc::clone(c)
-                        } else {
-                            tracing::warn!("Client not available for fetching avatar");
-                            return;
-                        }
-                    };
-
-                    // Parse the JID.
-                    let Ok(jid_parsed) = jid.parse::<Jid>() else {
-                        tracing::error!("Failed to parse JID for avatar fetch: {jid}");
-                        return;
-                    };
-
-                    // Fetch the profile picture using the contacts feature.
-                    let picture = match client
-                        .contacts()
-                        .get_profile_picture(&jid_parsed, false)
-                        .await
-                    {
-                        Ok(Some(pic)) => pic,
-                        Ok(None) => {
-                            tracing::debug!("No profile picture available for {jid}");
-                            return;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to get profile picture for {jid}: {e}");
-                            return;
-                        }
-                    };
-
-                    tracing::info!("Got profile picture URL for {jid}");
-
-                    // Download the avatar using the client's HTTP client.
-                    let request = HttpRequest::get(&picture.url);
-                    let response = match client.http_client.execute(request).await {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            tracing::error!("Failed to download avatar for {jid}: {e}");
-                            return;
-                        }
-                    };
-
-                    if response.status_code < 200 || response.status_code >= 300 {
-                        tracing::error!(
-                            "Failed to download avatar for {jid}: HTTP {}",
-                            response.status_code
-                        );
-                        return;
-                    }
-
-                    // Save to cache (acquire lock only for saving).
-                    let path = {
-                        let cache_guard = avatar_cache.lock().await;
-                        if let Some(cache) = cache_guard.as_ref() {
-                            match cache.save_avatar(&jid, &response.body) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    tracing::error!("Failed to save avatar for {jid}: {e}");
-                                    return;
-                                }
+                            if let Some(cache) = guard.as_ref() {
+                                cache.get_cached_path(&jid_str)
+                            } else {
+                                tracing::warn!("Avatar cache not available");
+                                return None;
                             }
-                        } else {
-                            tracing::warn!("Avatar cache not available for saving");
-                            return;
-                        }
-                    };
+                        };
 
-                    tracing::info!("Avatar downloaded and cached for {jid}");
-                    let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
+                        if let Some(path) = cached_path {
+                            tracing::debug!("Avatar already cached for {jid_str}");
+                            return Some(path);
+                        }
+
+                        let client = {
+                            let handle = client_handle.lock().await;
+
+                            if let Some(c) = handle.as_ref() {
+                                Arc::clone(c)
+                            } else {
+                                tracing::warn!("Client not available for fetching avatar");
+                                return None;
+                            }
+                        };
+
+                        let Ok(jid) = jid_str.parse::<Jid>() else {
+                            tracing::error!("Failed to parse JID for avatar fetch: {jid_str}");
+                            return None;
+                        };
+
+                        let picture = match client.contacts().get_profile_picture(&jid, false).await
+                        {
+                            Ok(Some(pic)) => pic,
+                            Ok(None) => {
+                                tracing::debug!("No profile picture available for {jid_str}");
+                                return None;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to get profile picture for {jid_str}: {e}");
+                                return None;
+                            }
+                        };
+                        tracing::info!("Got profile picture URL for {jid_str}");
+
+                        // Download the avatar using the client's HTTP client.
+                        let request = HttpRequest::get(&picture.url);
+                        let response = match client.http_client.execute(request).await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                tracing::error!("Failed to download avatar for {jid_str}: {e}");
+                                return None;
+                            }
+                        };
+
+                        if response.status_code < 200 || response.status_code >= 300 {
+                            tracing::error!(
+                                "Failed to download avatar for {jid_str}: HTTP {}",
+                                response.status_code
+                            );
+                            return None;
+                        }
+
+                        let path = {
+                            let guard = avatar_cache.lock().await;
+                            if let Some(cache) = guard.as_ref() {
+                                match cache.save_avatar(&jid_str, &response.body) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::error!("Failed to save avatar for {jid_str}: {e}");
+                                        return None;
+                                    }
+                                }
+                            } else {
+                                tracing::warn!("Avatar cache not available for saving");
+                                return None;
+                            }
+                        };
+
+                        tracing::info!("Avatar downloaded and cached for {jid_str}");
+                        Some(path)
+                    }
+                    .await;
+
+                    let mut guard = inflight.lock().await;
+                    guard.remove(&jid_str);
+
+                    if let Some(path) = result {
+                        let _ =
+                            sender_clone.output(ClientOutput::AvatarUpdate { jid: jid_str, path });
+                    }
                 });
             }
             ClientCommand::HistorySync { history_sync } => {

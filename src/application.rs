@@ -19,7 +19,6 @@ use whatsapp_rust::{
 };
 
 use crate::{
-    DATA_DIR,
     components::{
         ChatList, ChatListInput, ChatListOutput, ChatView, ChatViewInput, ChatViewOutput, Login,
         LoginInput, LoginOutput, Welcome, WelcomeOutput,
@@ -34,7 +33,7 @@ use crate::{
     },
     i18n,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
-    session::{ChatsSyncedEntry, Client, ClientInput, ClientOutput},
+    session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
     state::{Chat, ChatMessage, Media, MediaType, MessageStatus, TypingSender},
     utils::{format_lid_as_number, get_first_name},
 };
@@ -181,9 +180,6 @@ pub enum AppMsg {
 
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
-    },
-    SyncCompleted {
-        chats_needing_avatars: Vec<String>,
     },
 
     ChatPropertyUpdate {
@@ -882,14 +878,6 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppMsg::SyncCompleted {
-                chats_needing_avatars,
-            } => {
-                // Fetch avatars for chats that don't have them.
-                for jid in chats_needing_avatars {
-                    self.client.emit(ClientInput::FetchAvatar { jid });
-                }
-            }
             AppMsg::LoggedOut => {
                 self.page = AppPage::Welcome;
                 self.state = AppState::Pairing;
@@ -1505,22 +1493,17 @@ impl AsyncComponent for Application {
                         }
                     });
 
-                    // Handle UI updates based on archive state.
                     if let Some(archived) = archived {
                         if archived {
-                            // Remove from chat list UI.
                             self.chat_list
                                 .emit(ChatListInput::RemoveChat { jid: jid.clone() });
                         } else {
-                            // Unarchive: add back to chat list (AddChat handles both
-                            // new and existing entries).
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
                                 at_top: false,
                             });
                         }
                     } else {
-                        // Pin/mute only — update in place.
                         self.chat_list.emit(ChatListInput::UpdateChat {
                             chat: chat.clone(),
                             move_to_top: false,
@@ -1562,7 +1545,7 @@ impl AsyncComponent for Application {
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
-        sender: AsyncComponentSender<Self>,
+        _sender: AsyncComponentSender<Self>,
         _root: &Self::Root,
     ) {
         match command {
@@ -1575,6 +1558,7 @@ impl AsyncComponent for Application {
                         tracing::info!("Loaded {} chats from own database", chats.len());
 
                         // Check for existing cached avatars.
+                        let avatar_cache = AvatarCache::new().ok();
                         for chat in &mut chats {
                             if let Some(name) =
                                 self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
@@ -1582,24 +1566,21 @@ impl AsyncComponent for Application {
                                 chat.name.clone_from(name);
                             }
 
-                            // Check if avatar exists in cache.
-                            let avatar_path = DATA_DIR.join("avatars").join(format!(
-                                "{}.jpg",
-                                chat.jid
-                                    .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
-                            ));
-                            if avatar_path.exists() {
-                                chat.avatar_path = Some(avatar_path.to_string_lossy().into_owned());
-                            } else {
-                                chats_needing_avatars.push(chat.jid.clone());
+                            match avatar_cache.as_ref() {
+                                Some(cache) if !cache.is_stale(&chat.jid) => {
+                                    chat.avatar_path = Some(
+                                        cache
+                                            .get_avatar_path(&chat.jid)
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    );
+                                }
+                                _ => chats_needing_avatars.push(chat.jid.clone()),
                             }
                         }
 
-                        // Insert all chats into our cached list.
                         self.chats.extend(chats);
-
                         for chat in &self.chats {
-                            // Add the chat to the chat list.
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
                                 at_top: false,
@@ -1612,10 +1593,8 @@ impl AsyncComponent for Application {
                 self.state = AppState::Ready;
 
                 // Emit `SyncCompleted` to fetch avatars in the regular update cycle.
-                if !chats_needing_avatars.is_empty() {
-                    sender.input(AppMsg::SyncCompleted {
-                        chats_needing_avatars,
-                    });
+                for jid in chats_needing_avatars {
+                    self.client.emit(ClientInput::FetchAvatar { jid });
                 }
             }
             AppCmd::SwitchSession { db, session } => {
@@ -1643,7 +1622,6 @@ impl AsyncComponent for Application {
                             jid: chat_jid.clone(),
                         });
 
-                        // Determine chat name.
                         let chat_name = name.unwrap_or_else(|| {
                             if jid.ends_with("@g.us") {
                                 format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
@@ -1681,17 +1659,14 @@ impl AsyncComponent for Application {
                             db: self.db.clone(),
                         };
 
-                        // Add to cached list (keep in memory for property updates even if archived).
                         self.chats.push(chat.clone());
-
-                        // Sort chats.
                         self.chats.sort_by(|a, b| {
                             b.pinned
                                 .cmp(&a.pinned)
                                 .then_with(|| b.last_message_time.cmp(&a.last_message_time))
                         });
 
-                        // Save the chat to database in blocking thread (fire and forget).
+                        // Save the chat to database.
                         relm4::spawn(async move {
                             if let Err(e) = chat.upsert().await {
                                 tracing::error!("Failed to save synced chat {}: {}", chat.jid, e);
@@ -1710,9 +1685,6 @@ impl AsyncComponent for Application {
                         continue;
                     }
 
-                    let is_group = chat_jid.ends_with("@g.us");
-
-                    // Update chat in the list (lightweight UI update) before moving values.
                     if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
                         self.chat_list.emit(ChatListInput::UpdateChat {
                             chat,
@@ -1721,6 +1693,7 @@ impl AsyncComponent for Application {
                     }
 
                     let db = self.db.clone();
+                    let is_group = chat_jid.ends_with("@g.us");
 
                     // Collect sender info for participant updates.
                     let sender_info: Vec<(String, Option<String>)> = if is_group {
@@ -1733,7 +1706,7 @@ impl AsyncComponent for Application {
                         Vec::new()
                     };
 
-                    // Update participants for groups immediately (in-memory).
+                    // Update participants for groups immediately.
                     if is_group
                         && let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
                     {
