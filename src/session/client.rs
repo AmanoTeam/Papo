@@ -884,6 +884,10 @@ impl AsyncComponent for Client {
             }
 
             ClientCommand::FetchAvatar { jid: jid_str } => {
+                if jid_str.ends_with("@broadcast") {
+                    return;
+                }
+
                 let inserted = self.inflight_avatars.lock().await.insert(jid_str.clone());
                 if !inserted {
                     return;
