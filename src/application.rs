@@ -319,11 +319,11 @@ impl Application {
     async fn resolve_jid(&self, jid: &str) -> String {
         let bare = bare_jid(jid);
         if bare.ends_with("@lid")
-            && let Some(pn_jid) = self.db.lid_to_pn_jid(bare).await
+            && let Some(pn_jid) = self.db.lid_to_pn_jid(&bare).await
         {
             pn_jid
         } else {
-            bare.to_string()
+            bare
         }
     }
 
@@ -1021,7 +1021,7 @@ impl AsyncComponent for Application {
                 push_name,
                 phone_number,
             } => {
-                jid = bare_jid(&jid).to_string();
+                jid = bare_jid(&jid);
                 let display = name
                     .clone()
                     .filter(|n| !n.is_empty())

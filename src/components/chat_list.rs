@@ -316,9 +316,13 @@ impl SimpleAsyncComponent for ChatList {
                         })
                 });
 
-                if let (Some(index), Some((chat, last_message, unread_count, avatar_texture))) =
+                if let (Some(index), Some((chat, mut last_message, unread_count, avatar_texture))) =
                     (index, row_data)
                 {
+                    if let Ok(fresh) = chat.get_last_message().await {
+                        last_message = fresh;
+                    }
+
                     let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
                     let updated_row = ChatRow {
                         chat,

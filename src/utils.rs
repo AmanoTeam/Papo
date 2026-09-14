@@ -86,8 +86,14 @@ pub fn format_lid_as_number(lid: &str) -> String {
 }
 
 /// Strips the device suffix from a JID (`user:device@server` -> `user@server`).
-pub fn bare_jid(jid: &str) -> &str {
-    jid.split(':').next().unwrap_or(jid)
+pub fn bare_jid(jid: &str) -> String {
+    match jid.split_once('@') {
+        Some((user, server)) => {
+            let user = user.split(':').next().unwrap_or(user);
+            format!("{user}@{server}")
+        }
+        None => jid.to_string(),
+    }
 }
 
 /// Extracts phone number from JID/LID.
