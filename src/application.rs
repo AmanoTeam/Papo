@@ -316,8 +316,7 @@ impl Application {
             .or_else(|| stored.filter(|n| !n.is_empty()).map(ToString::to_string))
     }
 
-    fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
-        // Check if the message's chat is a group.
+    async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
         let is_group = chat_jid.ends_with("@g.us");
 
         // Create a new chat if it doesn't exists.
@@ -365,7 +364,6 @@ impl Application {
             return;
         };
 
-        // Check if the message was sent by the connected user.
         if !message.outgoing && is_group && !chat.participants.contains_key(&message.sender_jid) {
             chat.participants.insert(
                 message.sender_jid.clone(),
@@ -376,25 +374,19 @@ impl Application {
             );
         }
 
-        // Save the chat in the database.
-        let chat_clone = chat.clone();
-        relm4::spawn(async move {
-            if let Err(e) = chat_clone.upsert().await {
-                tracing::error!("Failed to update chat: {}", e);
-            }
-        });
-
+        // Save the chat and the message in the database.
+        if let Err(e) = chat.upsert().await {
+            tracing::error!("Failed to update chat: {}", e);
+        }
+        if let Err(e) = message.upsert().await {
+            tracing::error!("Failed to save message: {}", e);
+        }
         self.chat_view
-            .emit(ChatViewInput::MessageReceived(Box::new(message.clone())));
+            .emit(ChatViewInput::MessageReceived(Box::new(message)));
 
-        // Save the message in the database, then update the chat list.
         let sender = self.sender.clone();
         let chat_clone = chat.clone();
         sender.oneshot_command(async move {
-            if let Err(e) = message.upsert().await {
-                tracing::error!("Failed to save message: {}", e);
-            }
-
             AppCmd::UpdateChat {
                 chat: chat_clone,
                 move_to_top: true,
@@ -1431,7 +1423,7 @@ impl AsyncComponent for Application {
 
                             db: self.db.clone(),
                         };
-                        self.add_message(&chat_jid, chat_message);
+                        self.add_message(&chat_jid, chat_message).await;
 
                         if !outgoing {
                             let raw_sender = info.source.sender.to_string();

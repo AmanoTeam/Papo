@@ -230,7 +230,7 @@ impl SessionStore {
             .await?;
 
         for mut message in messages {
-            if message.status == 0 || message.status == 5 {
+            if message.status == 0 || message.status == 4 || message.status == 5 {
                 message.update().status(1).exec(&mut db).await?;
             }
         }
