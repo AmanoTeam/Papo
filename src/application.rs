@@ -35,7 +35,7 @@ use crate::{
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
     state::{Chat, ChatMessage, Media, MediaType, MessageStatus, TypingSender},
-    utils::{format_lid_as_number, get_first_name},
+    utils::{bare_jid, format_lid_as_number, get_first_name},
 };
 
 pub struct Application {
@@ -314,6 +314,17 @@ impl Application {
                     .cloned()
             })
             .or_else(|| stored.filter(|n| !n.is_empty()).map(ToString::to_string))
+    }
+
+    async fn resolve_jid(&self, jid: &str) -> String {
+        let bare = bare_jid(jid);
+        if bare.ends_with("@lid")
+            && let Some(pn_jid) = self.db.lid_to_pn_jid(bare).await
+        {
+            pn_jid
+        } else {
+            bare.to_string()
+        }
     }
 
     async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
@@ -1005,11 +1016,12 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::ContactUpdate {
-                jid,
+                mut jid,
                 name,
                 push_name,
                 phone_number,
             } => {
+                jid = bare_jid(&jid).to_string();
                 let display = name
                     .clone()
                     .filter(|n| !n.is_empty())
@@ -1100,11 +1112,13 @@ impl AsyncComponent for Application {
                 self.contacts.remove(&jid);
             }
             AppMsg::ReceiptUpdate {
-                chat_jid,
+                mut chat_jid,
                 message_ids,
                 receipt_type,
             } => {
-                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                chat_jid = self.resolve_jid(&chat_jid).await;
+                let chat = self.chats.iter().find(|c| c.jid == chat_jid).cloned();
+                if let Some(chat) = chat {
                     match MessageStatus::try_from(receipt_type) {
                         Ok(status) => {
                             for msg_id in message_ids {
@@ -1376,28 +1390,20 @@ impl AsyncComponent for Application {
                     if content.as_deref() == Some("status@broadcast") {
                         // TODO: handle status events
                     } else {
-                        let mut chat_jid = info.source.chat.to_string();
-                        if chat_jid.ends_with("@lid")
-                            && let Some(pn_jid) = self.db.lid_to_pn_jid(&chat_jid).await
-                        {
-                            chat_jid = pn_jid;
-                        }
+                        let chat_jid = self.resolve_jid(&info.source.chat.to_string()).await;
                         let outgoing = info.source.is_from_me;
 
                         let sender_jid = if outgoing {
                             self.user_jid.clone().unwrap_or_default()
+                        } else if let Some(alt) = info
+                            .source
+                            .sender_alt
+                            .as_ref()
+                            .filter(|alt| !alt.to_string().ends_with("@lid"))
+                        {
+                            alt.to_string()
                         } else {
-                            let sender = info.source.sender.to_string();
-                            if sender.ends_with("@lid")
-                                && let Some(alt) = info.source.sender_alt.as_ref()
-                                && !alt.to_string().ends_with("@lid")
-                            {
-                                alt.to_string()
-                            } else if sender.ends_with("@lid") {
-                                self.db.lid_to_pn_jid(&sender).await.unwrap_or(sender)
-                            } else {
-                                sender
-                            }
+                            self.resolve_jid(&info.source.sender.to_string()).await
                         };
                         let sender_name = self.resolve_sender_name(
                             &sender_jid,
