@@ -405,48 +405,6 @@ impl Application {
             self.emit_typing(chat_jid);
         }
     }
-
-    async fn mark_chat_read(&mut self, chat_jid: &str) {
-        // Find the chat.
-        if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid) {
-            // Collect unread messages before marking them as read locally.
-            let messages = chat.get_unread_messages().await.unwrap_or_default();
-
-            // Separate messages by sender.
-            let mut sender_messages: IndexMap<String, Vec<String>> = IndexMap::new();
-            for message in messages {
-                let sender_jid = message.sender_jid;
-
-                sender_messages
-                    .entry(sender_jid)
-                    .or_default()
-                    .push(message.server_id);
-            }
-
-            // Send read receipts to WhatsApp.
-            for (sender_jid, message_ids) in sender_messages {
-                self.client.emit(ClientInput::MarkRead {
-                    chat_jid: chat_jid.to_string(),
-                    sender_jid: Some(sender_jid),
-                    message_ids,
-                });
-            }
-
-            // Mark chat as read locally, then update the chat list.
-            let sender = self.sender.clone();
-            let chat_clone = chat.clone();
-            sender.oneshot_command(async move {
-                if let Err(e) = chat_clone.mark_read().await {
-                    tracing::error!("Failed to mark a chat as read: {e}");
-                }
-
-                AppCmd::UpdateChat {
-                    chat: chat_clone,
-                    move_to_top: false,
-                }
-            });
-        }
-    }
 }
 
 relm4::new_action_group!(pub(super) WindowActionGroup, "win");
@@ -1001,7 +959,43 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::MarkChatRead(jid) => {
-                self.mark_chat_read(&jid).await;
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    let messages = chat.get_unread_messages().await.unwrap_or_default();
+
+                    // Separate messages by sender.
+                    let mut sender_messages = IndexMap::<String, Vec<String>>::new();
+                    for message in messages {
+                        let sender_jid = message.sender_jid;
+
+                        sender_messages
+                            .entry(sender_jid)
+                            .or_default()
+                            .push(message.server_id);
+                    }
+
+                    // Send read receipts to WhatsApp.
+                    for (sender_jid, message_ids) in sender_messages {
+                        self.client.emit(ClientInput::MarkRead {
+                            chat_jid: jid.clone(),
+                            sender_jid: Some(sender_jid),
+                            message_ids,
+                        });
+                    }
+
+                    // Mark chat as read locally, then update the chat list.
+                    let sender = self.sender.clone();
+                    let chat_clone = chat.clone();
+                    sender.oneshot_command(async move {
+                        if let Err(e) = chat_clone.mark_read().await {
+                            tracing::error!("Failed to mark a chat as read: {e}");
+                        }
+
+                        AppCmd::UpdateChat {
+                            chat: chat_clone,
+                            move_to_top: false,
+                        }
+                    });
+                }
             }
 
             AppMsg::AvatarUpdate { jid, path } => {
