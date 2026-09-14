@@ -58,15 +58,35 @@
       transparent 20%);
 }
 
-.unread-divider {
-  color: var(--accent-fg-color);
-  padding: 2px 10px;
-  font-size: 0.8em;
-  font-weight: 600;
-  border-radius: 8px;
+.unread-row {
   background-color: color-mix(in srgb,
-      var(--accent-bg-color) 100%,
-      transparent 15%);
+      var(--accent-bg-color) 10%,
+      transparent);
+}
+
+.unread-first {
+  padding-top: 2px;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.unread-last {
+  padding-bottom: 4px;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.unread-divider {
+  color: var(--accent-color);
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.unread-divider-separator {
+  min-height: 1px;
+  background-color: color-mix(in srgb,
+      var(--accent-color) 20%,
+      transparent);
 }
 
 .message-bubble {
