@@ -1358,24 +1358,40 @@ impl AsyncComponent for Application {
                         }
                         let outgoing = info.source.is_from_me;
 
+                        let sender_jid = if outgoing {
+                            self.user_jid.clone().unwrap_or_default()
+                        } else {
+                            let sender = info.source.sender.to_string();
+                            if sender.ends_with("@lid")
+                                && let Some(alt) = info.source.sender_alt.as_ref()
+                                && !alt.to_string().ends_with("@lid")
+                            {
+                                alt.to_string()
+                            } else if sender.ends_with("@lid") {
+                                self.db.lid_to_pn_jid(&sender).await.unwrap_or(sender)
+                            } else {
+                                sender
+                            }
+                        };
+                        let sender_name = if !info.push_name.is_empty() {
+                            Some(info.push_name.clone())
+                        } else if chat_jid.ends_with("@g.us") {
+                            self.chats
+                                .iter()
+                                .find(|c| c.jid == chat_jid)
+                                .and_then(|chat| chat.participants.get(&sender_jid))
+                                .filter(|n| **n != i18n!("Unknown"))
+                                .cloned()
+                        } else {
+                            None
+                        };
+
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.clone(),
                             chat_jid: chat_jid.clone(),
-                            sender_jid: if outgoing {
-                                self.user_jid.clone().unwrap_or_default()
-                            } else {
-                                let sender = info.source.sender.to_string();
-                                if sender.ends_with("@lid")
-                                    && let Some(alt) = info.source.sender_alt.as_ref()
-                                    && !alt.to_string().ends_with("@lid")
-                                {
-                                    alt.to_string()
-                                } else {
-                                    sender
-                                }
-                            },
-                            sender_name: Some(info.push_name.clone()),
+                            sender_jid: sender_jid.clone(),
+                            sender_name,
 
                             media,
                             status: MessageStatus::Sent,
@@ -1390,10 +1406,13 @@ impl AsyncComponent for Application {
                         self.add_message(&chat_jid, chat_message);
 
                         if !outgoing {
-                            let sender_jid = info.source.sender.to_string();
+                            let raw_sender = info.source.sender.to_string();
                             let name =
                                 (!info.push_name.is_empty()).then_some(info.push_name.as_str());
                             self.register_participant(&chat_jid, &sender_jid, name);
+                            if raw_sender != sender_jid {
+                                self.register_participant(&chat_jid, &raw_sender, name);
+                            }
 
                             let alt_jid = info
                                 .source
@@ -1406,6 +1425,7 @@ impl AsyncComponent for Application {
 
                             let removed = self.typing.get_mut(&chat_jid).is_some_and(|state| {
                                 state.senders.shift_remove(&sender_jid).is_some()
+                                    || state.senders.shift_remove(&raw_sender).is_some()
                                     || alt_jid.as_ref().is_some_and(|alt| {
                                         state.senders.shift_remove(alt).is_some()
                                     })
