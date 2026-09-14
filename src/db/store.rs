@@ -390,6 +390,20 @@ impl SessionStore {
             .map(|entry| format!("{}@s.whatsapp.net", entry.phone_number))
     }
 
+    pub async fn pn_to_lid_jids(&self, pn_jid: &str) -> Vec<String> {
+        let phone = pn_jid.split('@').next().unwrap_or(pn_jid);
+        let mut db = self.db.clone();
+        let Ok(mappings) = LidMapping::all().exec(&mut db).await else {
+            return Vec::new();
+        };
+
+        mappings
+            .into_iter()
+            .filter(|m| m.phone_number == phone)
+            .map(|m| format!("{}@lid", m.lid))
+            .collect()
+    }
+
     /// Loads messages for a chat, most recent first, up to `limit`.
     pub async fn load_messages(
         &self,

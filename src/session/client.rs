@@ -204,6 +204,9 @@ pub enum ClientOutput {
         push_name: Option<String>,
         phone_number: String,
     },
+    ContactRemoved {
+        jid: String,
+    },
 
     LidPnResolved {
         chat_jid: String,
@@ -585,6 +588,12 @@ impl AsyncComponent for Client {
                                             .oneshot_command(async { ClientCommand::Disconnected });
                                     }
 
+                                    Event::SelfPushNameUpdated(update) => {
+                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
+                                            push_name: update.new_name.clone(),
+                                        });
+                                    }
+
                                     Event::PairingCode(pairing) => {
                                         let code = pairing.code.clone();
                                         let timeout = pairing.timeout;
@@ -729,8 +738,8 @@ impl AsyncComponent for Client {
                                     Event::ContactUpdate(contact_update) => {
                                         let jid = contact_update.jid.to_string();
                                         let name = contact_update.action.full_name.clone();
-                                        let phone_number = contact_update.jid.user.to_string();
                                         let push_name = contact_update.action.first_name.clone();
+                                        let phone_number = contact_update.jid.user.to_string();
 
                                         let _ = sender.output(ClientOutput::ContactUpdate {
                                             jid,
@@ -739,10 +748,9 @@ impl AsyncComponent for Client {
                                             phone_number,
                                         });
                                     }
-
-                                    Event::SelfPushNameUpdated(update) => {
-                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
-                                            push_name: update.new_name.clone(),
+                                    Event::ContactRemoved(contact_removed) => {
+                                        let _ = sender.output(ClientOutput::ContactRemoved {
+                                            jid: contact_removed.jid.to_string(),
                                         });
                                     }
 

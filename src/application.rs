@@ -123,12 +123,14 @@ pub enum AppMsg {
         jid: String,
         path: String,
     },
-    /// Contact updated (from sync or individual update).
     ContactUpdate {
         jid: String,
         name: Option<String>,
         push_name: Option<String>,
         phone_number: String,
+    },
+    ContactRemoved {
+        jid: String,
     },
     ReceiptUpdate {
         chat_jid: String,
@@ -287,11 +289,31 @@ impl Application {
                 .entry(jid.to_string())
                 .or_insert_with(|| i18n!("Unknown"));
             if let Some(name) = name.filter(|n| !n.is_empty())
-                && *entry == i18n!("Unknown")
+                && *entry != name
+                && !self.contacts.contains_key(jid)
             {
                 *entry = name.to_string();
             }
         }
+    }
+
+    fn resolve_sender_name(
+        &self,
+        jid: &str,
+        alt_jid: Option<&str>,
+        chat: Option<&Chat>,
+        stored: Option<&str>,
+    ) -> Option<String> {
+        self.contacts
+            .get(jid)
+            .or_else(|| alt_jid.and_then(|alt| self.contacts.get(alt)))
+            .cloned()
+            .or_else(|| {
+                chat.and_then(|c| c.participants.get(jid))
+                    .filter(|n| **n != i18n!("Unknown"))
+                    .cloned()
+            })
+            .or_else(|| stored.filter(|n| !n.is_empty()).map(ToString::to_string))
     }
 
     fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
@@ -746,6 +768,7 @@ impl AsyncComponent for Application {
                         push_name,
                         phone_number,
                     },
+                    ClientOutput::ContactRemoved { jid } => AppMsg::ContactRemoved { jid },
 
                     ClientOutput::LidPnResolved {
                         chat_jid,
@@ -1036,23 +1059,22 @@ impl AsyncComponent for Application {
                     }
                 });
 
-                // Update chat name if this contact has a chat and we got a name.
-                if let Some(contact_name) = name
-                    && let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid)
+                let mut forms = vec![jid.clone()];
+                if jid.ends_with("@lid")
+                    && let Some(pn_jid) = self.db.lid_to_pn_jid(&jid).await
                 {
-                    // Only update if current name is generic (phone number or "Unknown").
-                    let current_name = chat.get_name_or_number();
-                    let is_generic = current_name == contact_name
-                        || current_name == i18n!("Unknown")
-                        || current_name == format_lid_as_number(&jid);
+                    forms.push(pn_jid);
+                } else if jid.ends_with("@s.whatsapp.net") {
+                    forms.extend(self.db.pn_to_lid_jids(&jid).await);
+                }
 
-                    if is_generic {
-                        chat.name.clone_from(&contact_name);
+                // Update chat name if this contact has a chat and we got a name.
+                if let Some(contact_name) = self.contacts.get(&jid) {
+                    if let Some(chat) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
+                        chat.name.clone_from(contact_name);
 
-                        // Save updated chat in background.
                         let jid_clone = jid.clone();
                         let chat_clone = chat.clone();
-
                         relm4::spawn(async move {
                             if let Err(e) = chat_clone.upsert().await {
                                 tracing::error!(
@@ -1063,15 +1085,33 @@ impl AsyncComponent for Application {
                             }
                         });
 
-                        // Update in chat list immediately.
                         self.chat_list.emit(ChatListInput::UpdateChat {
                             chat: chat.clone(),
                             move_to_top: false,
                         });
-
                         tracing::info!("Updated chat name for {} to: {}", jid, contact_name);
                     }
+
+                    for chat in &mut self.chats {
+                        let mut touched = false;
+                        for form in &forms {
+                            if let Some(entry) = chat.participants.get_mut(form) {
+                                entry.clone_from(contact_name);
+                                touched = true;
+                            }
+                        }
+
+                        if touched {
+                            self.chat_list.emit(ChatListInput::UpdateChat {
+                                chat: chat.clone(),
+                                move_to_top: false,
+                            });
+                        }
+                    }
                 }
+            }
+            AppMsg::ContactRemoved { jid } => {
+                self.contacts.remove(&jid);
             }
             AppMsg::ReceiptUpdate {
                 chat_jid,
@@ -1373,18 +1413,12 @@ impl AsyncComponent for Application {
                                 sender
                             }
                         };
-                        let sender_name = if !info.push_name.is_empty() {
-                            Some(info.push_name.clone())
-                        } else if chat_jid.ends_with("@g.us") {
-                            self.chats
-                                .iter()
-                                .find(|c| c.jid == chat_jid)
-                                .and_then(|chat| chat.participants.get(&sender_jid))
-                                .filter(|n| **n != i18n!("Unknown"))
-                                .cloned()
-                        } else {
-                            None
-                        };
+                        let sender_name = self.resolve_sender_name(
+                            &sender_jid,
+                            Some(&info.source.sender.to_string()),
+                            self.chats.iter().find(|c| c.jid == chat_jid),
+                            Some(info.push_name.as_str()),
+                        );
 
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
@@ -1743,17 +1777,29 @@ impl AsyncComponent for Application {
                         }
                     }
 
-                    let chat_clone = self.chats.iter().find(|c| c.jid == chat_jid).cloned();
-                    let sender = self.sender.clone();
+                    let chat_ref = self.chats.iter().find(|c| c.jid == chat_jid);
+                    let resolved_names = messages
+                        .iter()
+                        .map(|m| {
+                            self.resolve_sender_name(
+                                &m.sender_jid,
+                                None,
+                                chat_ref,
+                                m.sender_name.as_deref(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
 
                     // Spawn database operations in background task.
+                    let chat_clone = chat_ref.cloned();
+                    let sender = self.sender.clone();
                     relm4::spawn(async move {
                         let mut saved_count = 0;
                         let mut dup_count = 0;
                         let mut skip_count = 0;
                         let total = messages.len();
 
-                        for synced_msg in messages {
+                        for (synced_msg, sender_name) in messages.into_iter().zip(resolved_names) {
                             let media = synced_msg.media_type.map(|t| Media {
                                 r#type: MediaType::from(t),
                                 ..Media::default()
@@ -1783,7 +1829,7 @@ impl AsyncComponent for Application {
                                 server_id: synced_msg.id,
                                 chat_jid: chat_jid.clone(),
                                 sender_jid: synced_msg.sender_jid.clone(),
-                                sender_name: synced_msg.sender_name.clone(),
+                                sender_name,
 
                                 media,
                                 status,
