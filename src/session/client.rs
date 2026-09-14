@@ -43,7 +43,7 @@ pub struct Client {
     handle: ClientHandle,
     os_type: String,
 
-    avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
+    avatar_cache: Option<AvatarCache>,
     inflight_avatars: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -360,7 +360,7 @@ impl AsyncComponent for Client {
             store: init,
             handle: Arc::new(Mutex::new(None)),
             os_type,
-            avatar_cache: Arc::new(Mutex::new(avatar_cache)),
+            avatar_cache,
             inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
         };
 
@@ -881,24 +881,19 @@ impl AsyncComponent for Client {
                     return;
                 }
 
-                let avatar_cache = Arc::clone(&self.avatar_cache);
+                let avatar_cache = self.avatar_cache.clone();
                 let client_handle = Arc::clone(&self.handle);
                 let inflight = Arc::clone(&self.inflight_avatars);
                 let sender_clone = sender.clone();
 
                 relm4::spawn(async move {
                     let result = async {
-                        let cached_path = {
-                            let guard = avatar_cache.lock().await;
-
-                            if let Some(cache) = guard.as_ref() {
-                                cache.get_cached_path(&jid_str)
-                            } else {
-                                tracing::warn!("Avatar cache not available");
-                                return None;
-                            }
+                        let Some(cache) = avatar_cache.as_ref() else {
+                            tracing::warn!("Avatar cache not available");
+                            return None;
                         };
 
+                        let cached_path = cache.get_cached_path(&jid_str);
                         if let Some(path) = cached_path {
                             tracing::debug!("Avatar already cached for {jid_str}");
                             return Some(path);
@@ -952,18 +947,10 @@ impl AsyncComponent for Client {
                             return None;
                         }
 
-                        let path = {
-                            let guard = avatar_cache.lock().await;
-                            if let Some(cache) = guard.as_ref() {
-                                match cache.save_avatar(&jid_str, &response.body) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        tracing::error!("Failed to save avatar for {jid_str}: {e}");
-                                        return None;
-                                    }
-                                }
-                            } else {
-                                tracing::warn!("Avatar cache not available for saving");
+                        let path = match cache.save_avatar(&jid_str, &response.body) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::error!("Failed to save avatar for {jid_str}: {e}");
                                 return None;
                             }
                         };
