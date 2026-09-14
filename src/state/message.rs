@@ -98,8 +98,9 @@ pub enum MessageStatus {
 impl MessageStatus {
     pub fn icon_name(&self) -> &str {
         match self {
-            Self::Sent => "check-round-outline-symbolic",
-            Self::Read | Self::Played | Self::Delivered => "check-round-outline2-symbolic",
+            Self::Sent => "check-plain-symbolic",
+            Self::Delivered => "check-round-outline-symbolic",
+            Self::Read | Self::Played => "check-round-outline2-symbolic",
             Self::Failed => "exclamation-mark-symbolic",
             Self::Sending => "clock-alt-symbolic",
         }

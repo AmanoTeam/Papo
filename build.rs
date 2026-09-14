@@ -23,6 +23,7 @@ fn main() {
             "speaker-4",
             "view-more",
             "down-small",
+            "check-plain",
             "image-round",
             "paper-plane",
             "info-outline",
