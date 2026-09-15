@@ -1167,7 +1167,9 @@ impl AsyncComponent for Application {
                                         }
                                     }
                                     Ok(None) => {
-                                        tracing::warn!("Message {} not found", msg_id);
+                                        tracing::debug!(
+                                            "Receipt for unknown message {msg_id} (sync gap)"
+                                        );
                                     }
                                     Err(e) => {
                                         tracing::warn!("Message {} not found: {e}", msg_id);
