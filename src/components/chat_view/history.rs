@@ -672,6 +672,25 @@ impl ChatHistory {
             .any(|m| matches!(m, RowMetadata::Message { unread: true, .. }))
     }
 
+    /// Index of the unread divider row, when the band is present.
+    pub(crate) fn unread_divider_index(&self) -> Option<u32> {
+        self.row_metadata
+            .iter()
+            .position(|m| matches!(m, RowMetadata::UnreadDivider))
+            .and_then(|i| u32::try_from(i).ok())
+    }
+
+    /// Number of message rows below the unread divider.
+    pub(crate) fn unread_message_row_count(&self) -> usize {
+        self.unread_divider_index().map_or(0, |index| {
+            self.row_metadata
+                .iter()
+                .skip(usize::try_from(index).expect("row index fits usize") + 1)
+                .filter(|m| matches!(m, RowMetadata::Message { .. }))
+                .count()
+        })
+    }
+
     /// Updates the unread flag of a message row's metadata mirror.
     pub(crate) fn set_message_row_unread(&mut self, index: u32, unread: bool) {
         let index = usize::try_from(index).expect("row index fits usize");
@@ -805,6 +824,74 @@ impl ChatHistory {
                 view.set_opacity(1.0);
                 glib::ControlFlow::Break
             } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    /// Scrolls to the bottom (forcing full layout), then up so the row at
+    /// `target` is revealed at the top edge. Used to open a chat at the top
+    /// of its unread band, with earlier messages kept above as context.
+    pub(crate) fn scroll_to_unread_boundary(&self, target: u32) {
+        fn scroll_to_row(view: &gtk::ListView, index: u32) {
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            view.scroll_to(index, gtk::ListScrollFlags::NONE, Some(info));
+        }
+
+        fn scroll_to_bottom(view: &gtk::ListView) -> bool {
+            let count = view.model().map_or(0, |model| model.n_items());
+            if count == 0 {
+                return true;
+            }
+
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+
+            view.vadjustment()
+                .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
+        }
+
+        let view = self.list.view.clone();
+        let mut attempts = 0;
+        let mut pivoted = false;
+        let mut last_upper = None::<f64>;
+        let mut last_value = None::<f64>;
+
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            attempts += 1;
+
+            if pivoted {
+                let value = view.vadjustment().map(|adj| adj.value());
+                let stable = match (value, last_value) {
+                    (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+                    _ => false,
+                };
+                last_value = value;
+
+                if stable || attempts >= 15 {
+                    view.set_opacity(1.0);
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            } else {
+                let upper = view.vadjustment().map(|adj| adj.upper());
+                let settled = scroll_to_bottom(&view);
+                let stable = match (upper, last_upper) {
+                    (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+                    _ => false,
+                };
+                last_upper = upper;
+
+                if (settled && stable) || attempts >= 15 {
+                    scroll_to_row(&view, target);
+                    pivoted = true;
+                    attempts = 0;
+                    last_value = None;
+                }
+
                 glib::ControlFlow::Continue
             }
         });

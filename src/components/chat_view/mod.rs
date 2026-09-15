@@ -19,6 +19,11 @@ use crate::{
 };
 
 const LOAD_MORE_COUNT: u32 = 70;
+/// Rows of read context kept above the unread band when opening on it.
+const UNREAD_BAND_CONTEXT_ROWS: u32 = 6;
+/// Above this many unread rows, opening positions at the band top instead of
+/// scrolling to the bottom, deferring the read mark until the user arrives.
+const UNREAD_BAND_BOTTOM_MAX_ROWS: usize = 8;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
 const INITIAL_LOAD_COUNT: u32 = 120;
@@ -707,12 +712,24 @@ impl AsyncComponent for ChatView {
 
                 self.state.is_loading = false;
 
-                // Scroll to the last message.
-                self.scroll_to_bottom();
-                self.state.is_at_bottom = true;
+                // A tall unread band opens at its top, with context rows
+                // above; reaching the bottom then marks the chat read.
+                let tall_unread_band =
+                    self.history.unread_message_row_count() > UNREAD_BAND_BOTTOM_MAX_ROWS;
 
-                if had_unread && let Some(ref chat) = self.chat {
-                    let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                if tall_unread_band && let Some(divider) = self.history.unread_divider_index() {
+                    self.history.scroll_to_unread_boundary(
+                        divider.saturating_sub(UNREAD_BAND_CONTEXT_ROWS),
+                    );
+                    self.state.is_at_bottom = false;
+                } else {
+                    // Scroll to the last message.
+                    self.scroll_to_bottom();
+                    self.state.is_at_bottom = true;
+
+                    if had_unread && let Some(ref chat) = self.chat {
+                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                    }
                 }
             }
             ChatViewCommand::OlderMessagesLoaded {
@@ -808,6 +825,14 @@ impl AsyncComponent for ChatView {
                     self.state.is_at_bottom = at_bottom;
                     if at_bottom {
                         self.state.unread_count = 0;
+
+                        // Arriving at the bottom after opening on a tall
+                        // unread band marks the chat read.
+                        if self.history.has_unread_messages()
+                            && let Some(ref chat) = self.chat
+                        {
+                            let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                        }
                     }
                 }
 
