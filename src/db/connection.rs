@@ -45,12 +45,7 @@ pub(crate) async fn open_encrypted_db(
     let is_fresh = !path.exists();
     let driver = create_driver(path, hexkey);
 
-    if let Ok(mut db) = Db::builder()
-        .models(models())
-        .max_pool_size(2)
-        .build(driver)
-        .await
-    {
+    if let Ok(mut db) = Db::builder().models(models()).build(driver).await {
         if is_fresh {
             db.push_schema().await?;
         } else {
@@ -62,11 +57,7 @@ pub(crate) async fn open_encrypted_db(
 
     quarantine_file(path);
     let driver = create_driver(path, hexkey);
-    let db = Db::builder()
-        .models(models())
-        .max_pool_size(2)
-        .build(driver)
-        .await?;
+    let db = Db::builder().models(models()).build(driver).await?;
     db.push_schema().await?;
 
     Ok(db)
@@ -120,11 +111,11 @@ async fn ensure_indices(db: &mut Db) {
 /// Creates a Turso driver with AES-256-GCM page encryption enabled.
 pub(crate) fn create_driver(path: &Path, hexkey: &str) -> Turso {
     Turso::file(path)
-        .concurrent_writes()
         .experimental_encryption(EncryptionOpts {
             cipher: "aes256gcm".into(),
             hexkey: hexkey.into(),
         })
+        .experimental_multiprocess_wal(true)
 }
 
 /// Renames a corrupt or unreadable database file to `{name}.corrupt-{timestamp}`
