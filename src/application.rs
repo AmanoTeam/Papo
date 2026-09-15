@@ -220,6 +220,10 @@ pub enum AppCmd {
     AddChatToList {
         chat: Chat,
     },
+    MarkedChatRead {
+        chat: Chat,
+        flipped: Vec<Uuid>,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -328,6 +332,19 @@ impl Application {
     }
 
     async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
+        if !message.server_id.is_empty()
+            && self
+                .db
+                .load_message_by_server_id(chat_jid, &message.server_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            tracing::debug!("Skipping duplicate message: {}", message.server_id);
+            return;
+        }
+
         let is_group = chat_jid.ends_with("@g.us");
 
         // Create a new chat if it doesn't exists.
@@ -851,12 +868,10 @@ impl AsyncComponent for Application {
     ) {
         match message {
             AppMsg::Connected { jid, push_name } => {
-                self.user_jid = jid;
+                self.user_jid = jid.map(|jid| bare_jid(&jid));
                 self.user_push_name = Some(push_name);
 
-                // Sync in background.
                 sender.oneshot_command(async { AppCmd::LoadCache });
-
                 if self.page != AppPage::Session {
                     self.page = AppPage::Session;
                 }
@@ -963,6 +978,8 @@ impl AsyncComponent for Application {
             }
             AppMsg::MarkChatRead(jid) => {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    // The user's own chat receives their outgoing messages.
+                    let own_chat = self.user_jid.as_ref().is_some_and(|u| u == &jid);
                     let messages = chat.get_unread_messages().await.unwrap_or_default();
 
                     // Separate messages by sender.
@@ -989,13 +1006,15 @@ impl AsyncComponent for Application {
                     let sender = self.sender.clone();
                     let chat_clone = chat.clone();
                     sender.oneshot_command(async move {
-                        if let Err(e) = chat_clone.mark_read().await {
-                            tracing::error!("Failed to mark a chat as read: {e}");
-                        }
+                        let flipped = chat_clone
+                            .mark_read(own_chat)
+                            .await
+                            .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
+                            .unwrap_or_default();
 
-                        AppCmd::UpdateChat {
+                        AppCmd::MarkedChatRead {
                             chat: chat_clone,
-                            move_to_top: false,
+                            flipped,
                         }
                     });
                 }
@@ -1124,27 +1143,28 @@ impl AsyncComponent for Application {
                             for msg_id in message_ids {
                                 match chat.find_message(&msg_id).await {
                                     Ok(Some(mut message)) => {
-                                        // Update message status.
-                                        message.status = status;
+                                        if status != MessageStatus::Failed
+                                            && status.stage() <= message.status.stage()
+                                        {
+                                            continue;
+                                        }
 
+                                        message.status = status;
                                         self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
                                             status: message.status,
                                             local_id: message.local_id,
                                         });
 
                                         // Update the message in the database.
-                                        let db = self.db.clone();
                                         let local_id = message.local_id;
-                                        relm4::spawn(async move {
-                                            if let Err(e) =
-                                                db.set_message_status(local_id, status).await
-                                            {
-                                                tracing::error!(
-                                                    "Failed to update message status: {}",
-                                                    e
-                                                );
-                                            }
-                                        });
+                                        if let Err(e) =
+                                            self.db.set_message_status(local_id, status).await
+                                        {
+                                            tracing::error!(
+                                                "Failed to update message status: {}",
+                                                e
+                                            );
+                                        }
                                     }
                                     Ok(None) => {
                                         tracing::warn!("Message {} not found", msg_id);
@@ -1282,19 +1302,23 @@ impl AsyncComponent for Application {
             } => {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
                     && let Ok(Some(mut message)) = chat.find_message_by_local_id(&msg_id).await
+                    && (status == MessageStatus::Failed || status.stage() > message.status.stage())
                 {
                     message.status = status;
-
                     self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
                         status: message.status,
                         local_id: message.local_id,
                     });
 
-                    let db = self.db.clone();
-                    relm4::spawn(async move {
-                        if let Err(e) = db.set_message_status(msg_id, status).await {
-                            tracing::error!("Failed to update message status: {}", e);
-                        }
+                    // Update the message in the database, then update the chat
+                    // list.
+                    if let Err(e) = self.db.set_message_status(msg_id, status).await {
+                        tracing::error!("Failed to update message status: {}", e);
+                    }
+
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: chat.clone(),
+                        move_to_top: false,
                     });
                 }
             }
@@ -1440,11 +1464,7 @@ impl AsyncComponent for Application {
                                 self.register_participant(&chat_jid, &raw_sender, name);
                             }
 
-                            let alt_jid = info
-                                .source
-                                .sender_alt
-                                .as_ref()
-                                .map(std::string::ToString::to_string);
+                            let alt_jid = info.source.sender_alt.as_ref().map(ToString::to_string);
                             if let Some(alt_jid) = alt_jid.as_ref() {
                                 self.register_participant(&chat_jid, alt_jid, name);
                             }
@@ -1874,6 +1894,19 @@ impl AsyncComponent for Application {
             AppCmd::AddChatToList { chat } => {
                 self.chat_list
                     .emit(ChatListInput::AddChat { chat, at_top: true });
+            }
+            AppCmd::MarkedChatRead { chat, flipped } => {
+                for local_id in flipped {
+                    self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                        status: MessageStatus::Read,
+                        local_id,
+                    });
+                }
+
+                self.chat_list.emit(ChatListInput::UpdateChat {
+                    chat,
+                    move_to_top: false,
+                });
             }
         }
     }

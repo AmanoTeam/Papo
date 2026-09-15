@@ -222,20 +222,31 @@ impl SessionStore {
     }
 
     /// Marks all pending or delivered messages in a chat as read.
-    pub async fn mark_chat_read(&self, chat_jid: &str) -> Result<(), toasty::Error> {
+    /// Marks a chat's messages as read, returning the flipped messages'
+    /// `local_id`s. Only incoming messages are flipped, unless the chat is the
+    /// user's own, where outgoing messages are also incoming to self.
+    pub async fn mark_chat_read(
+        &self,
+        chat_jid: &str,
+        own_chat: bool,
+    ) -> Result<Vec<Uuid>, toasty::Error> {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
-        let messages = MessageEntity::filter_by_chat_jid(chat_jid)
-            .exec(&mut db)
-            .await?;
+        let mut query = MessageEntity::filter_by_chat_jid(chat_jid);
+        if !own_chat {
+            query = query.filter(MessageEntity::fields().outgoing().eq(false));
+        }
+        let messages = query.exec(&mut db).await?;
 
+        let mut flipped = Vec::new();
         for mut message in messages {
             if message.status == 0 || message.status == 4 || message.status == 5 {
                 message.update().status(1).exec(&mut db).await?;
+                flipped.push(Uuid::parse_str(&message.local_id).unwrap_or_else(|_| Uuid::new_v4()));
             }
         }
 
-        Ok(())
+        Ok(flipped)
     }
 }
 
@@ -250,6 +261,25 @@ impl SessionStore {
     ) -> Result<(), toasty::Error> {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
+
+        // A save may advance the lifecycle (or record a `Failed` send)
+        // but must never regress it.
+        let existing_status = MessageEntity::filter_by_local_id(msg.local_id.to_string())
+            .first()
+            .exec(&mut db)
+            .await?
+            .filter(|entity| entity.chat_jid == chat_jid)
+            .map(|entity| MessageStatus::from(i32::try_from(entity.status).unwrap_or_default()));
+        let status = match existing_status {
+            Some(existing)
+                if msg.status != MessageStatus::Failed
+                    && msg.status.stage() <= existing.stage() =>
+            {
+                existing
+            }
+            _ => msg.status,
+        };
+
         MessageEntity::upsert_by_local_id(msg.local_id.to_string())
             .server_id(if msg.server_id.is_empty() {
                 None
@@ -265,7 +295,7 @@ impl SessionStore {
                 Some(msg.content.clone())
             })
             .outgoing(msg.outgoing)
-            .status(i64::from(msg.status as u8))
+            .status(i64::from(status as u8))
             .timestamp(msg.timestamp.as_second())
             .media_type(msg.media.as_ref().map(|m| format!("{:?}", m.r#type)))
             .media_path(self.save_media_file(chat_jid, msg))

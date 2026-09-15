@@ -815,7 +815,7 @@ impl AsyncComponent for Client {
                 let handle = self.handle.lock().await;
                 let (jid, push_name) = handle.as_ref().map_or_else(
                     || (None, i18n!("You!")),
-                    |client| (client.lid().map(|j| j.to_string()), client.push_name()),
+                    |client| (client.pn().map(|j| j.to_string()), client.push_name()),
                 );
                 drop(handle);
 

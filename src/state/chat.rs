@@ -31,8 +31,8 @@ impl Chat {
         self.jid.ends_with("@g.us")
     }
 
-    pub async fn mark_read(&self) -> Result<(), toasty::Error> {
-        self.db.mark_chat_read(&self.jid).await
+    pub async fn mark_read(&self, own_chat: bool) -> Result<Vec<Uuid>, toasty::Error> {
+        self.db.mark_chat_read(&self.jid, own_chat).await
     }
 
     /// Get the chat name or phone number if empty.

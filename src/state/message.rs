@@ -49,7 +49,7 @@ impl ChatMessage {
     }
 
     pub async fn mark_read(&mut self) -> Result<(), toasty::Error> {
-        if self.status == MessageStatus::Read {
+        if matches!(self.status, MessageStatus::Read | MessageStatus::Played) {
             Ok(())
         } else {
             self.status = MessageStatus::Read;
@@ -96,6 +96,19 @@ pub enum MessageStatus {
 }
 
 impl MessageStatus {
+    /// Position along the delivery lifecycle: `sending < sent < delivered <
+    /// read < played`. Receipts may only advance the status forward. `Failed`
+    /// is not a lifecycle stage; it is handled separately.
+    pub fn stage(self) -> u8 {
+        match self {
+            Self::Sending | Self::Failed => 0,
+            Self::Sent => 1,
+            Self::Delivered => 2,
+            Self::Read => 3,
+            Self::Played => 4,
+        }
+    }
+
     pub fn icon_name(&self) -> &str {
         match self {
             Self::Sent => "check-plain-symbolic",
