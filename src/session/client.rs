@@ -754,6 +754,15 @@ impl AsyncComponent for Client {
                                         });
                                     }
 
+                                    Event::ServerAck(ack) => {
+                                        tracing::trace!(
+                                            "Server ack: id = {}, class = {:?}, from = {:?}",
+                                            ack.id,
+                                            ack.class,
+                                            ack.from
+                                        );
+                                    }
+
                                     e => tracing::warn!("Unhandled event type: {e:#?}"),
                                 }
                             }
