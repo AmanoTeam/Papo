@@ -5,7 +5,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use toasty::{Db, schema::ModelSet};
+use toasty::{
+    Db, Executor,
+    schema::{ModelSet, db::IndexOp},
+};
+use toasty_core::{
+    driver::operation::{RawSql, RawSqlRet},
+    stmt::Direction,
+};
 use toasty_driver_turso::{EncryptionOpts, Turso};
 
 use crate::{
@@ -38,7 +45,7 @@ pub(crate) async fn open_encrypted_db(
     let is_fresh = !path.exists();
     let driver = create_driver(path, hexkey);
 
-    if let Ok(db) = Db::builder()
+    if let Ok(mut db) = Db::builder()
         .models(models())
         .max_pool_size(2)
         .build(driver)
@@ -46,7 +53,10 @@ pub(crate) async fn open_encrypted_db(
     {
         if is_fresh {
             db.push_schema().await?;
+        } else {
+            ensure_indices(&mut db).await;
         }
+
         return Ok(db);
     }
 
@@ -60,6 +70,51 @@ pub(crate) async fn open_encrypted_db(
     db.push_schema().await?;
 
     Ok(db)
+}
+
+/// Creates any index declared in the schema but missing from an existing
+/// database.
+async fn ensure_indices(db: &mut Db) {
+    let schema = db.schema().clone();
+    for table in &schema.db.tables {
+        for index in &table.indices {
+            if index.primary_key {
+                continue;
+            }
+
+            let unique = if index.unique { "UNIQUE " } else { "" };
+            let columns = index
+                .columns
+                .iter()
+                .map(|column| {
+                    let name = &column.table_column(&schema.db).name;
+                    if matches!(column.op, IndexOp::Sort(Direction::Desc)) {
+                        format!("\"{name}\" DESC")
+                    } else {
+                        format!("\"{name}\"")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let sql = format!(
+                "CREATE {unique}INDEX IF NOT EXISTS \"{}\" ON \"{}\" ({columns})",
+                index.name, table.name
+            );
+
+            let result = db
+                .exec_raw_sql(RawSql {
+                    sql,
+                    ret: RawSqlRet::None,
+                    params: Vec::new(),
+                })
+                .await;
+
+            if let Err(e) = result {
+                tracing::warn!("Failed to ensure index {}: {e}", index.name);
+            }
+        }
+    }
 }
 
 /// Creates a Turso driver with AES-256-GCM page encryption enabled.

@@ -3725,6 +3725,7 @@ dependencies = [
  "rlibphonenumber",
  "strum 0.28.0",
  "toasty",
+ "toasty-core",
  "toasty-driver-turso",
  "tokio",
  "tracing",

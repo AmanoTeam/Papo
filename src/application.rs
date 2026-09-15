@@ -54,8 +54,14 @@ pub struct Application {
     session: Session,
     /// Resolved contact list (JID -> name).
     contacts: HashMap<String, String>,
+    /// Whether chats have already been loaded from the database.
+    cache_loaded: bool,
+    /// Whether the client is connected to `WhatsApp`.
+    client_connected: bool,
     /// Receipts that arrived before their message; applied when it lands.
     pending_receipts: HashMap<String, VecDeque<(String, MessageStatus)>>,
+    /// Avatar fetches queued while the client was not connected yet.
+    pending_avatar_fetches: Vec<String>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -251,17 +257,13 @@ impl Application {
             chat.name.clone_from(name);
         }
 
-        // Insert the chat into our cached list.
         self.chats.push(chat.clone());
-
-        // Sort all our chats.
         self.chats.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
                 .then_with(|| b.last_message_time.cmp(&a.last_message_time))
         });
 
-        // Save the chat in the database.
         let chat_clone = chat.clone();
         relm4::spawn(async move {
             if let Err(e) = chat_clone.upsert().await {
@@ -269,7 +271,6 @@ impl Application {
             }
         });
 
-        // Add the chat in the chat list.
         self.chat_list
             .emit(ChatListInput::AddChat { chat, at_top: true });
     }
@@ -366,7 +367,7 @@ impl Application {
                 true
             }
             Ok(None) => {
-                tracing::debug!("Receipt for unknown message {msg_id} (sync gap)");
+                tracing::trace!("Receipt for unknown message {msg_id} (sync gap)");
                 let buffer = self
                     .pending_receipts
                     .entry(chat_jid.to_string())
@@ -404,6 +405,30 @@ impl Application {
                 self.pending_receipts.insert(chat_jid, receipts);
             }
         }
+    }
+
+    /// The own chat is always read on the phone; offline echoes may have
+    /// stamped `Sent` before the connection (and thus `user_jid`) existed.
+    fn sweep_own_chat(&self) {
+        let Some(user_jid) = self.user_jid.clone() else {
+            return;
+        };
+        let Some(chat) = self.chats.iter().find(|chat| chat.jid == user_jid).cloned() else {
+            return;
+        };
+
+        let sender = self.sender.clone();
+        sender.oneshot_command(async move {
+            let flipped = chat
+                .mark_read(true)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Failed to mark own chat as read: {e}");
+                })
+                .unwrap_or_default();
+
+            AppCmd::MarkedChatRead { chat, flipped }
+        });
     }
 
     async fn add_message(&mut self, chat_jid: &str, mut message: ChatMessage) {
@@ -687,12 +712,15 @@ impl AsyncComponent for Application {
         let mut session_manager = SessionManager::new(keyring)
             .await
             .expect("Failed to open main database");
-        let session = match session_manager.last_valid_session().await {
-            Ok(Some(session)) => session,
-            _ => session_manager
-                .create_session()
-                .await
-                .expect("Failed to create session"),
+        let (session, has_existing_session) = match session_manager.last_valid_session().await {
+            Ok(Some(session)) => (session, true),
+            _ => (
+                session_manager
+                    .create_session()
+                    .await
+                    .expect("Failed to create session"),
+                false,
+            ),
         };
 
         let db = open_session_db(&session.uuid, session_manager.keyring())
@@ -880,7 +908,11 @@ impl AsyncComponent for Application {
 
         let model = Self {
             db,
-            page: AppPage::Welcome,
+            page: if has_existing_session {
+                AppPage::Session
+            } else {
+                AppPage::Welcome
+            },
             chats: Vec::new(),
             login,
             state: AppState::Loading,
@@ -889,7 +921,10 @@ impl AsyncComponent for Application {
             typing: HashMap::new(),
             session,
             contacts,
+            cache_loaded: false,
+            client_connected: false,
             pending_receipts: HashMap::new(),
+            pending_avatar_fetches: Vec::new(),
 
             toaster: Toaster::default(),
             user_jid: None,
@@ -943,6 +978,11 @@ impl AsyncComponent for Application {
 
         widgets.load_window_size();
 
+        // Load the session while the client connects in background.
+        if has_existing_session {
+            sender.oneshot_command(async { AppCmd::LoadCache });
+        }
+
         AsyncComponentParts { model, widgets }
     }
 
@@ -957,11 +997,23 @@ impl AsyncComponent for Application {
             AppMsg::Connected { jid, push_name } => {
                 self.user_jid = jid.map(|jid| bare_jid(&jid));
                 self.user_push_name = Some(push_name);
+                self.client_connected = true;
 
-                sender.oneshot_command(async { AppCmd::LoadCache });
+                // Chats from the database already show for returning users;
+                // this is the first load after a fresh pairing.
+                if !self.cache_loaded {
+                    sender.oneshot_command(async { AppCmd::LoadCache });
+                }
+
                 if self.page != AppPage::Session {
                     self.page = AppPage::Session;
                 }
+
+                for jid in mem::take(&mut self.pending_avatar_fetches) {
+                    self.client.emit(ClientInput::FetchAvatar { jid });
+                }
+
+                self.sweep_own_chat();
             }
 
             AppMsg::LoggedOut => {
@@ -1002,6 +1054,7 @@ impl AsyncComponent for Application {
             }
             AppMsg::Disconnected => {
                 self.state = AppState::Disconnected;
+                self.client_connected = false;
             }
             AppMsg::SelfPushNameUpdated { push_name } => {
                 self.user_push_name = Some(push_name);
@@ -1745,36 +1798,20 @@ impl AsyncComponent for Application {
                         }
 
                         self.flush_pending_receipts().await;
-
-                        // The own chat is always read on the phone; offline
-                        // echoes may have stamped `Sent` before the connection
-                        // (and thus `user_jid`) existed.
-                        if let Some(user_jid) = self.user_jid.clone()
-                            && let Some(chat) =
-                                self.chats.iter().find(|chat| chat.jid == user_jid).cloned()
-                        {
-                            let sender = self.sender.clone();
-                            sender.oneshot_command(async move {
-                                let flipped = chat
-                                    .mark_read(true)
-                                    .await
-                                    .inspect_err(|e| {
-                                        tracing::error!("Failed to mark own chat as read: {e}");
-                                    })
-                                    .unwrap_or_default();
-
-                                AppCmd::MarkedChatRead { chat, flipped }
-                            });
-                        }
+                        self.cache_loaded = true;
+                        self.sweep_own_chat();
                     }
                     Err(e) => tracing::error!("Failed to load chats from own database: {}", e),
                 }
 
                 self.state = AppState::Ready;
-
-                // Emit `SyncCompleted` to fetch avatars in the regular update cycle.
-                for jid in chats_needing_avatars {
-                    self.client.emit(ClientInput::FetchAvatar { jid });
+                if self.client_connected {
+                    for jid in chats_needing_avatars {
+                        self.client.emit(ClientInput::FetchAvatar { jid });
+                    }
+                } else {
+                    // The client is still connecting; fetch once it is up.
+                    self.pending_avatar_fetches.extend(chats_needing_avatars);
                 }
             }
             AppCmd::SwitchSession { db, session } => {
