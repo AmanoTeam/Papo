@@ -329,12 +329,22 @@ impl SessionStore {
 
         let mut db = self.db.clone();
         if !msg.server_id.is_empty()
-            && MessageEntity::filter_by_server_id(Some(msg.server_id.clone()))
-                .first()
-                .exec(&mut db)
-                .await?
-                .is_some()
+            && let Some(mut existing) =
+                MessageEntity::filter_by_server_id(Some(msg.server_id.clone()))
+                    .first()
+                    .exec(&mut db)
+                    .await?
         {
+            let existing_status =
+                MessageStatus::from(i32::try_from(existing.status).unwrap_or_default());
+            if msg.status != MessageStatus::Failed && msg.status.stage() > existing_status.stage() {
+                existing
+                    .update()
+                    .status(i64::from(msg.status as u8))
+                    .exec(&mut db)
+                    .await?;
+            }
+
             return Ok(false);
         }
 

@@ -24,6 +24,7 @@ use whatsapp_rust::{
     waproto::whatsapp::{
         Conversation, Message,
         device_props::{AppVersion, PlatformType},
+        web_message_info::Status,
     },
 };
 
@@ -31,7 +32,7 @@ use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
     session::AvatarCache,
-    state::{ChatMessage, Media},
+    state::{ChatMessage, Media, MessageStatus},
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -184,6 +185,10 @@ pub enum ClientOutput {
         entries: Vec<ChatsSyncedEntry>,
     },
 
+    ChatReadOnDevice {
+        jid: String,
+    },
+
     ChatPropertyUpdate {
         jid: String,
         pinned: Option<bool>,
@@ -222,7 +227,7 @@ pub enum ClientOutput {
 #[derive(Debug, Clone)]
 pub struct SyncedMessage {
     pub id: String,
-    pub unread: bool,
+    pub status: MessageStatus,
     pub content: Option<String>,
     pub outgoing: bool,
     pub timestamp: u64,
@@ -257,6 +262,16 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                 .clone()
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
+
+            let status = match web_msg.status {
+                Some(Status::SERVER_ACK) => MessageStatus::Sent,
+                Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
+                Some(Status::READ) => MessageStatus::Read,
+                Some(Status::PLAYED) => MessageStatus::Played,
+                Some(Status::ERROR) => MessageStatus::Failed,
+                _ if outgoing => MessageStatus::Sent,
+                _ => MessageStatus::Delivered,
+            };
             let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -278,7 +293,7 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
 
             synced_messages.push(SyncedMessage {
                 id: msg_id,
-                unread: false,
+                status,
                 content,
                 outgoing,
                 timestamp,
@@ -727,12 +742,9 @@ impl AsyncComponent for Client {
                                         });
                                     }
                                     Event::MarkChatAsReadUpdate(update) => {
-                                        // Ignore for now - read state is managed locally.
-                                        tracing::debug!(
-                                            "Mark chat as read update: {} = {:?}",
-                                            update.jid,
-                                            update.action
-                                        );
+                                        let _ = sender.output(ClientOutput::ChatReadOnDevice {
+                                            jid: update.jid.to_string(),
+                                        });
                                     }
 
                                     Event::ContactUpdate(contact_update) => {

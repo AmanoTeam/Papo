@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    mem,
+    time::Duration,
+};
 
 use adw::{NavigationSplitView, prelude::*};
 use gtk::{gio, glib};
@@ -50,6 +54,8 @@ pub struct Application {
     session: Session,
     /// Resolved contact list (JID -> name).
     contacts: HashMap<String, String>,
+    /// Receipts that arrived before their message; applied when it lands.
+    pending_receipts: HashMap<String, VecDeque<(String, MessageStatus)>>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -183,13 +189,14 @@ pub enum AppMsg {
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
-
+    ChatReadOnDevice(String),
     ChatPropertyUpdate {
         jid: String,
         pinned: Option<bool>,
         muted: Option<bool>,
         archived: Option<bool>,
     },
+
     HistorySyncCompleted,
     OfflineSyncCompleted,
 
@@ -331,7 +338,75 @@ impl Application {
         }
     }
 
-    async fn add_message(&mut self, chat_jid: &str, message: ChatMessage) {
+    /// Applies a receipt to a stored message. Returns `true` when the status
+    /// advanced. Receipts for unknown messages are buffered until the message
+    /// arrives.
+    async fn apply_receipt(
+        &mut self,
+        chat: &Chat,
+        chat_jid: &str,
+        msg_id: String,
+        status: MessageStatus,
+    ) -> bool {
+        match chat.find_message(&msg_id).await {
+            Ok(Some(message)) => {
+                if status != MessageStatus::Failed && status.stage() <= message.status.stage() {
+                    return false;
+                }
+
+                self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
+                    status,
+                    local_id: message.local_id,
+                });
+
+                if let Err(e) = self.db.set_message_status(message.local_id, status).await {
+                    tracing::error!("Failed to update message status: {}", e);
+                }
+
+                true
+            }
+            Ok(None) => {
+                tracing::debug!("Receipt for unknown message {msg_id} (sync gap)");
+                let buffer = self
+                    .pending_receipts
+                    .entry(chat_jid.to_string())
+                    .or_default();
+                if buffer.len() >= 64 {
+                    buffer.remove(0);
+                }
+
+                buffer.push_back((msg_id, status));
+                false
+            }
+            Err(e) => {
+                tracing::warn!("Message {msg_id} not found: {e}");
+                false
+            }
+        }
+    }
+
+    /// Applies receipts buffered while chats were not loaded yet. Entries for
+    /// chats still unknown or messages still missing are kept.
+    async fn flush_pending_receipts(&mut self) {
+        let buffered = mem::take(&mut self.pending_receipts);
+
+        for (chat_jid, receipts) in buffered {
+            if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                for (msg_id, status) in receipts {
+                    self.apply_receipt(&chat, &chat_jid, msg_id, status).await;
+                }
+
+                self.chat_list.emit(ChatListInput::UpdateChat {
+                    chat,
+                    move_to_top: false,
+                });
+            } else {
+                self.pending_receipts.insert(chat_jid, receipts);
+            }
+        }
+    }
+
+    async fn add_message(&mut self, chat_jid: &str, mut message: ChatMessage) {
         if !message.server_id.is_empty()
             && self
                 .db
@@ -343,6 +418,16 @@ impl Application {
         {
             tracing::debug!("Skipping duplicate message: {}", message.server_id);
             return;
+        }
+
+        // Apply a buffered receipt that arrived ahead of the message.
+        if !message.server_id.is_empty()
+            && let Some(buffer) = self.pending_receipts.get_mut(chat_jid)
+            && let Some(index) = buffer.iter().position(|(id, _)| *id == message.server_id)
+            && let Some((_, status)) = buffer.remove(index)
+            && (status == MessageStatus::Failed || status.stage() > message.status.stage())
+        {
+            message.status = status;
         }
 
         let is_group = chat_jid.ends_with("@g.us");
@@ -718,7 +803,7 @@ impl AsyncComponent for Application {
                     }
 
                     ClientOutput::ChatsSynced { entries } => AppMsg::ChatsSynced { entries },
-
+                    ClientOutput::ChatReadOnDevice { jid } => AppMsg::ChatReadOnDevice(jid),
                     ClientOutput::ChatPropertyUpdate {
                         jid,
                         pinned,
@@ -803,8 +888,10 @@ impl AsyncComponent for Application {
             sender: sender.clone(),
             typing: HashMap::new(),
             session,
-            toaster: Toaster::default(),
             contacts,
+            pending_receipts: HashMap::new(),
+
+            toaster: Toaster::default(),
             user_jid: None,
             welcome,
             chat_list,
@@ -1021,11 +1108,8 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::AvatarUpdate { jid, path } => {
-                // Update the chat's avatar path.
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
                     chat.avatar_path = Some(path);
-
-                    // Update in chat list.
                     self.chat_list.emit(ChatListInput::UpdateChat {
                         chat: chat.clone(),
                         move_to_top: false,
@@ -1136,55 +1220,39 @@ impl AsyncComponent for Application {
                 receipt_type,
             } => {
                 chat_jid = self.resolve_jid(&chat_jid).await;
-                let chat = self.chats.iter().find(|c| c.jid == chat_jid).cloned();
-                if let Some(chat) = chat {
-                    match MessageStatus::try_from(receipt_type) {
-                        Ok(status) => {
-                            for msg_id in message_ids {
-                                match chat.find_message(&msg_id).await {
-                                    Ok(Some(mut message)) => {
-                                        if status != MessageStatus::Failed
-                                            && status.stage() <= message.status.stage()
-                                        {
-                                            continue;
-                                        }
+                let own_chat = self.user_jid.as_ref().is_some_and(|u| *u == chat_jid);
 
-                                        message.status = status;
-                                        self.chat_view.emit(ChatViewInput::MessageStatusUpdate {
-                                            status: message.status,
-                                            local_id: message.local_id,
-                                        });
+                // `ReadSelf`/`PlayedSelf` mean the user read their own
+                // message on another device; they only mark `Read`/`Played`
+                // in the own chat.
+                let status = match receipt_type {
+                    ReceiptType::ReadSelf if own_chat => Some(MessageStatus::Read),
+                    ReceiptType::PlayedSelf if own_chat => Some(MessageStatus::Played),
+                    ReceiptType::ReadSelf | ReceiptType::PlayedSelf => None,
+                    receipt_type => MessageStatus::try_from(receipt_type).ok(),
+                };
 
-                                        // Update the message in the database.
-                                        let local_id = message.local_id;
-                                        if let Err(e) =
-                                            self.db.set_message_status(local_id, status).await
-                                        {
-                                            tracing::error!(
-                                                "Failed to update message status: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        tracing::debug!(
-                                            "Receipt for unknown message {msg_id} (sync gap)"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Message {} not found: {e}", msg_id);
-                                    }
-                                }
-                            }
+                if let Some(status) = status
+                    && let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned()
+                {
+                    for msg_id in message_ids {
+                        self.apply_receipt(&chat, &chat_jid, msg_id, status).await;
+                    }
 
-                            self.chat_list.emit(ChatListInput::UpdateChat {
-                                chat,
-                                move_to_top: false,
-                            });
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat,
+                        move_to_top: false,
+                    });
+                } else if let Some(status) = status {
+                    // Chats are not loaded yet (offline replay at connect);
+                    // the flush after loading applies these.
+                    let buffer = self.pending_receipts.entry(chat_jid).or_default();
+                    for msg_id in message_ids {
+                        if buffer.len() >= 64 {
+                            buffer.remove(0);
                         }
-                        Err(e) => tracing::error!(
-                            "Failed to convert `ReceiptType` to `MessageStatus`: {e}"
-                        ),
+
+                        buffer.push_back((msg_id, status));
                     }
                 }
             }
@@ -1438,6 +1506,13 @@ impl AsyncComponent for Application {
                             Some(info.push_name.as_str()),
                         );
 
+                        let own_chat = self.user_jid.as_ref().is_some_and(|u| *u == chat_jid);
+                        let status = if outgoing && own_chat {
+                            MessageStatus::Read
+                        } else {
+                            MessageStatus::Sent
+                        };
+
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.clone(),
@@ -1446,7 +1521,7 @@ impl AsyncComponent for Application {
                             sender_name,
 
                             media,
-                            status: MessageStatus::Sent,
+                            status,
                             content: content.unwrap_or_default(),
                             outgoing,
                             reactions: IndexMap::new(),
@@ -1535,7 +1610,21 @@ impl AsyncComponent for Application {
             AppMsg::ChatsSynced { entries } => {
                 sender.oneshot_command(async move { AppCmd::SyncChats { entries } });
             }
+            AppMsg::ChatReadOnDevice(jid) => {
+                let chat_jid = self.resolve_jid(&jid).await;
+                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                    let sender = self.sender.clone();
+                    sender.oneshot_command(async move {
+                        let flipped = chat
+                            .mark_read(false)
+                            .await
+                            .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
+                            .unwrap_or_default();
 
+                        AppCmd::MarkedChatRead { chat, flipped }
+                    });
+                }
+            }
             AppMsg::ChatPropertyUpdate {
                 jid,
                 pinned,
@@ -1652,6 +1741,29 @@ impl AsyncComponent for Application {
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
                                 at_top: false,
+                            });
+                        }
+
+                        self.flush_pending_receipts().await;
+
+                        // The own chat is always read on the phone; offline
+                        // echoes may have stamped `Sent` before the connection
+                        // (and thus `user_jid`) existed.
+                        if let Some(user_jid) = self.user_jid.clone()
+                            && let Some(chat) =
+                                self.chats.iter().find(|chat| chat.jid == user_jid).cloned()
+                        {
+                            let sender = self.sender.clone();
+                            sender.oneshot_command(async move {
+                                let flipped = chat
+                                    .mark_read(true)
+                                    .await
+                                    .inspect_err(|e| {
+                                        tracing::error!("Failed to mark own chat as read: {e}");
+                                    })
+                                    .unwrap_or_default();
+
+                                AppCmd::MarkedChatRead { chat, flipped }
                             });
                         }
                     }
@@ -1826,13 +1938,6 @@ impl AsyncComponent for Application {
                                 continue;
                             }
 
-                            // Select message status based on `unread` and `outgoing` fields.
-                            let status = match (synced_msg.unread, synced_msg.outgoing) {
-                                (true, false) => MessageStatus::Delivered,
-                                (true, true) => MessageStatus::Sent,
-                                (false, _) => MessageStatus::Read,
-                            };
-
                             // Timestamp is already in seconds (Unix timestamp).
                             let timestamp =
                                 Timestamp::from_second(synced_msg.timestamp.cast_signed())
@@ -1846,7 +1951,7 @@ impl AsyncComponent for Application {
                                 sender_name,
 
                                 media,
-                                status,
+                                status: synced_msg.status,
                                 content: content.unwrap_or_default(),
                                 outgoing: synced_msg.outgoing,
                                 reactions: IndexMap::new(),

@@ -665,6 +665,21 @@ impl ChatHistory {
         self.list.get(index).map(|item| item.borrow().clone())
     }
 
+    /// Whether any message row is still marked unread.
+    pub(crate) fn has_unread_messages(&self) -> bool {
+        self.row_metadata
+            .iter()
+            .any(|m| matches!(m, RowMetadata::Message { unread: true, .. }))
+    }
+
+    /// Updates the unread flag of a message row's metadata mirror.
+    pub(crate) fn set_message_row_unread(&mut self, index: u32, unread: bool) {
+        let index = usize::try_from(index).expect("row index fits usize");
+        if let Some(RowMetadata::Message { unread: meta, .. }) = self.row_metadata.get_mut(index) {
+            *meta = unread;
+        }
+    }
+
     /// Remove the unread messages divider row, if present, and clear the
     /// unread marking from every message row that followed it.
     pub(crate) fn remove_unread_divider(&mut self, at_bottom: bool) {

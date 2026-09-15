@@ -621,17 +621,32 @@ impl AsyncComponent for ChatView {
                 self.rebuild_typing_avatars();
             }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
+                let is_read = matches!(status, MessageStatus::Read | MessageStatus::Played);
+
                 if let Some(index) = self
                     .history
                     .find_message_index(|message| message.local_id == local_id)
                     && let Some(mut row) = self.history.get_row(index)
                 {
-                    if let ChatRow::Message { message, .. } = &mut row {
+                    if let ChatRow::Message {
+                        message, unread, ..
+                    } = &mut row
+                    {
                         message.status = status;
+                        if is_read {
+                            *unread = false;
+                        }
                     }
 
                     self.history
                         .replace_row(index, row, self.state.is_at_bottom);
+                    if is_read {
+                        self.history.set_message_row_unread(index, false);
+                    }
+                }
+
+                if is_read && !self.history.has_unread_messages() {
+                    self.history.remove_unread_divider(self.state.is_at_bottom);
                 }
             }
 
