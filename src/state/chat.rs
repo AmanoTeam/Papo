@@ -54,7 +54,7 @@ impl Chat {
 
     pub async fn load_messages_after(
         &self,
-        after_timestamp: i64,
+        after_timestamp: Timestamp,
         limit: u32,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db
@@ -64,7 +64,7 @@ impl Chat {
 
     pub async fn load_messages_before(
         &self,
-        before_timestamp: i64,
+        before_timestamp: Timestamp,
         limit: u32,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
         self.db

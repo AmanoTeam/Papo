@@ -2,7 +2,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use jiff::{civil::Date, tz::TimeZone};
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use relm4::{prelude::*, typed_view::list::TypedListView};
 
 use super::rows::ChatRow;
@@ -49,7 +49,7 @@ fn build_prepend_rows(
             next_date != msg_date || !same_group(msg, next)
         };
 
-        let ts = msg.timestamp.as_second();
+        let ts = msg.timestamp;
         rows.push(ChatRow::Message {
             last,
             first,
@@ -74,9 +74,9 @@ fn build_prepend_rows(
 /// when trimming rows during bidirectional pagination.
 #[derive(Clone, Debug)]
 pub(crate) enum RowMetadata {
-    /// A message row, with its Unix timestamp.
+    /// A message row, with its timestamp.
     Message {
-        ts: i64,
+        ts: Timestamp,
         unread: bool,
         last_of_segment: bool,
         first_of_segment: bool,
@@ -95,8 +95,8 @@ pub(crate) struct ChatHistory {
     has_older: bool,
     has_newer: bool,
 
-    oldest_loaded_timestamp: Option<i64>,
-    newest_loaded_timestamp: Option<i64>,
+    oldest_loaded_timestamp: Option<Timestamp>,
+    newest_loaded_timestamp: Option<Timestamp>,
     /// Date of the first displayed message (top), for prepend separator logic.
     first_message_date: Option<Date>,
     /// Date of the last appended message (bottom), for append separator logic.
@@ -159,11 +159,11 @@ impl ChatHistory {
         self.has_newer = has_newer;
     }
 
-    pub(crate) fn oldest_timestamp(&self) -> Option<i64> {
+    pub(crate) fn oldest_timestamp(&self) -> Option<Timestamp> {
         self.oldest_loaded_timestamp
     }
 
-    pub(crate) fn newest_timestamp(&self) -> Option<i64> {
+    pub(crate) fn newest_timestamp(&self) -> Option<Timestamp> {
         self.newest_loaded_timestamp
     }
 
@@ -177,12 +177,12 @@ impl ChatHistory {
 
         // Track the oldest loaded timestamp for pagination.
         if let Some(oldest) = messages.last() {
-            self.oldest_loaded_timestamp = Some(oldest.timestamp.as_second());
+            self.oldest_loaded_timestamp = Some(oldest.timestamp);
         }
 
         // Track the newest loaded timestamp for downward pagination.
         if let Some(newest) = messages.first() {
-            self.newest_loaded_timestamp = Some(newest.timestamp.as_second());
+            self.newest_loaded_timestamp = Some(newest.timestamp);
         }
 
         let unread_boundary = messages.iter().rposition(|msg| {
@@ -228,7 +228,7 @@ impl ChatHistory {
                 || next.is_some_and(|n| !same_group(msg, n));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
-            let ts = msg.timestamp.as_second();
+            let ts = msg.timestamp;
             self.list.append(ChatRow::Message {
                 last,
                 first,
@@ -301,7 +301,7 @@ impl ChatHistory {
         }
 
         // Update newest loaded timestamp to this message.
-        let ts = message.timestamp.as_second();
+        let ts = message.timestamp;
         self.newest_loaded_timestamp = Some(ts);
 
         let first_of_segment =
@@ -330,7 +330,7 @@ impl ChatHistory {
 
         // Update the oldest loaded timestamp cursor.
         if let Some(oldest) = messages.last() {
-            self.oldest_loaded_timestamp = Some(oldest.timestamp.as_second());
+            self.oldest_loaded_timestamp = Some(oldest.timestamp);
         }
 
         let newest = &messages[0];
@@ -490,7 +490,7 @@ impl ChatHistory {
                 || next.is_some_and(|n| !same_group(msg, n));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
-            let ts = msg.timestamp.as_second();
+            let ts = msg.timestamp;
             rows.push(ChatRow::Message {
                 last,
                 first,
@@ -543,7 +543,7 @@ impl ChatHistory {
 
         // Update the newest loaded timestamp cursor.
         if let Some(newest) = messages.last() {
-            self.newest_loaded_timestamp = Some(newest.timestamp.as_second());
+            self.newest_loaded_timestamp = Some(newest.timestamp);
         }
 
         true

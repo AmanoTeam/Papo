@@ -73,10 +73,7 @@ impl SessionStore {
             avatar_path: None,
             db: self.clone(),
             jid: entity.jid,
-            last_message_time: entity
-                .last_message_time
-                .and_then(|t| Timestamp::from_second(t).ok())
-                .unwrap_or_else(Timestamp::now),
+            last_message_time: entity.last_message_time.unwrap_or_else(Timestamp::now),
             last_seen: None,
             muted: entity.muted,
             name: entity.name,
@@ -123,8 +120,7 @@ impl SessionStore {
             sender_name: entity.sender_name,
             server_id: entity.server_id.unwrap_or_default(),
             status: MessageStatus::from(i32::try_from(entity.status).unwrap_or_default()),
-            timestamp: Timestamp::from_second(entity.timestamp)
-                .unwrap_or_else(|_| Timestamp::now()),
+            timestamp: entity.timestamp,
         }
     }
 }
@@ -142,7 +138,7 @@ impl SessionStore {
             .muted(chat.muted)
             .pinned(chat.pinned)
             .archived(chat.archived)
-            .last_message_time(Some(chat.last_message_time.as_second()))
+            .last_message_time(Some(chat.last_message_time))
             .exec(&mut db)
             .await?;
 
@@ -198,7 +194,7 @@ impl SessionStore {
         chats.sort_by_key(|c| {
             (
                 cmp::Reverse(c.pinned),
-                cmp::Reverse(c.last_message_time.unwrap_or(i64::MIN)),
+                cmp::Reverse(c.last_message_time.unwrap_or(Timestamp::MIN)),
             )
         });
 
@@ -296,7 +292,7 @@ impl SessionStore {
             })
             .outgoing(msg.outgoing)
             .status(i64::from(status as u8))
-            .timestamp(msg.timestamp.as_second())
+            .timestamp(msg.timestamp)
             .media_type(msg.media.as_ref().map(|m| format!("{:?}", m.r#type)))
             .media_path(self.save_media_file(chat_jid, msg))
             .media_mime(msg.media.as_ref().map(|m| m.mime_type.clone()))
@@ -309,7 +305,7 @@ impl SessionStore {
             .await?
         {
             chat.update()
-                .last_message_time(Some(msg.timestamp.as_second()))
+                .last_message_time(Some(msg.timestamp))
                 .exec(&mut db)
                 .await?;
         }
@@ -365,7 +361,7 @@ impl SessionStore {
             })
             .outgoing(msg.outgoing)
             .status(i64::from(msg.status as u8))
-            .timestamp(msg.timestamp.as_second())
+            .timestamp(msg.timestamp)
             .media_type(msg.media.as_ref().map(|m| format!("{:?}", m.r#type)))
             .media_path(self.save_media_file(chat_jid, msg))
             .media_mime(msg.media.as_ref().map(|m| m.mime_type.clone()))
@@ -378,7 +374,7 @@ impl SessionStore {
             .await?
         {
             chat.update()
-                .last_message_time(Some(msg.timestamp.as_second()))
+                .last_message_time(Some(msg.timestamp))
                 .exec(&mut db)
                 .await?;
         }
@@ -467,7 +463,7 @@ impl SessionStore {
     pub async fn load_messages_after(
         &self,
         chat_jid: &str,
-        after_timestamp: i64,
+        after_timestamp: Timestamp,
         limit: usize,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
         let mut db = self.db.clone();
@@ -488,7 +484,7 @@ impl SessionStore {
     pub async fn load_messages_before(
         &self,
         chat_jid: &str,
-        before_timestamp: i64,
+        before_timestamp: Timestamp,
         limit: usize,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
         let mut db = self.db.clone();

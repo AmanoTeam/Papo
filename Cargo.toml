@@ -28,7 +28,7 @@ relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
 oo7 = "0.7.0-alpha"
-toasty = { version = "0.10", default-features = false, features = ["migration", "turso"] }
+toasty = { version = "0.10", default-features = false, features = ["jiff", "migration", "turso"] }
 toasty-core = "0.10"
 toasty-driver-turso = "0.10"
 

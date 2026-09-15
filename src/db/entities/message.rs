@@ -1,3 +1,4 @@
+use jiff::Timestamp;
 use toasty::{Deferred, Model};
 
 use super::Chat;
@@ -16,7 +17,7 @@ pub struct Message {
     pub outgoing: bool,
     #[unique]
     pub server_id: Option<String>,
-    pub timestamp: i64,
+    pub timestamp: Timestamp,
     pub media_mime: Option<String>,
     pub media_path: Option<String>,
     pub media_type: Option<String>,
