@@ -884,7 +884,7 @@ impl AsyncComponent for Client {
             }
 
             ClientCommand::FetchAvatar { jid: jid_str } => {
-                if jid_str.ends_with("@broadcast") {
+                if jid_str.ends_with("@broadcast") || jid_str == "0@s.whatsapp.net" {
                     return;
                 }
 
