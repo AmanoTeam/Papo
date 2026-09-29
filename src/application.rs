@@ -1064,6 +1064,7 @@ impl AsyncComponent for Application {
                 qr_code,
                 timeout,
             } => {
+                self.page = AppPage::Welcome;
                 self.login.emit(LoginInput::PairCode {
                     code,
                     qr_code,
