@@ -20,10 +20,10 @@ use whatsapp_rust::{
         message::MessageInfo,
         presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
-    wacore::store::DevicePropsOverride,
+    wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
         Conversation, Message,
-        device_props::{AppVersion, PlatformType},
+        device_props::{AppVersion, HistorySyncConfig, PlatformType},
         web_message_info::Status,
     },
 };
@@ -584,7 +584,14 @@ impl AsyncComponent for Client {
                                     tertiary: Some(app_version.2),
                                     ..Default::default()
                                 })
-                                .with_platform_type(PlatformType::Desktop),
+                                .with_platform_type(PlatformType::Desktop)
+                                .with_require_full_sync(true)
+                                .with_history_sync_config(HistorySyncConfig {
+                                    full_sync_days_limit: Some(365),
+                                    on_demand_ready: Some(true),
+                                    complete_on_demand_ready: Some(true),
+                                    ..default_history_sync_config()
+                                }),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
@@ -1005,6 +1012,15 @@ impl AsyncComponent for Client {
             ClientCommand::HistorySync { history_sync } => {
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
+                    // Sync types: 0 bootstrap, 1 status v3, 2 full, 3 recent,
+                    // 4 push name, 5 non-blocking data, 6 on-demand.
+                    tracing::debug!(
+                        "History sync chunk: type = {}, order = {:?}, progress = {:?}",
+                        history_sync.sync_type(),
+                        history_sync.chunk_order(),
+                        history_sync.progress()
+                    );
+
                     let Some(sync) = history_sync.get() else {
                         tracing::error!("Failed to decode history sync payload");
                         return;
