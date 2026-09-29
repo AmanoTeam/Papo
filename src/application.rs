@@ -1898,10 +1898,6 @@ impl AsyncComponent for Application {
                         });
                     }
 
-                    if messages.is_empty() {
-                        continue;
-                    }
-
                     if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
                         self.chat_list.emit(ChatListInput::UpdateChat {
                             chat,

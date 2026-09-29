@@ -154,12 +154,17 @@ impl SimpleAsyncComponent for ChatList {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let model = Self {
+        let mut model = Self {
             typing: HashMap::new(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
 
+        // Chats without messages stay in the store but hidden, so they
+        // appear as soon as their first message arrives.
+        model
+            .list_view_wrapper
+            .add_filter(|row| row.last_message.is_some());
         let selection_model = &model.list_view_wrapper.selection_model;
 
         // Disabe chat row autoselecet and enable unselect.
@@ -196,10 +201,6 @@ impl SimpleAsyncComponent for ChatList {
                             None
                         }
                     };
-
-                    if last_message.is_none() {
-                        return;
-                    }
 
                     let unread_count = chat
                         .get_unread_count()
@@ -272,7 +273,11 @@ impl SimpleAsyncComponent for ChatList {
 
                         // Re-select the row and scroll to the top if it's the selected chat.
                         if self.chat_jid.as_deref() == Some(&chat.jid) {
-                            self.list_view_wrapper.selection_model.select_item(0, true);
+                            if let Some(position) = self.get_visible_index_by_jid(&chat.jid) {
+                                self.list_view_wrapper
+                                    .selection_model
+                                    .select_item(position, true);
+                            }
 
                             if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
                                 glib::idle_add_local_once(move || adj.set_value(adj.lower()));
@@ -283,10 +288,12 @@ impl SimpleAsyncComponent for ChatList {
                         store.splice(index, 1, &[object]);
 
                         // Re-select the row.
-                        if self.chat_jid.as_deref() == Some(&chat.jid) {
+                        if self.chat_jid.as_deref() == Some(&chat.jid)
+                            && let Some(position) = self.get_visible_index_by_jid(&chat.jid)
+                        {
                             self.list_view_wrapper
                                 .selection_model
-                                .select_item(index, true);
+                                .select_item(position, true);
                         }
                     }
                 }
@@ -337,10 +344,12 @@ impl SimpleAsyncComponent for ChatList {
                     self.store().splice(index, 1, &[object]);
 
                     // Re-select the row.
-                    if self.chat_jid.as_deref() == Some(&chat_jid) {
+                    if self.chat_jid.as_deref() == Some(&chat_jid)
+                        && let Some(position) = self.get_visible_index_by_jid(&chat_jid)
+                    {
                         self.list_view_wrapper
                             .selection_model
-                            .select_item(index, true);
+                            .select_item(position, true);
                     }
                 }
             }
@@ -348,13 +357,15 @@ impl SimpleAsyncComponent for ChatList {
             ChatListInput::ApplyFilter(filter) => {
                 // Remove any existing filter to avoid stacking one filter on top of other.
                 self.list_view_wrapper.clear_filters();
+                // Base filter: chats without messages stay hidden.
+                self.list_view_wrapper
+                    .add_filter(|row| row.last_message.is_some());
 
                 match filter {
                     ChatListFilter::All => {
                         // Re-select the row.
                         if let Some(jid) = self.chat_jid.as_deref()
-                            && let Some(position) =
-                                self.list_view_wrapper.find(|row| row.chat.jid == jid)
+                            && let Some(position) = self.get_visible_index_by_jid(jid)
                         {
                             self.list_view_wrapper
                                 .selection_model
@@ -433,6 +444,22 @@ impl ChatList {
         for (i, row) in self.list_view_wrapper.iter().enumerate() {
             if row.borrow().chat.jid == jid {
                 return Some(u32::try_from(i).unwrap());
+            }
+        }
+
+        None
+    }
+
+    /// Returns the chat position in the visible (filtered) model, or `None`
+    /// when the row is filtered out or absent.
+    fn get_visible_index_by_jid(&self, jid: &str) -> Option<u32> {
+        let model = &self.list_view_wrapper.selection_model;
+
+        for position in 0..model.n_items() {
+            if let Some(item) = self.list_view_wrapper.get_visible(position)
+                && item.borrow().chat.jid == jid
+            {
+                return Some(position);
             }
         }
 
