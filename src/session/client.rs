@@ -74,9 +74,11 @@ impl ClientState {
 
 #[derive(Debug)]
 pub enum ClientInput {
-    Start,
     Stop,
     Restart,
+    NewSession {
+        store: SessionStore,
+    },
 
     PairWithPhoneNumber {
         phone_number: String,
@@ -398,7 +400,9 @@ impl AsyncComponent for Client {
         _root: &Self::Root,
     ) {
         match input {
-            ClientInput::Start => {
+            ClientInput::NewSession { store } => {
+                self.store = store;
+                self.update_state(ClientState::Loading);
                 sender.oneshot_command(async { ClientCommand::Start });
             }
             ClientInput::Stop => {

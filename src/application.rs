@@ -1021,10 +1021,6 @@ impl AsyncComponent for Application {
                 self.state = AppState::Pairing;
                 self.chats.clear();
 
-                // Start a fresh client — the old credentials have been cleared
-                // by the ClientCommand::LoggedOut handler.
-                self.client.emit(ClientInput::Start);
-
                 let session_uuid = self.session.uuid.clone();
                 sender.oneshot_command(async move {
                     let keyring = KeyringService::new()
@@ -1815,6 +1811,8 @@ impl AsyncComponent for Application {
                 }
             }
             AppCmd::SwitchSession { db, session } => {
+                self.client
+                    .emit(ClientInput::NewSession { store: db.clone() });
                 self.db = db;
                 self.session = session;
             }
