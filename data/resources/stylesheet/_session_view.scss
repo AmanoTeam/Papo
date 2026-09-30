@@ -3,6 +3,15 @@
 @use "chat_list";
 @use "chat_view";
 
-// Sidebar
 sidebar {
+}
+
+.syncing-progress {
+  trough {
+    min-height: 6px;
+  }
+
+  progress {
+    min-height: 6px;
+  }
 }

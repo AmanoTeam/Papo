@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    path::Path,
+    collections::HashSet,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -15,69 +14,59 @@ use whatsapp_rust::{
     bot::Bot,
     http::{HttpRequest, UreqHttpClient},
     pair_code::{CompanionWebClientType, PairCodeOptions},
-    store::SqliteStore,
     transport::TokioWebSocketTransportFactory,
     types::{
         events::{Event, LazyHistorySync},
         message::MessageInfo,
         presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
-    wacore::store::DevicePropsOverride,
+    wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
         Conversation, Message,
-        device_props::{AppVersion, PlatformType},
+        device_props::{AppVersion, HistorySyncConfig, PlatformType},
+        web_message_info::Status,
     },
 };
 
-use crate::{DATA_DIR, i18n, i18n_f, session::AvatarCache, state::ChatMessage};
+use crate::{
+    db::{protocol::backend::ProtocolBackend, store::SessionStore},
+    i18n, i18n_f,
+    session::AvatarCache,
+    state::{ChatMessage, Media, MessageStatus},
+};
 
-/// Shared client handle for accessing the `WhatsApp` client.
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
 
-/// `WhatsApp` client wrapper that manages the connection and provides
-/// a clean interface for UI operations.
 #[derive(Clone)]
 pub struct Client {
-    /// Client connection state.
     pub state: ClientState,
-    /// Shared client reference.
+    store: SessionStore,
     handle: ClientHandle,
-    /// System OS type.
     os_type: String,
 
-    /// Avatar cache for downloading and storing profile pictures.
-    avatar_cache: Arc<Mutex<Option<AvatarCache>>>,
+    avatar_cache: Option<AvatarCache>,
+    inflight_avatars: Arc<Mutex<HashSet<String>>>,
 }
 
-/// Current state of the client connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientState {
-    /// Client is loading.
     Loading,
-    /// Client is connected and authenticated.
     Connected,
-    /// Client is logged out.
     LoggedOut,
-    /// Connection in progress.
     Connecting,
-    /// Client is disconnected.
     Disconnected,
 
-    /// Pairing in progress.
     Pairing {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Syncing in progress.
     Syncing,
 
-    /// Error state.
     Error(String),
 }
 
 impl ClientState {
-    /// Checks if the client is paired.
     pub fn is_paired(&self) -> bool {
         matches!(self, Self::Connected | Self::Syncing)
     }
@@ -85,98 +74,97 @@ impl ClientState {
 
 #[derive(Debug)]
 pub enum ClientInput {
-    /// Start the client connection.
-    Start,
-    /// Stop the client connection.
     Stop,
-    /// Restart the client connection.
     Restart,
+    NewSession {
+        store: SessionStore,
+    },
 
-    /// Pair with a phone number.
-    PairWithPhoneNumber { phone_number: String },
+    PairWithPhoneNumber {
+        phone_number: String,
+    },
 
-    /// Start a new call.
-    StartCall { jid: String, is_video: bool },
-    /// Accept an incoming call.
-    AcceptCall { call_id: String },
-    /// Decline an incoming call.
-    DeclineCall { call_id: String },
+    StartCall {
+        jid: String,
+        is_video: bool,
+    },
+    AcceptCall {
+        call_id: String,
+    },
+    DeclineCall {
+        call_id: String,
+    },
 
-    /// Send typing indicator.
-    SendTyping { jid: String },
-    /// Stop typing indicator.
-    StopTyping { jid: String },
+    SendTyping {
+        jid: String,
+    },
+    StopTyping {
+        jid: String,
+    },
 
-    /// Mark messages as read.
     MarkRead {
         chat_jid: String,
         sender_jid: Option<String>,
         message_ids: Vec<String>,
     },
-    /// Send a message.
-    SendMessage { message: Box<ChatMessage> },
-    /// Fetch avatar for a chat.
+    SendMessage {
+        message: Box<ChatMessage>,
+    },
     FetchAvatar {
-        /// Chat JID.
         jid: String,
     },
-    /// Resolve a LID-PN from a chat.
-    ResolveLidPn { chat_jid: String, lid: String },
+    ResolveLidPn {
+        chat_jid: String,
+        lid: String,
+    },
 }
 
 #[derive(Debug)]
 pub enum ClientOutput {
-    /// Client is loading.
     Loading,
-    /// Client has been successfully connected and authenticated.
     Connected {
         jid: Option<String>,
         push_name: String,
     },
-    /// Client has been logged out.
     LoggedOut,
-    /// Client is connecting.
     Connecting,
-    /// Client has been disconnected.
     Disconnected,
 
-    /// Self push name updated.
-    SelfPushNameUpdated { push_name: String },
+    SelfPushNameUpdated {
+        push_name: String,
+    },
 
-    /// 8-character pairing code or qr code received.
     PairCode {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Client has paired successfully.
     PairSuccess,
 
-    /// Syncing in progress.
     Syncing,
+    HistorySyncProgress {
+        progress: Option<u32>,
+    },
 
-    /// Incoming call offer.
     CallOffer {
         call_id: String,
         from_jid: String,
         is_video: bool,
     },
-    /// Call ended.
-    CallEnded { call_id: String },
+    CallEnded {
+        call_id: String,
+    },
 
-    /// Message receipt updated.
     ReceiptUpdate {
         chat_jid: String,
         message_ids: Vec<String>,
         receipt_type: ReceiptType,
     },
-    /// User presence updated.
     PresenceUpdate {
         jid: String,
         available: bool,
         last_seen: Option<Timestamp>,
     },
-    /// Chat presence updated.
     ChatPresenceUpdate {
         chat_jid: String,
         active: bool,
@@ -185,130 +173,87 @@ pub enum ClientOutput {
         sender_alt: Option<String>,
     },
 
-    /// Message was sent successfully.
-    MessageSent { chat_jid: String, msg_id: Uuid },
-    /// Message failed to send.
-    MessageFailed { chat_jid: String, msg_id: Uuid },
-    /// New message received.
+    MessageSent {
+        chat_jid: String,
+        msg_id: Uuid,
+    },
+    MessageFailed {
+        chat_jid: String,
+        msg_id: Uuid,
+    },
     MessageReceived {
         info: Box<MessageInfo>,
         message: Box<Message>,
     },
 
-    /// Chat synced from history.
-    ChatSynced {
-        /// Chat JID.
-        jid: String,
-        /// Display name.
-        name: Option<String>,
-        /// Whether chat is pinned.
-        pinned: bool,
-        /// Whether chat is archived.
-        archived: bool,
-        /// Unread message count.
-        unread_count: Option<u32>,
-        /// Group participants (for groups).
-        participants: Vec<(String, Option<String>)>,
-        /// Mute end time (if muted).
-        mute_end_time: Option<u64>,
-        /// Last message timestamp.
-        last_message_time: Option<u64>,
-    },
-    /// Messages synced from history for a chat.
-    MessagesSynced {
-        /// Chat JID.
-        chat_jid: String,
-        /// Synced messages.
-        messages: Vec<SyncedMessage>,
+    ChatsSynced {
+        entries: Vec<ChatsSyncedEntry>,
     },
 
-    /// Chat property updated (pin, mute, archive).
-    ChatPropertyUpdate {
-        /// Chat JID.
+    ChatReadOnDevice {
         jid: String,
-        /// Whether the chat is pinned.
+    },
+
+    ChatPropertyUpdate {
+        jid: String,
         pinned: Option<bool>,
-        /// Whether the chat is muted.
         muted: Option<bool>,
-        /// Whether the chat is archived.
         archived: Option<bool>,
     },
 
-    /// History sync completed.
     HistorySyncCompleted,
-    /// Offline sync completed.
     OfflineSyncCompleted,
 
-    /// Avatar updated for a chat.
     AvatarUpdate {
-        /// Chat JID.
         jid: String,
-        /// Path to the cached avatar image.
         path: String,
     },
-    /// Contact updated (from sync or individual update).
     ContactUpdate {
-        /// Contact JID.
         jid: String,
-        /// Full name from address book.
         name: Option<String>,
-        /// Push name (first name).
         push_name: Option<String>,
-        /// Phone number (from JID user part).
         phone_number: String,
     },
+    ContactRemoved {
+        jid: String,
+    },
 
-    /// LID-PN resolved.
     LidPnResolved {
         chat_jid: String,
         lid: String,
         phone: Option<String>,
     },
 
-    /// Error occurred.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
-/// A message synced from history.
 #[derive(Debug, Clone)]
 pub struct SyncedMessage {
-    /// Message ID.
     pub id: String,
-    /// Whether message is unread.
-    pub unread: bool,
-    /// Message content (text).
+    pub status: MessageStatus,
     pub content: Option<String>,
-    /// Whether message was sent by current user.
     pub outgoing: bool,
-    /// Message timestamp.
     pub timestamp: u64,
-    /// Sender JID.
+    pub media_type: Option<String>,
     pub sender_jid: String,
-    /// Sender push name.
     pub sender_name: Option<String>,
 }
 
-/// Delete the `WhatsApp` database files to clear stored credentials.
-fn clear_whatsapp_credentials() {
-    let db_path = DATA_DIR.join("whatsapp.db");
-    let wal_path = format!("{}-wal", db_path.display());
-    let shm_path = format!("{}-shm", db_path.display());
-
-    for path in [
-        db_path.as_path(),
-        Path::new(&wal_path),
-        Path::new(&shm_path),
-    ] {
-        if path.exists()
-            && let Err(e) = fs::remove_file(path)
-        {
-            tracing::warn!("Failed to delete {}: {}", path.display(), e);
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct ChatsSyncedEntry {
+    pub jid: String,
+    pub name: Option<String>,
+    pub pinned: bool,
+    pub archived: bool,
+    pub messages: Vec<SyncedMessage>,
+    pub participants: Vec<(String, Option<String>)>,
+    pub unread_count: Option<u32>,
+    pub mute_end_time: Option<u64>,
+    pub last_message_time: Option<u64>,
 }
 
-/// Extract synced messages from a conversation's message list.
-/// Used by `ProcessHistorySync`.
 fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
     for hist_msg in &conv.messages {
@@ -322,6 +267,16 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                 .clone()
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
+
+            let status = match web_msg.status {
+                Some(Status::SERVER_ACK) => MessageStatus::Sent,
+                Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
+                Some(Status::READ) => MessageStatus::Read,
+                Some(Status::PLAYED) => MessageStatus::Played,
+                Some(Status::ERROR) => MessageStatus::Failed,
+                _ if outgoing => MessageStatus::Sent,
+                _ => MessageStatus::Delivered,
+            };
             let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -329,6 +284,7 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                     .as_secs()
             });
 
+            let media = Media::from_wa_message(msg);
             let content = msg
                 .conversation
                 .clone()
@@ -337,14 +293,16 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                     msg.extended_text_message
                         .as_option()
                         .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
-                });
+                })
+                .or_else(|| media.as_ref().and_then(|m| m.caption.clone()));
 
             synced_messages.push(SyncedMessage {
                 id: msg_id,
-                unread: false,
+                status,
                 content,
                 outgoing,
                 timestamp,
+                media_type: media.as_ref().map(|m| format!("{:?}", m.r#type)),
                 sender_jid,
                 sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
             });
@@ -355,44 +313,33 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
 
 #[derive(Debug)]
 pub enum ClientCommand {
-    /// Start the client connection.
     Start,
-    /// Stop the client connection.
     Stop,
-    /// Restart the client connection.
     Restart,
-    /// Client has been successfully connected and authenticated.
     Connected,
-    /// Client has been logged out.
     LoggedOut,
-    /// Client has been disconnected.
     Disconnected,
 
-    /// Pair the account.
     Pair {
         code: Option<String>,
         qr_code: Option<String>,
         timeout: Duration,
     },
-    /// Client has paired successfully.
     PairSuccess,
 
-    /// Fetch avatar for a JID in background.
     FetchAvatar {
-        /// Chat JID.
         jid: String,
     },
-    /// Resolve a LID-PN from a chat.
-    ResolveLidPn { chat_jid: String, lid: String },
-    /// Process a `HistorySync` event in background.
-    ProcessHistorySync {
-        /// History sync payload.
+    HistorySync {
         history_sync: Box<LazyHistorySync>,
+    },
+    ResolveLidPn {
+        chat_jid: String,
+        lid: String,
     },
 }
 
 impl Client {
-    /// Update `WhatsApp` client state.
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
     }
@@ -400,7 +347,7 @@ impl Client {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for Client {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ClientInput;
     type Output = ClientOutput;
     type CommandOutput = ClientCommand;
@@ -414,13 +361,12 @@ impl AsyncComponent for Client {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        init: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let os_type = os_info::get().os_type().to_string();
 
-        // Initialize avatar cache.
         let avatar_cache = match AvatarCache::new() {
             Ok(cache) => {
                 tracing::info!("Avatar cache initialized");
@@ -434,9 +380,11 @@ impl AsyncComponent for Client {
 
         let model = Self {
             state: ClientState::Loading,
+            store: init,
             handle: Arc::new(Mutex::new(None)),
             os_type,
-            avatar_cache: Arc::new(Mutex::new(avatar_cache)),
+            avatar_cache,
+            inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
         };
 
         let widgets = view_output!();
@@ -455,7 +403,9 @@ impl AsyncComponent for Client {
         _root: &Self::Root,
     ) {
         match input {
-            ClientInput::Start => {
+            ClientInput::NewSession { store } => {
+                self.store = store;
+                self.update_state(ClientState::Loading);
                 sender.oneshot_command(async { ClientCommand::Start });
             }
             ClientInput::Stop => {
@@ -560,13 +510,18 @@ impl AsyncComponent for Client {
                         return;
                     };
 
+                    // Persist before send: receipts can only arrive after the
+                    // send reaches the server, so the message must already be
+                    // stored when they do.
+                    if let Err(e) = message.upsert(&self.store).await {
+                        tracing::error!("Failed to save outgoing message: {}", e);
+                        return;
+                    }
+
                     match Box::pin(client.send_message(jid, (*message).clone().into())).await {
                         Ok(result) => {
-                            // Update the message server id in-place.
                             message.server_id = result.message_id;
-
-                            // Update the message in the database.
-                            if let Err(e) = message.save().await {
+                            if let Err(e) = message.upsert(&self.store).await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
 
@@ -611,20 +566,8 @@ impl AsyncComponent for Client {
                     self.state,
                     ClientState::Connected | ClientState::Connecting | ClientState::Syncing
                 ) {
-                    // Initialize SQLite backend.
-                    let path = DATA_DIR.join("whatsapp.db").to_string_lossy().into_owned();
-                    let backend = match SqliteStore::new(&path).await {
-                        Ok(store) => store,
-                        Err(e) => {
-                            tracing::error!("Failed to initialize SQLite storage: {e}");
-                            let _ = sender.output(ClientOutput::Error {
-                                message: i18n_f!("Database error: {0}", e),
-                            });
-
-                            return;
-                        }
-                    };
-                    tracing::info!("SQLite storage initialized successfully");
+                    let backend = ProtocolBackend::new(self.store.clone());
+                    tracing::info!("Protocol backend initialized");
 
                     // Get application version from cargo package.
                     let app_version = (
@@ -648,7 +591,14 @@ impl AsyncComponent for Client {
                                     tertiary: Some(app_version.2),
                                     ..Default::default()
                                 })
-                                .with_platform_type(PlatformType::Desktop),
+                                .with_platform_type(PlatformType::Desktop)
+                                .with_require_full_sync(true)
+                                .with_history_sync_config(HistorySyncConfig {
+                                    full_sync_days_limit: Some(365),
+                                    on_demand_ready: Some(true),
+                                    complete_on_demand_ready: Some(true),
+                                    ..default_history_sync_config()
+                                }),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
@@ -665,6 +615,12 @@ impl AsyncComponent for Client {
                                     Event::Disconnected(_) => {
                                         sender
                                             .oneshot_command(async { ClientCommand::Disconnected });
+                                    }
+
+                                    Event::SelfPushNameUpdated(update) => {
+                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
+                                            push_name: update.new_name.clone(),
+                                        });
                                     }
 
                                     Event::PairingCode(pairing) => {
@@ -760,7 +716,7 @@ impl AsyncComponent for Client {
                                         let history_sync = history_sync.clone();
 
                                         sender.oneshot_command(async move {
-                                            ClientCommand::ProcessHistorySync { history_sync }
+                                            ClientCommand::HistorySync { history_sync }
                                         });
                                     }
                                     Event::OfflineSyncPreview(_) => {
@@ -800,19 +756,16 @@ impl AsyncComponent for Client {
                                         });
                                     }
                                     Event::MarkChatAsReadUpdate(update) => {
-                                        // Ignore for now - read state is managed locally.
-                                        tracing::debug!(
-                                            "Mark chat as read update: {} = {:?}",
-                                            update.jid,
-                                            update.action
-                                        );
+                                        let _ = sender.output(ClientOutput::ChatReadOnDevice {
+                                            jid: update.jid.to_string(),
+                                        });
                                     }
 
                                     Event::ContactUpdate(contact_update) => {
                                         let jid = contact_update.jid.to_string();
                                         let name = contact_update.action.full_name.clone();
-                                        let phone_number = contact_update.jid.user.to_string();
                                         let push_name = contact_update.action.first_name.clone();
+                                        let phone_number = contact_update.jid.user.to_string();
 
                                         let _ = sender.output(ClientOutput::ContactUpdate {
                                             jid,
@@ -821,11 +774,19 @@ impl AsyncComponent for Client {
                                             phone_number,
                                         });
                                     }
-
-                                    Event::SelfPushNameUpdated(update) => {
-                                        let _ = sender.output(ClientOutput::SelfPushNameUpdated {
-                                            push_name: update.new_name.clone(),
+                                    Event::ContactRemoved(contact_removed) => {
+                                        let _ = sender.output(ClientOutput::ContactRemoved {
+                                            jid: contact_removed.jid.to_string(),
                                         });
+                                    }
+
+                                    Event::ServerAck(ack) => {
+                                        tracing::trace!(
+                                            "Server ack: id = {}, class = {:?}, from = {:?}",
+                                            ack.id,
+                                            ack.class,
+                                            ack.from
+                                        );
                                     }
 
                                     e => tracing::warn!("Unhandled event type: {e:#?}"),
@@ -846,13 +807,10 @@ impl AsyncComponent for Client {
                         }
                     };
 
-                    // Extract client from bot.
                     let client = bot.client();
                     *self.handle.lock().await = Some(client);
-
                     self.update_state(ClientState::Connecting);
 
-                    // Start the client.
                     relm4::spawn(async move {
                         bot.run().await;
                     });
@@ -864,8 +822,6 @@ impl AsyncComponent for Client {
                     // TODO: graceful shutdown
                     if let Some(client) = handle.as_ref() {
                         client.disconnect().await;
-
-                        // Clear client reference on disconnect.
                         *handle = None;
                     }
                 }
@@ -875,7 +831,6 @@ impl AsyncComponent for Client {
                 let _ = sender.output(ClientOutput::Disconnected);
             }
             ClientCommand::Restart => {
-                // Stop the client.
                 {
                     let mut handle = self.handle.lock().await;
                     if let Some(client) = handle.as_ref() {
@@ -885,13 +840,7 @@ impl AsyncComponent for Client {
                 }
                 tracing::info!("Disconnected from WhatsApp");
 
-                // Clear credentials for a fresh start.
-                clear_whatsapp_credentials();
-
-                // Reset the client state.
                 self.update_state(ClientState::Loading);
-
-                // Start the client.
                 sender.oneshot_command(async { ClientCommand::Start });
             }
             ClientCommand::Connected => {
@@ -901,7 +850,7 @@ impl AsyncComponent for Client {
                 let handle = self.handle.lock().await;
                 let (jid, push_name) = handle.as_ref().map_or_else(
                     || (None, i18n!("You!")),
-                    |client| (client.lid().map(|j| j.to_string()), client.push_name()),
+                    |client| (client.pn().map(|j| j.to_string()), client.push_name()),
                 );
                 drop(handle);
 
@@ -911,7 +860,6 @@ impl AsyncComponent for Client {
             ClientCommand::LoggedOut => {
                 tracing::info!("Logged out from WhatsApp");
 
-                // Disconnect and clear client reference.
                 {
                     let mut handle = self.handle.lock().await;
                     if let Some(client) = handle.as_ref() {
@@ -919,9 +867,6 @@ impl AsyncComponent for Client {
                         *handle = None;
                     }
                 }
-
-                // Clear stale credentials so the next start begins fresh pairing.
-                clear_whatsapp_credentials();
 
                 self.update_state(ClientState::LoggedOut);
                 let _ = sender.output(ClientOutput::LoggedOut);
@@ -973,106 +918,156 @@ impl AsyncComponent for Client {
                 let _ = sender.output(ClientOutput::PairSuccess);
             }
 
-            ClientCommand::FetchAvatar { jid } => {
-                // Spawn avatar fetching as a separate task to avoid blocking command queue.
-                let avatar_cache = Arc::clone(&self.avatar_cache);
+            ClientCommand::FetchAvatar { jid: jid_str } => {
+                if jid_str.ends_with("@broadcast") || jid_str == "0@s.whatsapp.net" {
+                    return;
+                }
+
+                let inserted = self.inflight_avatars.lock().await.insert(jid_str.clone());
+                if !inserted {
+                    return;
+                }
+
+                let avatar_cache = self.avatar_cache.clone();
                 let client_handle = Arc::clone(&self.handle);
+                let inflight = Arc::clone(&self.inflight_avatars);
                 let sender_clone = sender.clone();
 
                 relm4::spawn(async move {
-                    // Check if already cached (release lock immediately after).
-                    let cached_path = {
-                        let cache_guard = avatar_cache.lock().await;
-
-                        if let Some(cache) = cache_guard.as_ref() {
-                            cache.get_cached_path(&jid)
-                        } else {
+                    let result = async {
+                        let Some(cache) = avatar_cache.as_ref() else {
                             tracing::warn!("Avatar cache not available");
-                            return;
+                            return None;
+                        };
+
+                        let cached_path = cache.get_cached_path(&jid_str);
+                        if let Some(path) = cached_path {
+                            tracing::debug!("Avatar already cached for {jid_str}");
+                            return Some(path);
                         }
-                    };
 
-                    if let Some(path) = cached_path {
-                        tracing::debug!("Avatar already cached for {jid}");
+                        let client = {
+                            let handle = client_handle.lock().await;
 
-                        let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
-                        return;
-                    }
-
-                    // Get the client handle (clone Arc to release lock).
-                    let client = {
-                        let handle = client_handle.lock().await;
-
-                        if let Some(c) = handle.as_ref() {
-                            Arc::clone(c)
-                        } else {
-                            tracing::warn!("Client not available for fetching avatar");
-                            return;
-                        }
-                    };
-
-                    // Parse the JID.
-                    let Ok(jid_parsed) = jid.parse::<Jid>() else {
-                        tracing::error!("Failed to parse JID for avatar fetch: {jid}");
-                        return;
-                    };
-
-                    // Fetch the profile picture using the contacts feature.
-                    let picture = match client
-                        .contacts()
-                        .get_profile_picture(&jid_parsed, false)
-                        .await
-                    {
-                        Ok(Some(pic)) => pic,
-                        Ok(None) => {
-                            tracing::debug!("No profile picture available for {jid}");
-                            return;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to get profile picture for {jid}: {e}");
-                            return;
-                        }
-                    };
-
-                    tracing::info!("Got profile picture URL for {jid}");
-
-                    // Download the avatar using the client's HTTP client.
-                    let request = HttpRequest::get(&picture.url);
-                    let response = match client.http_client.execute(request).await {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            tracing::error!("Failed to download avatar for {jid}: {e}");
-                            return;
-                        }
-                    };
-
-                    if response.status_code < 200 || response.status_code >= 300 {
-                        tracing::error!(
-                            "Failed to download avatar for {jid}: HTTP {}",
-                            response.status_code
-                        );
-                        return;
-                    }
-
-                    // Save to cache (acquire lock only for saving).
-                    let path = {
-                        let cache_guard = avatar_cache.lock().await;
-                        if let Some(cache) = cache_guard.as_ref() {
-                            match cache.save_avatar(&jid, &response.body) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    tracing::error!("Failed to save avatar for {jid}: {e}");
-                                    return;
-                                }
+                            if let Some(c) = handle.as_ref() {
+                                Arc::clone(c)
+                            } else {
+                                tracing::warn!("Client not available for fetching avatar");
+                                return None;
                             }
-                        } else {
-                            tracing::warn!("Avatar cache not available for saving");
-                            return;
+                        };
+
+                        let Ok(jid) = jid_str.parse::<Jid>() else {
+                            tracing::error!("Failed to parse JID for avatar fetch: {jid_str}");
+                            return None;
+                        };
+
+                        let picture = match client.contacts().get_profile_picture(&jid, false).await
+                        {
+                            Ok(Some(pic)) => pic,
+                            Ok(None) => {
+                                tracing::debug!("No profile picture available for {jid_str}");
+                                return None;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to get profile picture for {jid_str}: {e}");
+                                return None;
+                            }
+                        };
+                        tracing::info!("Got profile picture URL for {jid_str}");
+
+                        // Download the avatar using the client's HTTP client.
+                        let request = HttpRequest::get(&picture.url);
+                        let response = match client.http_client.execute(request).await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                tracing::error!("Failed to download avatar for {jid_str}: {e}");
+                                return None;
+                            }
+                        };
+
+                        if response.status_code < 200 || response.status_code >= 300 {
+                            tracing::error!(
+                                "Failed to download avatar for {jid_str}: HTTP {}",
+                                response.status_code
+                            );
+                            return None;
                         }
+
+                        let path = match cache.save_avatar(&jid_str, &response.body) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::error!("Failed to save avatar for {jid_str}: {e}");
+                                return None;
+                            }
+                        };
+
+                        tracing::info!("Avatar downloaded and cached for {jid_str}");
+                        Some(path)
+                    }
+                    .await;
+
+                    let mut guard = inflight.lock().await;
+                    guard.remove(&jid_str);
+
+                    if let Some(path) = result {
+                        let _ =
+                            sender_clone.output(ClientOutput::AvatarUpdate { jid: jid_str, path });
+                    }
+                });
+            }
+            ClientCommand::HistorySync { history_sync } => {
+                let sender_clone = sender.clone();
+                relm4::spawn_blocking(move || {
+                    // Sync types: 0 bootstrap, 1 status v3, 2 full, 3 recent,
+                    // 4 push name, 5 non-blocking data, 6 on-demand.
+                    tracing::debug!(
+                        "History sync chunk: type = {}, order = {:?}, progress = {:?}",
+                        history_sync.sync_type(),
+                        history_sync.chunk_order(),
+                        history_sync.progress()
+                    );
+
+                    let _ = sender_clone.output(ClientOutput::HistorySyncProgress {
+                        progress: history_sync.progress(),
+                    });
+
+                    let Some(sync) = history_sync.get() else {
+                        tracing::error!("Failed to decode history sync payload");
+                        return;
                     };
 
-                    tracing::info!("Avatar downloaded and cached for {jid}");
-                    let _ = sender_clone.output(ClientOutput::AvatarUpdate { jid, path });
+                    let mut entries = Vec::new();
+
+                    for conv in &sync.conversations {
+                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
+                        let is_group = chat_jid.ends_with("@g.us");
+
+                        // Extract participants for groups.
+                        let mut participants = Vec::new();
+                        if is_group {
+                            for p in &conv.participant {
+                                participants.push((p.user_jid.clone(), None::<String>));
+                            }
+                        }
+
+                        let messages = extract_synced_messages(conv, &chat_jid);
+
+                        entries.push(ChatsSyncedEntry {
+                            jid: chat_jid,
+                            name: conv.name.clone(),
+                            pinned: conv.pinned.is_some_and(|p| p > 0),
+                            archived: conv.archived.unwrap_or(false),
+                            messages,
+                            participants,
+                            unread_count: conv.unread_count,
+                            mute_end_time: conv.mute_end_time,
+                            last_message_time: conv.last_msg_timestamp,
+                        });
+                    }
+
+                    let _ = sender_clone.output(ClientOutput::ChatsSynced { entries });
+                    let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
                 });
             }
             ClientCommand::ResolveLidPn { chat_jid, lid } => {
@@ -1096,50 +1091,6 @@ impl AsyncComponent for Client {
                         phone,
                     });
                 }
-            }
-            ClientCommand::ProcessHistorySync { history_sync } => {
-                let sender_clone = sender.clone();
-                relm4::spawn_blocking(move || {
-                    let Some(sync) = history_sync.get() else {
-                        tracing::error!("Failed to decode history sync payload");
-                        return;
-                    };
-
-                    for conv in &sync.conversations {
-                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
-                        let is_group = chat_jid.ends_with("@g.us");
-
-                        // Extract participants for groups.
-                        let mut participants = Vec::new();
-                        if is_group {
-                            for p in &conv.participant {
-                                participants.push((p.user_jid.clone(), None::<String>));
-                            }
-                        }
-
-                        let _ = sender_clone.output(ClientOutput::ChatSynced {
-                            jid: chat_jid.clone(),
-                            name: conv.name.clone(),
-                            pinned: conv.pinned.is_some_and(|p| p > 0),
-                            archived: conv.archived.unwrap_or(false),
-                            unread_count: conv.unread_count,
-                            participants,
-                            mute_end_time: conv.mute_end_time,
-                            last_message_time: conv.last_msg_timestamp,
-                        });
-
-                        let synced_messages = extract_synced_messages(conv, &chat_jid);
-
-                        if !synced_messages.is_empty() {
-                            let _ = sender_clone.output(ClientOutput::MessagesSynced {
-                                chat_jid,
-                                messages: synced_messages,
-                            });
-                        }
-                    }
-
-                    let _ = sender_clone.output(ClientOutput::HistorySyncCompleted);
-                });
             }
         }
     }

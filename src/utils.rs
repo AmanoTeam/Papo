@@ -14,7 +14,6 @@ use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
 use crate::i18n;
 
-/// Gets only the first name from a full name.
 pub fn get_first_name(name: &str) -> String {
     if name.is_empty() {
         String::new()
@@ -27,7 +26,6 @@ pub fn get_first_name(name: &str) -> String {
     }
 }
 
-/// Generates a QR code texture.
 pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box<dyn Error>> {
     let data = data.to_string();
     let bytes = relm4::spawn_blocking(move || {
@@ -47,7 +45,7 @@ pub async fn generate_qr_code(data: &str, size: u32) -> Result<gdk::Texture, Box
 
     // Load the image through glycin.
     let loader = Loader::new_bytes(Bytes::from_owned(bytes));
-    let image_doc = loader.load().await?;
+    let mut image_doc = loader.load().await?;
     let frame = image_doc.next_frame().await?;
     let texture = frame.texture();
 
@@ -85,6 +83,17 @@ pub fn format_lid_as_number(lid: &str) -> String {
             .format_as(PhoneNumberFormat::International)
             .to_string()
     })
+}
+
+/// Strips the device suffix from a JID (`user:device@server` -> `user@server`).
+pub fn bare_jid(jid: &str) -> String {
+    match jid.split_once('@') {
+        Some((user, server)) => {
+            let user = user.split(':').next().unwrap_or(user);
+            format!("{user}@{server}")
+        }
+        None => jid.to_string(),
+    }
 }
 
 /// Extracts phone number from JID/LID.

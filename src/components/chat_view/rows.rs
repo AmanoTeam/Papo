@@ -9,47 +9,39 @@ use crate::{
     widgets::{MessageTail, TailDirection},
 };
 
-/// A single row in the chat history list.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ChatRow {
-    /// A regular chat message bubble.
     Message {
         last: bool,
         first: bool,
+        unread: bool,
         message: ChatMessage,
+        last_of_segment: bool,
+        first_of_segment: bool,
     },
-    /// A date separator label (e.g. "Today", "Yesterday").
     DateSeparator(Date),
-    /// A service/system event (e.g. "someone added xxx").
-    ServiceEvent { text: String },
-    /// The unread messages divider.
+    ServiceEvent {
+        text: String,
+    },
     UnreadDivider,
 }
 
 pub struct ChatRowWidgets {
     avatar: adw::Avatar,
     tail_left: MessageTail,
-    /// The message bubble itself.
     bubble_box: gtk::Box,
     tail_right: MessageTail,
     avatar_slot: gtk::Box,
-    /// Outer container for message bubbles.
     message_box: gtk::Box,
-    /// Message status icon (e.g. "Sending", "Sent").
     status_icon: gtk::Image,
-    /// Sender name label (visible in group chats for incoming messages).
     sender_label: gtk::Label,
-    /// Message text content.
     content_label: gtk::Label,
-    /// Unread messages divider label.
     divider_label: gtk::Label,
-    /// Service event label (e.g. "someone added xxx").
     service_label: gtk::Label,
-    /// Date separator label (e.g. "Today", "Yesterday").
     separator_label: gtk::Label,
-    /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
+    divider_separator: gtk::Separator,
 }
 
 fn new_tail(direction: TailDirection, css_class: &str) -> MessageTail {
@@ -82,6 +74,67 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
     }
 }
 
+fn bind_content_label(widgets: &ChatRowWidgets, msg: &ChatMessage) {
+    let Some(media) = &msg.media else {
+        widgets.content_label.set_label(&msg.content);
+        return;
+    };
+
+    let label = media.r#type.display_label();
+    widgets.content_label.set_label(&if msg.content.is_empty() {
+        label
+    } else {
+        format!("{label}\n{}", msg.content)
+    });
+}
+
+fn bind_message_side(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, last: bool) {
+    if msg.outgoing {
+        widgets.message_box.set_halign(gtk::Align::End);
+        widgets.message_box.set_margin_start(60);
+        widgets.message_box.set_margin_end(6);
+        widgets.bubble_box.add_css_class("outgoing");
+        widgets.bubble_box.set_margin_start(0);
+        widgets.bubble_box.set_margin_end(0);
+
+        widgets.status_icon.set_visible(true);
+        widgets
+            .status_icon
+            .set_icon_name(Some(msg.status.icon_name()));
+        match msg.status {
+            MessageStatus::Read => {
+                widgets.status_icon.add_css_class("white");
+            }
+            MessageStatus::Failed => {
+                widgets
+                    .status_icon
+                    .set_tooltip(&i18n!("The message could not be sent."));
+                widgets.status_icon.add_css_class("warning");
+            }
+            _ => {}
+        }
+
+        widgets.tail_right.set_visible(true);
+        widgets.tail_right.set_opacity(if last { 1.0 } else { 0.0 });
+    } else {
+        widgets.message_box.set_halign(gtk::Align::Start);
+        widgets.message_box.set_margin_start(6);
+        widgets.message_box.set_margin_end(60);
+        widgets.bubble_box.add_css_class("incoming");
+        widgets.bubble_box.set_margin_start(0);
+        widgets.bubble_box.set_margin_end(0);
+
+        if msg.chat_jid.ends_with("@g.us") {
+            bind_group_avatar(widgets, msg, first, last);
+        }
+
+        widgets.status_icon.set_visible(false);
+
+        widgets.tail_left.set_visible(true);
+        widgets.tail_left.set_opacity(if last { 1.0 } else { 0.0 });
+    }
+}
+
 impl RelmListItem for ChatRow {
     type Root = gtk::Box;
     type Widgets = ChatRowWidgets;
@@ -106,10 +159,21 @@ impl RelmListItem for ChatRow {
         let divider_label = gtk::Label::builder()
             .halign(gtk::Align::Center)
             .css_classes(["unread-divider", "caption"])
-            .margin_top(6)
-            .margin_bottom(2)
+            .margin_top(10)
+            .margin_bottom(4)
             .build();
         root.append(&divider_label);
+
+        let divider_separator = gtk::Separator::builder()
+            .hexpand(true)
+            .css_classes(["unread-divider-separator"])
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(4)
+            .margin_bottom(4)
+            .visible(false)
+            .build();
+        root.append(&divider_separator);
 
         // Service event (e.g. "someone added xxx").
         let service_label = gtk::Label::builder()
@@ -210,17 +274,24 @@ impl RelmListItem for ChatRow {
             service_label,
             separator_label,
             timestamp_label,
+            divider_separator,
         };
 
         (root, widgets)
     }
 
-    fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+    fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
         // Hide all variants first, then show the active one.
         widgets.separator_label.set_visible(false);
         widgets.divider_label.set_visible(false);
+        widgets.divider_separator.set_visible(false);
         widgets.service_label.set_visible(false);
         widgets.message_box.set_visible(false);
+
+        root.remove_css_class("unread-row");
+        root.remove_css_class("unread-first");
+        root.remove_css_class("unread-last");
+        root.set_margin_top(0);
 
         match self {
             Self::DateSeparator(date) => {
@@ -232,6 +303,12 @@ impl RelmListItem for ChatRow {
                 widgets.divider_label.set_label(&i18n!("Unread messages"));
                 widgets.divider_label.set_visible(true);
                 widgets.divider_label.set_focusable(false);
+                widgets.divider_separator.set_visible(true);
+
+                root.add_css_class("unread-row");
+                root.add_css_class("unread-first");
+
+                root.set_margin_top(8);
             }
             Self::ServiceEvent { text } => {
                 widgets.service_label.set_label(text);
@@ -241,11 +318,15 @@ impl RelmListItem for ChatRow {
             Self::Message {
                 last,
                 first,
+                unread,
                 message: msg,
+                last_of_segment,
+                first_of_segment,
             } => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
-                widgets.content_label.set_label(&msg.content);
+                bind_content_label(widgets, msg);
+
                 // Convert UTC timestamp to local time for display
                 let local_time = msg.timestamp.to_zoned(TimeZone::system());
                 widgets
@@ -274,56 +355,20 @@ impl RelmListItem for ChatRow {
                     widgets.bubble_box.add_css_class("group-last");
                 }
 
-                if msg.outgoing {
-                    widgets.message_box.set_halign(gtk::Align::End);
-                    widgets.message_box.set_margin_start(60);
-                    widgets.message_box.set_margin_end(6);
-                    widgets.bubble_box.add_css_class("outgoing");
-                    widgets.bubble_box.set_margin_start(0);
-                    widgets.bubble_box.set_margin_end(0);
-
-                    widgets.status_icon.set_visible(true);
-                    widgets
-                        .status_icon
-                        .set_icon_name(Some(msg.status.icon_name()));
-                    match msg.status {
-                        MessageStatus::Read => {
-                            widgets.status_icon.add_css_class("white");
-                        }
-                        MessageStatus::Failed => {
-                            widgets
-                                .status_icon
-                                .set_tooltip(&i18n!("The message could not be sent."));
-                            widgets.status_icon.add_css_class("warning");
-                        }
-                        _ => {}
-                    }
-
-                    widgets.tail_right.set_visible(true);
-                    widgets
-                        .tail_right
-                        .set_opacity(if *last { 1.0 } else { 0.0 });
-                } else {
-                    widgets.message_box.set_halign(gtk::Align::Start);
-                    widgets.message_box.set_margin_start(6);
-                    widgets.message_box.set_margin_end(60);
-                    widgets.bubble_box.add_css_class("incoming");
-                    widgets.bubble_box.set_margin_start(0);
-                    widgets.bubble_box.set_margin_end(0);
-
-                    if msg.chat_jid.ends_with("@g.us") {
-                        bind_group_avatar(widgets, msg, *first, *last);
-                    }
-
-                    widgets.status_icon.set_visible(false);
-
-                    widgets.tail_left.set_visible(true);
-                    widgets.tail_left.set_opacity(if *last { 1.0 } else { 0.0 });
+                if *unread {
+                    root.add_css_class("unread-row");
                 }
+                if *first_of_segment {
+                    root.add_css_class("unread-first");
+                }
+                if *last_of_segment {
+                    root.add_css_class("unread-last");
+                }
+                bind_message_side(widgets, msg, *first, *last);
 
                 widgets
                     .bubble_box
-                    .set_margin_top(if *first { 8 } else { 1 });
+                    .set_margin_top(if *first { 4 } else { 1 });
                 widgets.bubble_box.set_margin_bottom(2);
             }
         }

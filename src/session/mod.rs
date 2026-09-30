@@ -2,4 +2,4 @@ mod cache;
 mod client;
 
 pub use cache::AvatarCache;
-pub use client::{Client, ClientInput, ClientOutput, SyncedMessage};
+pub use client::{ChatsSyncedEntry, Client, ClientInput, ClientOutput};

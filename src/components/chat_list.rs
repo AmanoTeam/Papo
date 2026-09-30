@@ -9,6 +9,7 @@ use relm4::{
 };
 
 use crate::{
+    db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
     utils::{format_lid_as_number, get_first_name, load_avatar},
@@ -17,21 +18,17 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ChatList {
+    db: SessionStore,
     typing: HashMap<String, Vec<TypingSender>>,
-    /// Currently selected chat JID.
     chat_jid: Option<String>,
-    /// `ListView` widget wrapper containing all chat rows.
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
 #[derive(Debug, Default)]
 pub enum ChatListFilter {
-    /// All existing chat.
     #[default]
     All,
-    /// Only groups.
     Groups,
-    /// Chats that have unread messages.
     Unreads,
 }
 
@@ -47,16 +44,12 @@ impl From<&str> for ChatListFilter {
 
 #[derive(Debug)]
 pub enum ChatListInput {
-    /// Add a chat.
     AddChat {
         chat: Chat,
-        /// Whether add the chat in the top of the list.
         at_top: bool,
     },
-    /// Update a chat in place.
     UpdateChat {
         chat: Chat,
-        /// Whether move the chat to the top of the list.
         move_to_top: bool,
     },
     UpdateTyping {
@@ -64,31 +57,24 @@ pub enum ChatListInput {
         senders: Vec<TypingSender>,
     },
 
-    /// Apply a filter.
     ApplyFilter(ChatListFilter),
 
-    /// Select a chat.
     Select(String),
-    /// Select a chat by its position.
     SelectPosition(u32),
-    /// Remove a chat from the list.
     RemoveChat {
-        /// Chat JID.
         jid: String,
     },
-    /// Clear the chat selection.
     ClearSelection,
 }
 
 #[derive(Debug)]
 pub enum ChatListOutput {
-    /// A chat has been selected.
     ChatSelected(String),
 }
 
 #[relm4::component(async, pub)]
 impl SimpleAsyncComponent for ChatList {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ChatListInput;
     type Output = ChatListOutput;
 
@@ -166,16 +152,22 @@ impl SimpleAsyncComponent for ChatList {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        db: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let model = Self {
+        let mut model = Self {
+            db,
             typing: HashMap::new(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
 
+        // Chats without messages stay in the store but hidden, so they
+        // appear as soon as their first message arrives.
+        model
+            .list_view_wrapper
+            .add_filter(|row| row.last_message.is_some());
         let selection_model = &model.list_view_wrapper.selection_model;
 
         // Disabe chat row autoselecet and enable unselect.
@@ -188,8 +180,7 @@ impl SimpleAsyncComponent for ChatList {
 
         let input_sender = sender.input_sender().clone();
         selection_model.connect_selected_item_notify(move |model| {
-            let position = model.selected();
-            input_sender.emit(ChatListInput::SelectPosition(position));
+            input_sender.emit(ChatListInput::SelectPosition(model.selected()));
         });
 
         AsyncComponentParts { model, widgets }
@@ -205,17 +196,16 @@ impl SimpleAsyncComponent for ChatList {
                         move_to_top: at_top,
                     });
                 } else {
-                    let last_message = chat
-                        .get_last_message()
-                        .await
-                        .expect("Failed to get chat last message");
-
-                    if last_message.is_none() {
-                        return;
-                    }
+                    let last_message = match chat.get_last_message(&self.db).await {
+                        Ok(message) => message,
+                        Err(e) => {
+                            tracing::error!("Failed to get chat last message: {}", e);
+                            None
+                        }
+                    };
 
                     let unread_count = chat
-                        .get_unread_count()
+                        .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
                     let avatar_texture = if let Some(ref path) = chat.avatar_path {
@@ -244,12 +234,15 @@ impl SimpleAsyncComponent for ChatList {
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
                 if let Some(index) = self.get_index_by_jid(&chat.jid) {
-                    let last_message = chat
-                        .get_last_message()
-                        .await
-                        .expect("Failed to get chat last message");
+                    let last_message = match chat.get_last_message(&self.db).await {
+                        Ok(message) => message,
+                        Err(e) => {
+                            tracing::error!("Failed to get chat last message: {}", e);
+                            None
+                        }
+                    };
                     let unread_count = chat
-                        .get_unread_count()
+                        .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
                     let avatar_texture = if let Some(ref path) = chat.avatar_path {
@@ -282,7 +275,11 @@ impl SimpleAsyncComponent for ChatList {
 
                         // Re-select the row and scroll to the top if it's the selected chat.
                         if self.chat_jid.as_deref() == Some(&chat.jid) {
-                            self.list_view_wrapper.selection_model.select_item(0, true);
+                            if let Some(position) = self.get_visible_index_by_jid(&chat.jid) {
+                                self.list_view_wrapper
+                                    .selection_model
+                                    .select_item(position, true);
+                            }
 
                             if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
                                 glib::idle_add_local_once(move || adj.set_value(adj.lower()));
@@ -293,10 +290,12 @@ impl SimpleAsyncComponent for ChatList {
                         store.splice(index, 1, &[object]);
 
                         // Re-select the row.
-                        if self.chat_jid.as_deref() == Some(&chat.jid) {
+                        if self.chat_jid.as_deref() == Some(&chat.jid)
+                            && let Some(position) = self.get_visible_index_by_jid(&chat.jid)
+                        {
                             self.list_view_wrapper
                                 .selection_model
-                                .select_item(index, true);
+                                .select_item(position, true);
                         }
                     }
                 }
@@ -326,9 +325,13 @@ impl SimpleAsyncComponent for ChatList {
                         })
                 });
 
-                if let (Some(index), Some((chat, last_message, unread_count, avatar_texture))) =
+                if let (Some(index), Some((chat, mut last_message, unread_count, avatar_texture))) =
                     (index, row_data)
                 {
+                    if let Ok(fresh) = chat.get_last_message(&self.db).await {
+                        last_message = fresh;
+                    }
+
                     let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
                     let updated_row = ChatRow {
                         chat,
@@ -343,10 +346,12 @@ impl SimpleAsyncComponent for ChatList {
                     self.store().splice(index, 1, &[object]);
 
                     // Re-select the row.
-                    if self.chat_jid.as_deref() == Some(&chat_jid) {
+                    if self.chat_jid.as_deref() == Some(&chat_jid)
+                        && let Some(position) = self.get_visible_index_by_jid(&chat_jid)
+                    {
                         self.list_view_wrapper
                             .selection_model
-                            .select_item(index, true);
+                            .select_item(position, true);
                     }
                 }
             }
@@ -354,13 +359,15 @@ impl SimpleAsyncComponent for ChatList {
             ChatListInput::ApplyFilter(filter) => {
                 // Remove any existing filter to avoid stacking one filter on top of other.
                 self.list_view_wrapper.clear_filters();
+                // Base filter: chats without messages stay hidden.
+                self.list_view_wrapper
+                    .add_filter(|row| row.last_message.is_some());
 
                 match filter {
                     ChatListFilter::All => {
                         // Re-select the row.
                         if let Some(jid) = self.chat_jid.as_deref()
-                            && let Some(position) =
-                                self.list_view_wrapper.find(|row| row.chat.jid == jid)
+                            && let Some(position) = self.get_visible_index_by_jid(jid)
                         {
                             self.list_view_wrapper
                                 .selection_model
@@ -384,7 +391,6 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
             ChatListInput::SelectPosition(position) => {
-                // Get the chat row.
                 if let Some(item) = self.list_view_wrapper.get_visible(position) {
                     let row = item.borrow();
 
@@ -436,11 +442,26 @@ impl ChatList {
         unreachable!("selection model chain wraps the raw store")
     }
 
-    /// Find the index by its chat JID.
     fn get_index_by_jid(&self, jid: &str) -> Option<u32> {
         for (i, row) in self.list_view_wrapper.iter().enumerate() {
             if row.borrow().chat.jid == jid {
                 return Some(u32::try_from(i).unwrap());
+            }
+        }
+
+        None
+    }
+
+    /// Returns the chat position in the visible (filtered) model, or `None`
+    /// when the row is filtered out or absent.
+    fn get_visible_index_by_jid(&self, jid: &str) -> Option<u32> {
+        let model = &self.list_view_wrapper.selection_model;
+
+        for position in 0..model.n_items() {
+            if let Some(item) = self.list_view_wrapper.get_visible(position)
+                && item.borrow().chat.jid == jid
+            {
+                return Some(position);
             }
         }
 
@@ -455,15 +476,12 @@ impl ChatList {
     }
 }
 
-/// A single row in the chat history list.
 #[derive(Clone, Debug)]
 pub struct ChatRow {
     chat: Chat,
     is_typing: bool,
     typing_senders: Vec<TypingSender>,
-    /// The last sent message in the chat.
     last_message: Option<ChatMessage>,
-    /// How many messages are unread.
     unread_count: u32,
     avatar_texture: Option<Texture>,
 }
@@ -490,24 +508,16 @@ impl ChatRow {
 }
 
 pub struct ChatRowWidgets {
-    /// Chat avatar.
     avatar: adw::Avatar,
-    /// Muted icon.
     muted_icon: gtk::Image,
-    /// Pinned icon.
     pinned_icon: gtk::Image,
-    /// Message status icon (e.g. "Sending", "Sent").
     status_icon: gtk::Image,
     typing_box: gtk::Box,
     suffix_dots: TypingDots,
-    /// Chat title.
     title_label: gtk::Label,
     typing_label: gtk::Label,
-    /// Chat last message's content.
     subtitle_label: gtk::Label,
-    /// Timestamp label (e.g. "14:30").
     timestamp_label: gtk::Label,
-    /// Unread count badge.
     unread_count_badge: gtk::Label,
 }
 
@@ -686,8 +696,7 @@ impl RelmListItem for ChatRow {
         }
 
         if let Some(msg) = &self.last_message {
-            // Get last message's content.
-            let mut content = msg.content.clone();
+            let mut content = last_message_content(msg);
             let mut first_line = if content.contains('\n') {
                 content
                     .split_once('\n')
@@ -702,7 +711,6 @@ impl RelmListItem for ChatRow {
             } else {
                 content.clone()
             };
-
             if let Some(ref name) = msg.sender_name
                 && self.chat.is_group()
             {
@@ -718,7 +726,6 @@ impl RelmListItem for ChatRow {
             widgets.subtitle_label.set_label(&first_line);
             root.set_tooltip_text(Some(&content));
 
-            // Get last message's status.
             if msg.outgoing {
                 widgets.status_icon.set_visible(true);
                 widgets
@@ -737,10 +744,8 @@ impl RelmListItem for ChatRow {
                 widgets.status_icon.set_visible(false);
             }
 
-            // Get last message's timestamp.
             let now = Zoned::now();
             let timestamp = msg.timestamp.to_zoned(TimeZone::system());
-
             let sent_today = now.date() == timestamp.date();
             let time = if sent_today {
                 timestamp.strftime("%H:%M").to_string()
@@ -754,6 +759,20 @@ impl RelmListItem for ChatRow {
             root.set_tooltip_text(None);
         }
     }
+}
+
+fn last_message_content(msg: &ChatMessage) -> String {
+    msg.media.as_ref().map_or_else(
+        || msg.content.clone(),
+        |media| {
+            let label = media.r#type.display_label();
+            if msg.content.is_empty() {
+                label
+            } else {
+                format!("{label}\n{}", msg.content)
+            }
+        },
+    )
 }
 
 fn build_typing_widgets() -> (gtk::Box, gtk::Label) {

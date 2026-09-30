@@ -13,44 +13,51 @@ use uuid::Uuid;
 
 use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
+    db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
     widgets::TypingDots,
 };
 
-/// Number of messages to load when scrolling.
-const LOAD_MORE_COUNT: u32 = 70;
+const LOAD_MORE_COUNT: usize = 70;
+/// Rows of read context kept above the unread band when opening on it.
+const UNREAD_BAND_CONTEXT_ROWS: u32 = 6;
+/// Above this many unread rows, opening positions at the band top instead of
+/// scrolling to the bottom, deferring the read mark until the user arrives.
+const UNREAD_BAND_BOTTOM_MAX_ROWS: usize = 8;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
-/// Number of messages to load on initial chat open.
-const INITIAL_LOAD_COUNT: u32 = 120;
+const INITIAL_LOAD_COUNT: usize = 120;
 
 #[derive(Debug)]
 pub struct ChatView {
-    /// Currently open chat.
+    db: SessionStore,
     chat: Option<Chat>,
-    /// Current chat view state.
     state: ChatViewState,
-    /// Owned message list + pagination state.
     history: ChatHistory,
-    /// Touchpad flick continuation across prepended batches.
     momentum: Momentum,
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
-    /// Text input for sending messages.
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
 }
 
+/// Feedback for an ongoing history sync, shown in the banner.
+#[derive(Debug)]
+struct SyncFeedback {
+    total: usize,
+    synced: usize,
+    percent: Option<u32>,
+}
+
 #[derive(Debug)]
 pub struct ChatViewState {
+    sync: Option<SyncFeedback>,
     typing: Vec<TypingSender>,
     presence: Option<String>,
     is_typing: bool,
-    /// Whether a load operation is currently in progress.
     is_loading: bool,
-    /// Whether the scroll is at the bottom.
     is_at_bottom: bool,
     unread_count: usize,
     typing_generation: u64,
@@ -58,18 +65,13 @@ pub struct ChatViewState {
 
 #[derive(Debug)]
 pub enum ChatViewInput {
-    /// Open a chat.
     Open(Chat),
-    /// Close the open chat.
     Close,
 
-    /// Send a message.
     SendMessage,
     EntryChanged,
-    /// New message received.
     MessageReceived(Box<ChatMessage>),
 
-    /// User presence updated.
     PresenceUpdate {
         jid: String,
         available: bool,
@@ -79,68 +81,55 @@ pub enum ChatViewInput {
         chat_jid: String,
         senders: Vec<TypingSender>,
     },
-    /// Message status updated.
     MessageStatusUpdate {
         status: MessageStatus,
         local_id: Uuid,
     },
 
-    /// Scroll to the bottom of the chat.
+    SyncProgress {
+        active: bool,
+        percent: Option<u32>,
+        synced: usize,
+        total: usize,
+    },
+
     ScrollToBottom,
 }
 
 #[derive(Debug)]
 pub enum ChatViewOutput {
-    /// A chat was open.
     ChatOpen,
-    /// The open chat was closed.
     ChatClosed,
-    /// Mark the open chat as read.
     MarkChatRead(String),
 
-    /// Send a text message.
-    SendTextMessage {
-        /// The content of the message.
-        text: String,
-        /// Message recipient.
-        recipient: String,
-    },
+    SendTextMessage { text: String, recipient: String },
 
-    TypingStateChanged {
-        chat_jid: String,
-        composing: bool,
-    },
+    TypingStateChanged { chat_jid: String, composing: bool },
 }
 
 #[derive(Debug)]
 pub enum ChatViewCommand {
-    /// Initial batch of messages loaded for a newly opened chat.
     InitialMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
         had_unread: bool,
     },
-    /// Older messages loaded for upward pagination.
     OlderMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
-    /// Newer messages loaded for downward pagination.
     NewerMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
-    /// Fresh batch loaded for a jump-to-bottom reload.
     JumpLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
 
-    /// Scroll anchoring finished after a prepend-driven reallocation.
     ScrollSettled {
         generation: u64,
     },
-    /// The scroll position has changed.
     ScrollPositionChanged {
         at_top: bool,
         at_bottom: bool,
@@ -153,7 +142,7 @@ pub enum ChatViewCommand {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ChatViewInput;
     type Output = ChatViewOutput;
     type CommandOutput = ChatViewCommand;
@@ -196,6 +185,54 @@ impl AsyncComponent for ChatView {
                             set_max_width_chars: 40,
                             set_css_classes: &["subtitle"],
                         },
+                    },
+                },
+            },
+
+            add_top_bar = &gtk::Revealer {
+                #[watch]
+                set_reveal_child: model.state.sync.is_some(),
+                set_transition_type: gtk::RevealerTransitionType::SlideDown,
+                set_transition_duration: 250,
+
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_css_classes: &["sync-banner"],
+
+                    gtk::Box {
+                        set_spacing: 6,
+                        set_orientation: gtk::Orientation::Horizontal,
+
+                        set_margin_top: 6,
+                        set_margin_bottom: 6,
+                        set_margin_start: 12,
+                        set_margin_end: 12,
+
+                        adw::Spinner {
+                            set_width_request: 16,
+                            set_height_request: 16,
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_label: model.sync_banner_label().as_str(),
+                            set_halign: gtk::Align::Start,
+                            set_hexpand: true,
+                            set_ellipsize: pango::EllipsizeMode::End,
+                            set_css_classes: &["dimmed"],
+                        },
+                    },
+
+                    gtk::ProgressBar {
+                        #[watch]
+                        set_visible: model
+                            .state
+                            .sync
+                            .as_ref()
+                            .is_some_and(|sync| sync.percent.is_some()),
+                        set_hexpand: true,
+                        #[watch]
+                        set_fraction?: model.banner_sync_fraction(),
                     },
                 },
             },
@@ -341,15 +378,17 @@ impl AsyncComponent for ChatView {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        db: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let history = ChatHistory::new();
 
         let model = Self {
+            db,
             chat: None,
             state: ChatViewState {
+                sync: None,
                 typing: Vec::new(),
                 presence: None,
                 is_loading: true,
@@ -465,6 +504,18 @@ impl AsyncComponent for ChatView {
         _root: &Self::Root,
     ) {
         match input {
+            ChatViewInput::SyncProgress {
+                active,
+                percent,
+                synced,
+                total,
+            } => {
+                self.state.sync = active.then_some(SyncFeedback {
+                    total,
+                    synced,
+                    percent,
+                });
+            }
             ChatViewInput::Open(chat) => {
                 self.generation += 1;
 
@@ -500,13 +551,17 @@ impl AsyncComponent for ChatView {
                 self.message_entry.grab_focus();
 
                 // Load the initial batch of messages.
+                let db = self.db.clone();
                 let generation = self.generation;
                 sender.oneshot_command(async move {
                     let messages = chat
-                        .load_messages(INITIAL_LOAD_COUNT)
+                        .load_messages(&db, INITIAL_LOAD_COUNT)
                         .await
                         .unwrap_or_default();
-                    let had_unread = chat.get_unread_count().await.is_ok_and(|count| count > 0);
+                    let had_unread = chat
+                        .get_unread_count(&db)
+                        .await
+                        .is_ok_and(|count| count > 0);
                     ChatViewCommand::InitialMessagesLoaded {
                         generation,
                         messages,
@@ -655,17 +710,32 @@ impl AsyncComponent for ChatView {
                 self.rebuild_typing_avatars();
             }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
+                let is_read = matches!(status, MessageStatus::Read | MessageStatus::Played);
+
                 if let Some(index) = self
                     .history
                     .find_message_index(|message| message.local_id == local_id)
                     && let Some(mut row) = self.history.get_row(index)
                 {
-                    if let ChatRow::Message { message, .. } = &mut row {
+                    if let ChatRow::Message {
+                        message, unread, ..
+                    } = &mut row
+                    {
                         message.status = status;
+                        if is_read {
+                            *unread = false;
+                        }
                     }
 
                     self.history
                         .replace_row(index, row, self.state.is_at_bottom);
+                    if is_read {
+                        self.history.set_message_row_unread(index, false);
+                    }
+                }
+
+                if is_read && !self.history.has_unread_messages() {
+                    self.history.remove_unread_divider(self.state.is_at_bottom);
                 }
             }
 
@@ -679,11 +749,12 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     if let Some(ref chat) = self.chat {
+                        let db = self.db.clone();
                         let chat = chat.clone();
                         let generation = self.generation;
                         sender.oneshot_command(async move {
                             let messages = chat
-                                .load_messages(INITIAL_LOAD_COUNT)
+                                .load_messages(&db, INITIAL_LOAD_COUNT)
                                 .await
                                 .unwrap_or_default();
                             ChatViewCommand::JumpLoaded {
@@ -722,16 +793,28 @@ impl AsyncComponent for ChatView {
 
                 self.history.fill(&messages);
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap());
+                    .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
 
-                // Scroll to the last message.
-                self.scroll_to_bottom();
-                self.state.is_at_bottom = true;
+                // A tall unread band opens at its top, with context rows
+                // above; reaching the bottom then marks the chat read.
+                let tall_unread_band =
+                    self.history.unread_message_row_count() > UNREAD_BAND_BOTTOM_MAX_ROWS;
 
-                if had_unread && let Some(ref chat) = self.chat {
-                    let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                if tall_unread_band && let Some(divider) = self.history.unread_divider_index() {
+                    self.history.scroll_to_unread_boundary(
+                        divider.saturating_sub(UNREAD_BAND_CONTEXT_ROWS),
+                    );
+                    self.state.is_at_bottom = false;
+                } else {
+                    // Scroll to the last message.
+                    self.scroll_to_bottom();
+                    self.state.is_at_bottom = true;
+
+                    if had_unread && let Some(ref chat) = self.chat {
+                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                    }
                 }
             }
             ChatViewCommand::OlderMessagesLoaded {
@@ -743,7 +826,7 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(LOAD_MORE_COUNT).unwrap());
+                    .set_has_older(messages.len() == LOAD_MORE_COUNT);
 
                 let (baseline, velocity) = self.momentum.capture();
 
@@ -768,7 +851,7 @@ impl AsyncComponent for ChatView {
                 }
 
                 // If fewer messages returned than requested, we've reached the real bottom.
-                if messages.len() < usize::try_from(LOAD_MORE_COUNT).unwrap() {
+                if messages.len() < LOAD_MORE_COUNT {
                     self.history.set_has_newer(false);
                 }
 
@@ -796,7 +879,7 @@ impl AsyncComponent for ChatView {
 
                 self.history.fill(&messages);
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap());
+                    .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
 
@@ -827,6 +910,14 @@ impl AsyncComponent for ChatView {
                     self.state.is_at_bottom = at_bottom;
                     if at_bottom {
                         self.state.unread_count = 0;
+
+                        // Arriving at the bottom after opening on a tall
+                        // unread band marks the chat read.
+                        if self.history.has_unread_messages()
+                            && let Some(ref chat) = self.chat
+                        {
+                            let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
+                        }
                     }
                 }
 
@@ -841,11 +932,13 @@ impl AsyncComponent for ChatView {
                     && let Some(before_ts) = self.history.oldest_timestamp()
                 {
                     self.state.is_loading = true;
+
+                    let db = self.db.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let messages = chat
-                            .load_messages_before(before_ts, LOAD_MORE_COUNT)
+                            .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
                         ChatViewCommand::OlderMessagesLoaded {
@@ -859,11 +952,13 @@ impl AsyncComponent for ChatView {
                     && let Some(after_ts) = self.history.newest_timestamp()
                 {
                     self.state.is_loading = true;
+
+                    let db = self.db.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let messages = chat
-                            .load_messages_after(after_ts, LOAD_MORE_COUNT)
+                            .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
                         ChatViewCommand::NewerMessagesLoaded {
@@ -878,7 +973,6 @@ impl AsyncComponent for ChatView {
 }
 
 impl ChatView {
-    /// Update the user presence.
     fn update_presence(&mut self) {
         if let Some(ref mut chat) = self.chat {
             if chat.is_group() {
@@ -944,6 +1038,28 @@ impl ChatView {
         } else {
             Some(names.join(", "))
         }
+    }
+
+    fn sync_banner_label(&self) -> String {
+        let Some(sync) = self.state.sync.as_ref() else {
+            return i18n!("Syncing messages...");
+        };
+
+        match (sync.percent, sync.total) {
+            (Some(percent), _) => i18n_f!("Syncing messages... {0}%", percent),
+            (None, total) if total > 0 => {
+                i18n_f!("Syncing messages... {0} of {1} chats", sync.synced, total)
+            }
+            _ => i18n!("Syncing messages..."),
+        }
+    }
+
+    fn banner_sync_fraction(&self) -> Option<f64> {
+        self.state
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.percent)
+            .map(|percent| f64::from(percent) / 100.0)
     }
 
     fn unread_badge_label(&self) -> String {

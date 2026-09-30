@@ -27,7 +27,10 @@ relm4-icons = "0.11"
 relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
-libsql = { version = "0.9", features = ["encryption"] }
+oo7 = "0.7.0-alpha"
+toasty = { version = "0.10", default-features = false, features = ["jiff", "migration", "turso"] }
+toasty-core = "0.10"
+toasty-driver-turso = "0.10"
 
 # Utilities
 rand = "0.10"
@@ -52,7 +55,7 @@ gettext-rs = { version = "0.7", features = ["gettext-system"] }
 #   "webp",
 #   "rayon",
 # ] }
-glycin = { version = "3.1", features = ["gdk4"] }
+glycin = { version = "4.0", default-features = false, features = ["gdk4", "tokio"] }
 fast_qr = { version = "0.13", features = ["image"] }
 
 # Futures
@@ -60,7 +63,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 
 # WhatsApp
-whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "535732f4" }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "535732f4", default-features = false, features = ["signal", "tokio-native", "tokio-transport", "ureq-client"] }
 
 [build-dependencies]
 relm4-icons-build = "0.11"

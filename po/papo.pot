@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-09-08 22:48-0300\n"
+"POT-Creation-Date: 2026-09-30 10:29-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -129,6 +129,24 @@ msgstr ""
 msgid "Select a chat to start chatting"
 msgstr ""
 
+#: src/application.rs:756
+msgid "Syncing History"
+msgstr ""
+
+#: src/application.rs:762
+msgid "This may take a few minutes..."
+msgstr ""
+
+#: src/application.rs:769
+#, rust-format
+msgid "{0}%"
+msgstr ""
+
+#: src/application.rs:789
+#, rust-format
+msgid "Synced {0} of {1} chats"
+msgstr ""
+
 #: src/application.rs:1250 src/components/chat_view/mod.rs:983
 msgid "Someone"
 msgstr ""
@@ -210,6 +228,20 @@ msgstr ""
 #: src/components/chat_view/mod.rs:937
 #, rust-format
 msgid "+{0} more"
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1032 src/components/chat_view/mod.rs:1040
+msgid "Syncing messages..."
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1036
+#, rust-format
+msgid "Syncing messages... {0}%"
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1038
+#, rust-format
+msgid "Syncing messages... {0} of {1} chats"
 msgstr ""
 
 #: src/components/chat_view/rows.rs:233
