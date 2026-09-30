@@ -161,3 +161,15 @@
     background-color: var(--window-bg-color);
   }
 }
+
+.sync-banner {
+  progressbar {
+    trough {
+      min-height: 2px;
+    }
+
+    progress {
+      min-height: 2px;
+    }
+  }
+}

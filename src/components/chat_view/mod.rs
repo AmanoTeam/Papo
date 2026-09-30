@@ -41,8 +41,17 @@ pub struct ChatView {
     typing_avatars: gtk::Box,
 }
 
+/// Feedback for an ongoing history sync, shown in the banner.
+#[derive(Debug)]
+struct SyncFeedback {
+    total: usize,
+    synced: usize,
+    percent: Option<u32>,
+}
+
 #[derive(Debug)]
 pub struct ChatViewState {
+    sync: Option<SyncFeedback>,
     typing: Vec<TypingSender>,
     presence: Option<String>,
     is_typing: bool,
@@ -73,6 +82,13 @@ pub enum ChatViewInput {
     MessageStatusUpdate {
         status: MessageStatus,
         local_id: Uuid,
+    },
+
+    SyncProgress {
+        active: bool,
+        percent: Option<u32>,
+        synced: usize,
+        total: usize,
     },
 
     ScrollToBottom,
@@ -167,6 +183,54 @@ impl AsyncComponent for ChatView {
                             set_max_width_chars: 40,
                             set_css_classes: &["subtitle"],
                         },
+                    },
+                },
+            },
+
+            add_top_bar = &gtk::Revealer {
+                #[watch]
+                set_reveal_child: model.state.sync.is_some(),
+                set_transition_type: gtk::RevealerTransitionType::SlideDown,
+                set_transition_duration: 250,
+
+                gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_css_classes: &["sync-banner"],
+
+                    gtk::Box {
+                        set_spacing: 6,
+                        set_orientation: gtk::Orientation::Horizontal,
+
+                        set_margin_top: 6,
+                        set_margin_bottom: 6,
+                        set_margin_start: 12,
+                        set_margin_end: 12,
+
+                        adw::Spinner {
+                            set_width_request: 16,
+                            set_height_request: 16,
+                        },
+
+                        gtk::Label {
+                            #[watch]
+                            set_label: model.sync_banner_label().as_str(),
+                            set_halign: gtk::Align::Start,
+                            set_hexpand: true,
+                            set_ellipsize: pango::EllipsizeMode::End,
+                            set_css_classes: &["dimmed"],
+                        },
+                    },
+
+                    gtk::ProgressBar {
+                        #[watch]
+                        set_visible: model
+                            .state
+                            .sync
+                            .as_ref()
+                            .is_some_and(|sync| sync.percent.is_some()),
+                        set_hexpand: true,
+                        #[watch]
+                        set_fraction?: model.banner_sync_fraction(),
                     },
                 },
             },
@@ -321,6 +385,7 @@ impl AsyncComponent for ChatView {
         let model = Self {
             chat: None,
             state: ChatViewState {
+                sync: None,
                 typing: Vec::new(),
                 presence: None,
                 is_loading: true,
@@ -436,6 +501,18 @@ impl AsyncComponent for ChatView {
         _root: &Self::Root,
     ) {
         match input {
+            ChatViewInput::SyncProgress {
+                active,
+                percent,
+                synced,
+                total,
+            } => {
+                self.state.sync = active.then_some(SyncFeedback {
+                    total,
+                    synced,
+                    percent,
+                });
+            }
             ChatViewInput::Open(chat) => {
                 self.generation += 1;
 
@@ -949,6 +1026,28 @@ impl ChatView {
         } else {
             Some(names.join(", "))
         }
+    }
+
+    fn sync_banner_label(&self) -> String {
+        let Some(sync) = self.state.sync.as_ref() else {
+            return i18n!("Syncing messages...");
+        };
+
+        match (sync.percent, sync.total) {
+            (Some(percent), _) => i18n_f!("Syncing messages... {0}%", percent),
+            (None, total) if total > 0 => {
+                i18n_f!("Syncing messages... {0} of {1} chats", sync.synced, total)
+            }
+            _ => i18n!("Syncing messages..."),
+        }
+    }
+
+    fn banner_sync_fraction(&self) -> Option<f64> {
+        self.state
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.percent)
+            .map(|percent| f64::from(percent) / 100.0)
     }
 
     fn unread_badge_label(&self) -> String {

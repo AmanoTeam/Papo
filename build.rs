@@ -32,6 +32,7 @@ fn main() {
             "chat-bubbles-text",
             "chat-bubbles-empty",
             "phone-right-facing",
+            "arrows-bidirectional",
             "check-round-outline",
             "check-round-outline2",
         ],

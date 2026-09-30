@@ -142,6 +142,9 @@ pub enum ClientOutput {
     PairSuccess,
 
     Syncing,
+    HistorySyncProgress {
+        progress: Option<u32>,
+    },
 
     CallOffer {
         call_id: String,
@@ -1024,6 +1027,10 @@ impl AsyncComponent for Client {
                         history_sync.chunk_order(),
                         history_sync.progress()
                     );
+
+                    let _ = sender_clone.output(ClientOutput::HistorySyncProgress {
+                        progress: history_sync.progress(),
+                    });
 
                     let Some(sync) = history_sync.get() else {
                         tracing::error!("Failed to decode history sync payload");

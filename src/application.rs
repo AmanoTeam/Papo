@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     mem,
     time::Duration,
 };
@@ -35,12 +35,15 @@ use crate::{
         session_manager::SessionManager,
         store::SessionStore,
     },
-    i18n,
+    i18n, i18n_f,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
     state::{Chat, ChatMessage, Media, MediaType, MessageStatus, TypingSender},
     utils::{bare_jid, format_lid_as_number, get_first_name},
 };
+
+/// Seconds without history sync chunks after which the sync feedback hides.
+const SYNC_QUIET_SECS: u64 = 30;
 
 pub struct Application {
     db: SessionStore,
@@ -69,8 +72,10 @@ pub struct Application {
     chat_list: AsyncController<ChatList>,
     chat_view: AsyncController<ChatView>,
     split_view: NavigationSplitView,
+    history_sync: HistorySyncStatus,
     session_page: AppSessionPage,
     user_push_name: Option<String>,
+    synced_history_chats: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -98,7 +103,14 @@ enum AppState {
 #[strum(serialize_all = "kebab-case")]
 enum AppSessionPage {
     Empty,
+    Syncing,
     ChatHistory,
+}
+
+struct HistorySyncStatus {
+    active: bool,
+    percent: Option<u32>,
+    generation: u64,
 }
 
 #[derive(Debug)]
@@ -195,6 +207,7 @@ pub enum AppMsg {
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
+
     ChatReadOnDevice(String),
     ChatPropertyUpdate {
         jid: String,
@@ -203,6 +216,9 @@ pub enum AppMsg {
         archived: Option<bool>,
     },
 
+    HistorySyncProgress {
+        progress: Option<u32>,
+    },
     HistorySyncCompleted,
     OfflineSyncCompleted,
 
@@ -224,6 +240,9 @@ pub enum AppCmd {
 
     SyncChats {
         entries: Vec<ChatsSyncedEntry>,
+    },
+    HistorySyncQuiet {
+        generation: u64,
     },
 
     UpdateChat {
@@ -535,6 +554,55 @@ impl Application {
             self.emit_typing(chat_jid);
         }
     }
+
+    /// Fraction for the syncing progress bar, from the server percent or the
+    /// count of chats that already received their history.
+    fn sync_fraction(&self) -> Option<f64> {
+        if !self.history_sync.active {
+            return None;
+        }
+
+        if let Some(percent) = self.history_sync.percent {
+            return Some(f64::from(percent) / 100.0);
+        }
+
+        let total = u32::try_from(self.chats.len()).ok()?;
+        (total > 0).then(|| {
+            let synced = u32::try_from(self.synced_history_chats.len()).unwrap_or(total);
+            f64::from(synced) / f64::from(total)
+        })
+    }
+
+    fn forward_sync_status(&self) {
+        self.chat_view.emit(ChatViewInput::SyncProgress {
+            active: self.history_sync.active,
+            percent: self.history_sync.percent,
+            synced: self.synced_history_chats.len(),
+            total: self.chats.len(),
+        });
+    }
+
+    /// Shows the sync feedback and restarts the quiet timeout that hides it
+    /// once chunks stop arriving.
+    fn activate_history_sync(&mut self, percent: Option<u32>, sender: &AsyncComponentSender<Self>) {
+        self.history_sync.active = true;
+        self.history_sync.percent = percent;
+        self.history_sync.generation += 1;
+        let generation = self.history_sync.generation;
+
+        self.forward_sync_status();
+        sender.oneshot_command(async move {
+            time::sleep(Duration::from_secs(SYNC_QUIET_SECS)).await;
+            AppCmd::HistorySyncQuiet { generation }
+        });
+    }
+
+    fn deactivate_history_sync(&mut self) {
+        self.history_sync.generation += 1;
+        self.history_sync.active = false;
+        self.history_sync.percent = None;
+        self.forward_sync_status();
+    }
 }
 
 relm4::new_action_group!(pub(super) WindowActionGroup, "win");
@@ -672,11 +740,73 @@ impl AsyncComponent for Application {
                                         set_description: Some(&i18n!("Select a chat to start chatting"))
                                     },
 
+                                    add_named[Some("syncing")] = &gtk::Box {
+                                        set_halign: gtk::Align::Center,
+                                        set_valign: gtk::Align::Center,
+                                        set_spacing: 12,
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_width_request: 360,
+
+                                        gtk::Image {
+                                            set_icon_name: Some("arrows-bidirectional-symbolic"),
+                                            set_pixel_size: 96,
+                                        },
+
+                                        gtk::Label {
+                                            set_label: &i18n!("Syncing History"),
+                                            set_css_classes: &["title-2"],
+                                        },
+
+                                        gtk::Label {
+                                            set_wrap: true,
+                                            set_label: &i18n!("This may take a few minutes..."),
+                                            set_justify: gtk::Justification::Center,
+                                            set_css_classes: &["dimmed"],
+                                        },
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n_f!(
+                                                "{0}%",
+                                                model.history_sync.percent.unwrap_or_default()
+                                            )
+                                            .as_str(),
+                                            #[watch]
+                                            set_visible: model.history_sync.percent.is_some(),
+                                            set_css_classes: &["title-4"],
+                                        },
+
+                                        #[name = "syncing_progress_bar"]
+                                        gtk::ProgressBar {
+                                            set_hexpand: true,
+                                            #[watch]
+                                            set_fraction?: model.sync_fraction(),
+                                            set_css_classes: &["syncing-progress"],
+                                        },
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n_f!(
+                                                "Synced {0} of {1} chats",
+                                                model.synced_history_chats.len(),
+                                                model.chats.len()
+                                            )
+                                            .as_str(),
+                                            #[watch]
+                                            set_visible: !model.chats.is_empty(),
+                                            set_css_classes: &["dimmed"],
+                                        },
+                                    },
+
                                     #[local_ref]
                                     add_named[Some("chat-history")] = chat_view_widget -> adw::ToolbarView {},
 
                                     #[watch]
-                                    set_visible_child_name: model.session_page.as_ref(),
+                                    set_visible_child_name: syncing_content_page(
+                                        model.history_sync.active,
+                                        model.session_page
+                                    )
+                                    .as_ref(),
                                 }
                             }
                         },
@@ -844,6 +974,9 @@ impl AsyncComponent for Application {
                         archived,
                     },
 
+                    ClientOutput::HistorySyncProgress { progress } => {
+                        AppMsg::HistorySyncProgress { progress }
+                    }
                     ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
                     ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
@@ -932,8 +1065,14 @@ impl AsyncComponent for Application {
             chat_list,
             chat_view,
             split_view: NavigationSplitView::new(),
+            history_sync: HistorySyncStatus {
+                active: false,
+                percent: None,
+                generation: 0,
+            },
             session_page: AppSessionPage::Empty,
             user_push_name: None,
+            synced_history_chats: HashSet::new(),
         };
 
         let split_view = &model.split_view;
@@ -970,6 +1109,15 @@ impl AsyncComponent for Application {
         // app.set_accelerators_for_action::<QuitAction>(&["<Control>w"]);
 
         let widgets = view_output!();
+
+        // Pulse the syncing progress bar while its fraction is unknown.
+        let sync_bar = widgets.syncing_progress_bar.clone();
+        glib::timeout_add_local(Duration::from_millis(400), move || {
+            if sync_bar.is_visible() && sync_bar.fraction() == 0.0 {
+                sync_bar.pulse();
+            }
+            glib::ControlFlow::Continue
+        });
 
         actions.add_action(shortcuts_action);
         actions.add_action(about_action);
@@ -1020,6 +1168,8 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Welcome;
                 self.state = AppState::Pairing;
                 self.chats.clear();
+                self.synced_history_chats.clear();
+                self.deactivate_history_sync();
 
                 let session_uuid = self.session.uuid.clone();
                 sender.oneshot_command(async move {
@@ -1077,6 +1227,8 @@ impl AsyncComponent for Application {
 
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;
+                self.synced_history_chats.clear();
+                self.activate_history_sync(None, &sender);
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
                 self.client
@@ -1718,6 +1870,10 @@ impl AsyncComponent for Application {
                     }
                 }
             }
+
+            AppMsg::HistorySyncProgress { progress } => {
+                self.activate_history_sync(progress, &sender);
+            }
             AppMsg::HistorySyncCompleted => {
                 tracing::info!("History sync completed");
                 if self.state == AppState::Syncing {
@@ -1831,6 +1987,10 @@ impl AsyncComponent for Application {
                         ..
                     } = entry;
                     let chat_jid = jid.clone();
+
+                    if !messages.is_empty() {
+                        self.synced_history_chats.insert(chat_jid.clone());
+                    }
 
                     let is_new_chat = !self.chats.iter().any(|c| c.jid == jid);
                     if is_new_chat {
@@ -2024,6 +2184,18 @@ impl AsyncComponent for Application {
                         }
                     });
                 }
+
+                if self.history_sync.active {
+                    self.forward_sync_status();
+                }
+            }
+            AppCmd::HistorySyncQuiet { generation } => {
+                if generation == self.history_sync.generation && self.history_sync.active {
+                    tracing::debug!("History sync quiet timeout reached");
+                    self.history_sync.active = false;
+                    self.history_sync.percent = None;
+                    self.forward_sync_status();
+                }
             }
 
             AppCmd::UpdateChat { chat, move_to_top } => {
@@ -2080,6 +2252,16 @@ impl AppWidgets {
         settings.set_boolean("is-maximized", self.main_window.is_maximized())?;
 
         Ok(())
+    }
+}
+
+/// Content page to display, swapping the empty state for the syncing
+/// feedback while a history sync is in progress.
+fn syncing_content_page(history_sync_active: bool, page: AppSessionPage) -> AppSessionPage {
+    if history_sync_active && page == AppSessionPage::Empty {
+        AppSessionPage::Syncing
+    } else {
+        page
     }
 }
 
