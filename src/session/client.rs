@@ -513,7 +513,7 @@ impl AsyncComponent for Client {
                     // Persist before send: receipts can only arrive after the
                     // send reaches the server, so the message must already be
                     // stored when they do.
-                    if let Err(e) = message.upsert().await {
+                    if let Err(e) = message.upsert(&self.store).await {
                         tracing::error!("Failed to save outgoing message: {}", e);
                         return;
                     }
@@ -521,7 +521,7 @@ impl AsyncComponent for Client {
                     match Box::pin(client.send_message(jid, (*message).clone().into())).await {
                         Ok(result) => {
                             message.server_id = result.message_id;
-                            if let Err(e) = message.upsert().await {
+                            if let Err(e) = message.upsert(&self.store).await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
 

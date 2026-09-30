@@ -9,6 +9,7 @@ use relm4::{
 };
 
 use crate::{
+    db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
     utils::{format_lid_as_number, get_first_name, load_avatar},
@@ -17,6 +18,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ChatList {
+    db: SessionStore,
     typing: HashMap<String, Vec<TypingSender>>,
     chat_jid: Option<String>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
@@ -72,7 +74,7 @@ pub enum ChatListOutput {
 
 #[relm4::component(async, pub)]
 impl SimpleAsyncComponent for ChatList {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ChatListInput;
     type Output = ChatListOutput;
 
@@ -150,11 +152,12 @@ impl SimpleAsyncComponent for ChatList {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        db: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let mut model = Self {
+            db,
             typing: HashMap::new(),
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
@@ -193,7 +196,7 @@ impl SimpleAsyncComponent for ChatList {
                         move_to_top: at_top,
                     });
                 } else {
-                    let last_message = match chat.get_last_message().await {
+                    let last_message = match chat.get_last_message(&self.db).await {
                         Ok(message) => message,
                         Err(e) => {
                             tracing::error!("Failed to get chat last message: {}", e);
@@ -202,7 +205,7 @@ impl SimpleAsyncComponent for ChatList {
                     };
 
                     let unread_count = chat
-                        .get_unread_count()
+                        .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
                     let avatar_texture = if let Some(ref path) = chat.avatar_path {
@@ -231,7 +234,7 @@ impl SimpleAsyncComponent for ChatList {
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
                 if let Some(index) = self.get_index_by_jid(&chat.jid) {
-                    let last_message = match chat.get_last_message().await {
+                    let last_message = match chat.get_last_message(&self.db).await {
                         Ok(message) => message,
                         Err(e) => {
                             tracing::error!("Failed to get chat last message: {}", e);
@@ -239,7 +242,7 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     };
                     let unread_count = chat
-                        .get_unread_count()
+                        .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
                     let avatar_texture = if let Some(ref path) = chat.avatar_path {
@@ -325,7 +328,7 @@ impl SimpleAsyncComponent for ChatList {
                 if let (Some(index), Some((chat, mut last_message, unread_count, avatar_texture))) =
                     (index, row_data)
                 {
-                    if let Ok(fresh) = chat.get_last_message().await {
+                    if let Ok(fresh) = chat.get_last_message(&self.db).await {
                         last_message = fresh;
                     }
 

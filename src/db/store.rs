@@ -66,12 +66,11 @@ impl SessionStore {
         MediaStorage::new(&self.session)
     }
 
-    fn chat_from_entity(&self, entity: ChatEntity) -> Chat {
+    fn chat_from_entity(entity: ChatEntity) -> Chat {
         Chat {
             archived: entity.archived,
             available: None,
             avatar_path: None,
-            db: self.clone(),
             jid: entity.jid,
             last_message_time: entity.last_message_time.unwrap_or_else(Timestamp::now),
             last_seen: None,
@@ -85,7 +84,7 @@ impl SessionStore {
     /// Converts a stored message entity into the runtime `ChatMessage`,
     /// loading media bytes from disk when a media path is present, or
     /// building a metadata-only placeholder when only `media_type` is set.
-    fn message_from_entity(&self, entity: MessageEntity) -> ChatMessage {
+    fn message_from_entity(entity: MessageEntity) -> ChatMessage {
         let media = if let Some(data) = entity
             .media_path
             .as_ref()
@@ -111,7 +110,6 @@ impl SessionStore {
         ChatMessage {
             chat_jid: entity.chat_jid,
             content: entity.content.unwrap_or_default(),
-            db: self.clone(),
             local_id: Uuid::parse_str(&entity.local_id).unwrap_or_else(|_| Uuid::new_v4()),
             media,
             outgoing: entity.outgoing,
@@ -184,7 +182,7 @@ impl SessionStore {
             .exec(&mut db)
             .await?
             .filter(|entity| !entity.archived)
-            .map(|entity| self.chat_from_entity(entity)))
+            .map(Self::chat_from_entity))
     }
 
     /// Loads all non-archived chats, ordered by pinned then `last_message_time`.
@@ -200,7 +198,7 @@ impl SessionStore {
 
         Ok(chats
             .into_iter()
-            .map(|entity| self.chat_from_entity(entity))
+            .map(Self::chat_from_entity)
             .collect::<Vec<_>>())
     }
 
@@ -393,7 +391,7 @@ impl SessionStore {
             .exec(&mut db)
             .await?
             .filter(|m| m.chat_jid == chat_jid)
-            .map(|entity| self.message_from_entity(entity)))
+            .map(Self::message_from_entity))
     }
 
     pub async fn load_message_by_server_id(
@@ -411,7 +409,7 @@ impl SessionStore {
         .exec(&mut db)
         .await?
         .filter(|m| m.chat_jid == chat_jid)
-        .map(|entity| self.message_from_entity(entity)))
+        .map(Self::message_from_entity))
     }
 
     pub async fn lid_to_pn_jid(&self, lid_jid: &str) -> Option<String> {
@@ -455,7 +453,7 @@ impl SessionStore {
 
         Ok(messages
             .into_iter()
-            .map(|entity| self.message_from_entity(entity))
+            .map(Self::message_from_entity)
             .collect::<Vec<_>>())
     }
 
@@ -476,7 +474,7 @@ impl SessionStore {
 
         Ok(messages
             .into_iter()
-            .map(|entity| self.message_from_entity(entity))
+            .map(Self::message_from_entity)
             .collect::<Vec<_>>())
     }
 
@@ -497,7 +495,7 @@ impl SessionStore {
 
         Ok(messages
             .into_iter()
-            .map(|entity| self.message_from_entity(entity))
+            .map(Self::message_from_entity)
             .collect::<Vec<_>>())
     }
 
@@ -569,7 +567,7 @@ impl SessionStore {
             .unread_entities(chat_jid)
             .await?
             .into_iter()
-            .map(|entity| self.message_from_entity(entity))
+            .map(Self::message_from_entity)
             .collect::<Vec<_>>())
     }
 
@@ -664,7 +662,7 @@ impl SessionStore {
                 .exec(&mut db)
                 .await?
                 .into_iter()
-                .map(|entity| (entity.chat_jid.clone(), self.message_from_entity(entity)))
+                .map(|entity| (entity.chat_jid.clone(), Self::message_from_entity(entity)))
                 .collect::<Vec<_>>(),
         )
     }

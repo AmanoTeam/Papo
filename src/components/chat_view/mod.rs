@@ -13,12 +13,13 @@ use uuid::Uuid;
 
 use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
+    db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
     widgets::TypingDots,
 };
 
-const LOAD_MORE_COUNT: u32 = 70;
+const LOAD_MORE_COUNT: usize = 70;
 /// Rows of read context kept above the unread band when opening on it.
 const UNREAD_BAND_CONTEXT_ROWS: u32 = 6;
 /// Above this many unread rows, opening positions at the band top instead of
@@ -26,10 +27,11 @@ const UNREAD_BAND_CONTEXT_ROWS: u32 = 6;
 const UNREAD_BAND_BOTTOM_MAX_ROWS: usize = 8;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
-const INITIAL_LOAD_COUNT: u32 = 120;
+const INITIAL_LOAD_COUNT: usize = 120;
 
 #[derive(Debug)]
 pub struct ChatView {
+    db: SessionStore,
     chat: Option<Chat>,
     state: ChatViewState,
     history: ChatHistory,
@@ -140,7 +142,7 @@ pub enum ChatViewCommand {
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
-    type Init = ();
+    type Init = SessionStore;
     type Input = ChatViewInput;
     type Output = ChatViewOutput;
     type CommandOutput = ChatViewCommand;
@@ -376,13 +378,14 @@ impl AsyncComponent for ChatView {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn init(
-        _init: Self::Init,
+        db: Self::Init,
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
         let history = ChatHistory::new();
 
         let model = Self {
+            db,
             chat: None,
             state: ChatViewState {
                 sync: None,
@@ -548,13 +551,17 @@ impl AsyncComponent for ChatView {
                 self.message_entry.grab_focus();
 
                 // Load the initial batch of messages.
+                let db = self.db.clone();
                 let generation = self.generation;
                 sender.oneshot_command(async move {
                     let messages = chat
-                        .load_messages(INITIAL_LOAD_COUNT)
+                        .load_messages(&db, INITIAL_LOAD_COUNT)
                         .await
                         .unwrap_or_default();
-                    let had_unread = chat.get_unread_count().await.is_ok_and(|count| count > 0);
+                    let had_unread = chat
+                        .get_unread_count(&db)
+                        .await
+                        .is_ok_and(|count| count > 0);
                     ChatViewCommand::InitialMessagesLoaded {
                         generation,
                         messages,
@@ -742,11 +749,12 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     if let Some(ref chat) = self.chat {
+                        let db = self.db.clone();
                         let chat = chat.clone();
                         let generation = self.generation;
                         sender.oneshot_command(async move {
                             let messages = chat
-                                .load_messages(INITIAL_LOAD_COUNT)
+                                .load_messages(&db, INITIAL_LOAD_COUNT)
                                 .await
                                 .unwrap_or_default();
                             ChatViewCommand::JumpLoaded {
@@ -785,7 +793,7 @@ impl AsyncComponent for ChatView {
 
                 self.history.fill(&messages);
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap());
+                    .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
 
@@ -818,7 +826,7 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(LOAD_MORE_COUNT).unwrap());
+                    .set_has_older(messages.len() == LOAD_MORE_COUNT);
 
                 let (baseline, velocity) = self.momentum.capture();
 
@@ -843,7 +851,7 @@ impl AsyncComponent for ChatView {
                 }
 
                 // If fewer messages returned than requested, we've reached the real bottom.
-                if messages.len() < usize::try_from(LOAD_MORE_COUNT).unwrap() {
+                if messages.len() < LOAD_MORE_COUNT {
                     self.history.set_has_newer(false);
                 }
 
@@ -871,7 +879,7 @@ impl AsyncComponent for ChatView {
 
                 self.history.fill(&messages);
                 self.history
-                    .set_has_older(messages.len() == usize::try_from(INITIAL_LOAD_COUNT).unwrap());
+                    .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
 
@@ -924,11 +932,13 @@ impl AsyncComponent for ChatView {
                     && let Some(before_ts) = self.history.oldest_timestamp()
                 {
                     self.state.is_loading = true;
+
+                    let db = self.db.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let messages = chat
-                            .load_messages_before(before_ts, LOAD_MORE_COUNT)
+                            .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
                         ChatViewCommand::OlderMessagesLoaded {
@@ -942,11 +952,13 @@ impl AsyncComponent for ChatView {
                     && let Some(after_ts) = self.history.newest_timestamp()
                 {
                     self.state.is_loading = true;
+
+                    let db = self.db.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let messages = chat
-                            .load_messages_after(after_ts, LOAD_MORE_COUNT)
+                            .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
                         ChatViewCommand::NewerMessagesLoaded {

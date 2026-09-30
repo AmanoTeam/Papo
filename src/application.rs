@@ -283,9 +283,10 @@ impl Application {
                 .then_with(|| b.last_message_time.cmp(&a.last_message_time))
         });
 
+        let db = self.db.clone();
         let chat_clone = chat.clone();
         relm4::spawn(async move {
-            if let Err(e) = chat_clone.upsert().await {
+            if let Err(e) = chat_clone.upsert(&db).await {
                 tracing::error!("Failed to save chat: {}", e);
             }
         });
@@ -368,7 +369,7 @@ impl Application {
         msg_id: String,
         status: MessageStatus,
     ) -> bool {
-        match chat.find_message(&msg_id).await {
+        match chat.find_message(&self.db, &msg_id).await {
             Ok(Some(message)) => {
                 if status != MessageStatus::Failed && status.stage() <= message.status.stage() {
                     return false;
@@ -436,10 +437,11 @@ impl Application {
             return;
         };
 
+        let db = self.db.clone();
         let sender = self.sender.clone();
         sender.oneshot_command(async move {
             let flipped = chat
-                .mark_read(true)
+                .mark_read(&db, true)
                 .await
                 .inspect_err(|e| {
                     tracing::error!("Failed to mark own chat as read: {e}");
@@ -502,8 +504,6 @@ impl Application {
                 avatar_path: None,
                 participants: HashMap::new(),
                 last_message_time: message.timestamp,
-
-                db: self.db.clone(),
             });
 
             self.client.emit(ClientInput::FetchAvatar {
@@ -532,10 +532,10 @@ impl Application {
         }
 
         // Save the chat and the message in the database.
-        if let Err(e) = chat.upsert().await {
+        if let Err(e) = chat.upsert(&self.db).await {
             tracing::error!("Failed to update chat: {}", e);
         }
-        if let Err(e) = message.upsert().await {
+        if let Err(e) = message.upsert(&self.db).await {
             tracing::error!("Failed to save message: {}", e);
         }
         self.chat_view
@@ -1014,30 +1014,32 @@ impl AsyncComponent for Application {
                 WelcomeOutput::PairWithQrCode => AppMsg::SwitchToLoginQrCode,
                 WelcomeOutput::PairWithPhoneNumber => AppMsg::SwitchToLoginPhoneNumber,
             });
-        let chat_list = ChatList::builder()
-            .launch(())
-            .forward(sender.input_sender(), |output| match output {
-                ChatListOutput::ChatSelected(jid) => AppMsg::ChatSelected(jid),
-            });
-        let chat_view = ChatView::builder()
-            .launch(())
-            .forward(sender.input_sender(), |output| match output {
-                ChatViewOutput::ChatOpen => AppMsg::ChatOpen,
-                ChatViewOutput::ChatClosed => AppMsg::ChatClosed,
-                ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
+        let chat_list =
+            ChatList::builder()
+                .launch(db.clone())
+                .forward(sender.input_sender(), |output| match output {
+                    ChatListOutput::ChatSelected(jid) => AppMsg::ChatSelected(jid),
+                });
+        let chat_view =
+            ChatView::builder()
+                .launch(db.clone())
+                .forward(sender.input_sender(), |output| match output {
+                    ChatViewOutput::ChatOpen => AppMsg::ChatOpen,
+                    ChatViewOutput::ChatClosed => AppMsg::ChatClosed,
+                    ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
 
-                ChatViewOutput::SendTextMessage { text, recipient } => {
-                    AppMsg::SendTextMessage { text, recipient }
-                }
+                    ChatViewOutput::SendTextMessage { text, recipient } => {
+                        AppMsg::SendTextMessage { text, recipient }
+                    }
 
-                ChatViewOutput::TypingStateChanged {
-                    chat_jid,
-                    composing,
-                } => AppMsg::TypingStateChanged {
-                    chat_jid,
-                    composing,
-                },
-            });
+                    ChatViewOutput::TypingStateChanged {
+                        chat_jid,
+                        composing,
+                    } => AppMsg::TypingStateChanged {
+                        chat_jid,
+                        composing,
+                    },
+                });
 
         let model = Self {
             db,
@@ -1269,7 +1271,7 @@ impl AsyncComponent for Application {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
                     // The user's own chat receives their outgoing messages.
                     let own_chat = self.user_jid.as_ref().is_some_and(|u| u == &jid);
-                    let messages = chat.get_unread_messages().await.unwrap_or_default();
+                    let messages = chat.get_unread_messages(&self.db).await.unwrap_or_default();
 
                     // Separate messages by sender.
                     let mut sender_messages = IndexMap::<String, Vec<String>>::new();
@@ -1292,11 +1294,12 @@ impl AsyncComponent for Application {
                     }
 
                     // Mark chat as read locally, then update the chat list.
+                    let db = self.db.clone();
                     let sender = self.sender.clone();
                     let chat_clone = chat.clone();
                     sender.oneshot_command(async move {
                         let flipped = chat_clone
-                            .mark_read(own_chat)
+                            .mark_read(&db, own_chat)
                             .await
                             .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
                             .unwrap_or_default();
@@ -1376,10 +1379,11 @@ impl AsyncComponent for Application {
                     if let Some(chat) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
                         chat.name.clone_from(contact_name);
 
+                        let db = self.db.clone();
                         let jid_clone = jid.clone();
                         let chat_clone = chat.clone();
                         relm4::spawn(async move {
-                            if let Err(e) = chat_clone.upsert().await {
+                            if let Err(e) = chat_clone.upsert(&db).await {
                                 tracing::error!(
                                     "Failed to update chat name for {}: {}",
                                     jid_clone,
@@ -1573,7 +1577,8 @@ impl AsyncComponent for Application {
                 status,
             } => {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
-                    && let Ok(Some(mut message)) = chat.find_message_by_local_id(&msg_id).await
+                    && let Ok(Some(mut message)) =
+                        chat.find_message_by_local_id(&self.db, &msg_id).await
                     && (status == MessageStatus::Failed || status.stage() > message.status.stage())
                 {
                     message.status = status;
@@ -1729,8 +1734,6 @@ impl AsyncComponent for Application {
                             reactions: IndexMap::new(),
                             timestamp: Timestamp::from_second(info.timestamp.timestamp())
                                 .expect("Invalid timestamp"),
-
-                            db: self.db.clone(),
                         };
                         self.add_message(&chat_jid, chat_message).await;
 
@@ -1785,14 +1788,13 @@ impl AsyncComponent for Application {
                         outgoing: true,
                         reactions: IndexMap::new(),
                         timestamp,
-
-                        db: self.db.clone(),
                     };
 
                     // Save the message in the database.
+                    let db = self.db.clone();
                     let msg_clone = message.clone();
                     relm4::spawn(async move {
-                        if let Err(e) = msg_clone.upsert().await {
+                        if let Err(e) = msg_clone.upsert(&db).await {
                             tracing::error!("Failed to save message: {}", e);
                         }
                     });
@@ -1815,10 +1817,11 @@ impl AsyncComponent for Application {
             AppMsg::ChatReadOnDevice(jid) => {
                 let chat_jid = self.resolve_jid(&jid).await;
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+                    let db = self.db.clone();
                     let sender = self.sender.clone();
                     sender.oneshot_command(async move {
                         let flipped = chat
-                            .mark_read(false)
+                            .mark_read(&db, false)
                             .await
                             .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
                             .unwrap_or_default();
@@ -1845,9 +1848,10 @@ impl AsyncComponent for Application {
                     }
 
                     // Always save the chat to the database (including archive state).
+                    let db = self.db.clone();
                     let chat_clone = chat.clone();
                     relm4::spawn(async move {
-                        if let Err(e) = chat_clone.upsert().await {
+                        if let Err(e) = chat_clone.upsert(&db).await {
                             tracing::error!("Failed to save chat property update: {}", e);
                         }
                     });
@@ -2031,8 +2035,6 @@ impl AsyncComponent for Application {
                             avatar_path: None,
                             participants: participants_map,
                             last_message_time,
-
-                            db: self.db.clone(),
                         };
 
                         self.chats.push(chat.clone());
@@ -2043,8 +2045,9 @@ impl AsyncComponent for Application {
                         });
 
                         // Save the chat to database.
+                        let db = self.db.clone();
                         relm4::spawn(async move {
-                            if let Err(e) = chat.upsert().await {
+                            if let Err(e) = chat.upsert(&db).await {
                                 tracing::error!("Failed to save synced chat {}: {}", chat.jid, e);
                             } else {
                                 tracing::debug!(
@@ -2148,12 +2151,10 @@ impl AsyncComponent for Application {
                                 outgoing: synced_msg.outgoing,
                                 reactions: IndexMap::new(),
                                 timestamp,
-
-                                db: db.clone(),
                             };
 
                             // Save the message, skipping duplicates on server_id.
-                            match message.save_or_ignore().await {
+                            match message.save_or_ignore(&db).await {
                                 Ok(true) => saved_count += 1,
                                 Ok(false) => dup_count += 1,
                                 Err(e) => tracing::error!("Failed to save synced message: {}", e),

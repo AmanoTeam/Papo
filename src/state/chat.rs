@@ -7,7 +7,6 @@ use crate::{db::store::SessionStore, state::ChatMessage, utils::format_lid_as_nu
 
 #[derive(Clone, Debug)]
 pub struct Chat {
-    pub db: SessionStore,
     pub jid: String,
     pub name: String,
     pub muted: bool,
@@ -23,16 +22,20 @@ pub struct Chat {
 }
 
 impl Chat {
-    pub async fn upsert(&self) -> Result<(), toasty::Error> {
-        self.db.save_chat(self).await
+    pub async fn upsert(&self, store: &SessionStore) -> Result<(), toasty::Error> {
+        store.save_chat(self).await
     }
 
     pub fn is_group(&self) -> bool {
         self.jid.ends_with("@g.us")
     }
 
-    pub async fn mark_read(&self, own_chat: bool) -> Result<Vec<Uuid>, toasty::Error> {
-        self.db.mark_chat_read(&self.jid, own_chat).await
+    pub async fn mark_read(
+        &self,
+        store: &SessionStore,
+        own_chat: bool,
+    ) -> Result<Vec<Uuid>, toasty::Error> {
+        store.mark_chat_read(&self.jid, own_chat).await
     }
 
     /// Get the chat name or phone number if empty.
@@ -44,51 +47,68 @@ impl Chat {
         }
     }
 
-    pub async fn get_last_message(&self) -> Result<Option<ChatMessage>, toasty::Error> {
-        self.load_messages(1).await.map(|mut m| m.pop())
+    pub async fn get_last_message(
+        &self,
+        store: &SessionStore,
+    ) -> Result<Option<ChatMessage>, toasty::Error> {
+        store.load_messages(&self.jid, 1).await.map(|mut m| m.pop())
     }
 
-    pub async fn load_messages(&self, limit: u32) -> Result<Vec<ChatMessage>, toasty::Error> {
-        self.db.load_messages(&self.jid, limit as usize).await
+    pub async fn load_messages(
+        &self,
+        store: &SessionStore,
+        limit: usize,
+    ) -> Result<Vec<ChatMessage>, toasty::Error> {
+        store.load_messages(&self.jid, limit).await
     }
 
     pub async fn load_messages_after(
         &self,
+        store: &SessionStore,
         after_timestamp: Timestamp,
-        limit: u32,
+        limit: usize,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
-        self.db
-            .load_messages_after(&self.jid, after_timestamp, limit as usize)
+        store
+            .load_messages_after(&self.jid, after_timestamp, limit)
             .await
     }
 
     pub async fn load_messages_before(
         &self,
+        store: &SessionStore,
         before_timestamp: Timestamp,
-        limit: u32,
+        limit: usize,
     ) -> Result<Vec<ChatMessage>, toasty::Error> {
-        self.db
-            .load_messages_before(&self.jid, before_timestamp, limit as usize)
+        store
+            .load_messages_before(&self.jid, before_timestamp, limit)
             .await
     }
 
-    pub async fn find_message(&self, msg_id: &str) -> Result<Option<ChatMessage>, toasty::Error> {
-        self.db.load_message_by_server_id(&self.jid, msg_id).await
+    pub async fn find_message(
+        &self,
+        store: &SessionStore,
+        msg_id: &str,
+    ) -> Result<Option<ChatMessage>, toasty::Error> {
+        store.load_message_by_server_id(&self.jid, msg_id).await
     }
 
     pub async fn find_message_by_local_id(
         &self,
+        store: &SessionStore,
         msg_id: &Uuid,
     ) -> Result<Option<ChatMessage>, toasty::Error> {
-        self.db.load_message_by_local_id(&self.jid, msg_id).await
+        store.load_message_by_local_id(&self.jid, msg_id).await
     }
 
-    pub async fn get_unread_count(&self) -> Result<usize, toasty::Error> {
-        self.db.get_unread_count(&self.jid).await
+    pub async fn get_unread_count(&self, store: &SessionStore) -> Result<usize, toasty::Error> {
+        store.get_unread_count(&self.jid).await
     }
 
-    pub async fn get_unread_messages(&self) -> Result<Vec<ChatMessage>, toasty::Error> {
-        self.db.get_unread_messages(&self.jid).await
+    pub async fn get_unread_messages(
+        &self,
+        store: &SessionStore,
+    ) -> Result<Vec<ChatMessage>, toasty::Error> {
+        store.get_unread_messages(&self.jid).await
     }
 }
 
