@@ -177,8 +177,7 @@ impl SimpleAsyncComponent for ChatList {
 
         let input_sender = sender.input_sender().clone();
         selection_model.connect_selected_item_notify(move |model| {
-            let position = model.selected();
-            input_sender.emit(ChatListInput::SelectPosition(position));
+            input_sender.emit(ChatListInput::SelectPosition(model.selected()));
         });
 
         AsyncComponentParts { model, widgets }
