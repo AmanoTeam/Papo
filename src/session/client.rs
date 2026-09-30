@@ -20,11 +20,9 @@ use whatsapp_rust::{
         message::MessageInfo,
         presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
-    wacore::store::{DevicePropsOverride, device::default_history_sync_config},
+    wacore::store::DevicePropsOverride,
     waproto::whatsapp::{
-        Conversation, Message,
-        device_props::{HistorySyncConfig, PlatformType},
-        web_message_info::Status,
+        Conversation, Message, device_props::PlatformType, web_message_info::Status,
     },
 };
 
@@ -578,14 +576,7 @@ impl AsyncComponent for Client {
                         .with_device_props(
                             DevicePropsOverride::new()
                                 .with_os(self.os_type.clone())
-                                .with_platform_type(PlatformType::Desktop)
-                                .with_require_full_sync(true)
-                                .with_history_sync_config(HistorySyncConfig {
-                                    on_demand_ready: Some(true),
-                                    full_sync_days_limit: Some(365),
-                                    complete_on_demand_ready: Some(true),
-                                    ..default_history_sync_config()
-                                }),
+                                .with_platform_type(PlatformType::Desktop),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
