@@ -163,6 +163,10 @@
 }
 
 .sync-banner {
+  background-color: color-mix(in srgb,
+      var(--window-bg-color) 80%,
+      var(--card-bg-color) 20%);
+
   progressbar {
     trough {
       min-height: 2px;
