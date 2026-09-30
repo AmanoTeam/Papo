@@ -23,7 +23,7 @@ use whatsapp_rust::{
     wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
         Conversation, Message,
-        device_props::{AppVersion, HistorySyncConfig, PlatformType},
+        device_props::{HistorySyncConfig, PlatformType},
         web_message_info::Status,
     },
 };
@@ -569,13 +569,6 @@ impl AsyncComponent for Client {
                     let backend = ProtocolBackend::new(self.store.clone());
                     tracing::info!("Protocol backend initialized");
 
-                    // Get application version from cargo package.
-                    let app_version = (
-                        env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap(),
-                        env!("CARGO_PKG_VERSION_MINOR").parse().unwrap(),
-                        env!("CARGO_PKG_VERSION_PATCH").parse().unwrap(),
-                    );
-
                     // Create bot with event handler.
                     let sender_clone = sender.clone();
                     let bot_builder = Bot::builder()
@@ -585,17 +578,11 @@ impl AsyncComponent for Client {
                         .with_device_props(
                             DevicePropsOverride::new()
                                 .with_os(self.os_type.clone())
-                                .with_version(AppVersion {
-                                    primary: Some(app_version.0),
-                                    secondary: Some(app_version.1),
-                                    tertiary: Some(app_version.2),
-                                    ..Default::default()
-                                })
                                 .with_platform_type(PlatformType::Desktop)
                                 .with_require_full_sync(true)
                                 .with_history_sync_config(HistorySyncConfig {
-                                    full_sync_days_limit: Some(365),
                                     on_demand_ready: Some(true),
+                                    full_sync_days_limit: Some(365),
                                     complete_on_demand_ready: Some(true),
                                     ..default_history_sync_config()
                                 }),
