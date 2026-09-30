@@ -1722,7 +1722,7 @@ impl AsyncComponent for Application {
 
                         let chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
-                            server_id: info.id.clone(),
+                            server_id: info.id.to_string(),
                             chat_jid: chat_jid.clone(),
                             sender_jid: sender_jid.clone(),
                             sender_name,

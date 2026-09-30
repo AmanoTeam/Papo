@@ -85,7 +85,7 @@ impl AppSyncStore for ProtocolBackend {
         Ok(())
     }
 
-    async fn get_version(&self, name: &str) -> StoreResult<HashState> {
+    async fn get_version(&self, name: &str) -> StoreResult<Option<HashState>> {
         let mut db = self.store.db().clone();
         let version = AppVersion::filter_by_name(name)
             .first()
@@ -93,7 +93,7 @@ impl AppSyncStore for ProtocolBackend {
             .await
             .map_err(db_err)?;
 
-        Ok(version.map_or_else(HashState::default, |entity| HashState {
+        Ok(version.map(|entity| HashState {
             version: u64::try_from(entity.version).unwrap_or(0),
             hash: entity
                 .hash
@@ -103,10 +103,31 @@ impl AppSyncStore for ProtocolBackend {
                 .index_value_map
                 .and_then(|map| serde_json::from_str(&map).ok())
                 .unwrap_or_default(),
-            // mac_mismatch_fatal has no entity column; a restart resets it and
-            // the next snapshot-MAC failure re-arms it.
+            // `bootstrapped` and `mac_mismatch_fatal` have no entity columns, so
+            // a restart resets them. A collection whose bootstrap finished with
+            // a version past zero proves its baseline through the version
+            // alone; one that legitimately finished empty would otherwise sit
+            // at version zero with an ltHash no patch can extend, so letting it
+            // re-bootstrap is the safe direction. The next snapshot-MAC failure
+            // re-arms the fatal flag.
+            bootstrapped: false,
             mac_mismatch_fatal: false,
         }))
+    }
+
+    async fn delete_version(&self, name: &str) -> StoreResult<()> {
+        let _guard = self.store.write_lock().lock().await;
+        let mut db = self.store.db().clone();
+        if let Some(version) = AppVersion::filter_by_name(name)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            version.delete().exec(&mut db).await.map_err(db_err)?;
+        }
+
+        Ok(())
     }
 
     async fn set_version(&self, name: &str, state: HashState) -> StoreResult<()> {

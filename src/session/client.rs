@@ -643,7 +643,11 @@ impl AsyncComponent for Client {
 
                                     Event::Receipt(receipt) => {
                                         let chat_jid = receipt.source.chat.to_string();
-                                        let message_ids = receipt.message_ids.clone();
+                                        let message_ids = receipt
+                                            .message_ids
+                                            .iter()
+                                            .map(ToString::to_string)
+                                            .collect::<Vec<_>>();
 
                                         let _ = sender.output(ClientOutput::ReceiptUpdate {
                                             chat_jid,
