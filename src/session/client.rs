@@ -21,9 +21,11 @@ use whatsapp_rust::{
         message::MessageInfo,
         presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
-    wacore::store::DevicePropsOverride,
+    wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
-        Conversation, Message, device_props::PlatformType, web_message_info::Status,
+        Conversation, Message,
+        device_props::{HistorySyncConfig, PlatformType},
+        web_message_info::Status,
     },
 };
 
@@ -31,11 +33,16 @@ use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
     session::AvatarCache,
-    state::{ChatMessage, Media, MessageStatus},
+    state::{ChatMessage, HistoryAnchor, Media, MessageStatus},
     utils::bare_jid,
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
+
+/// Messages requested per on-demand history fetch.
+const HISTORY_FETCH_COUNT: i32 = 50;
+/// History sync chunk type that answers an on-demand request.
+const SYNC_TYPE_ON_DEMAND: i32 = 6;
 
 #[derive(Clone)]
 pub struct Client {
@@ -113,6 +120,10 @@ pub enum ClientInput {
     FetchAvatar {
         jid: String,
     },
+    FetchHistory {
+        chat_jid: String,
+        anchor: Option<HistoryAnchor>,
+    },
     ResolveLidPn {
         chat_jid: String,
         lid: String,
@@ -144,6 +155,7 @@ pub enum ClientOutput {
     Syncing,
     HistorySyncProgress {
         progress: Option<u32>,
+        on_demand: bool,
     },
 
     CallOffer {
@@ -597,6 +609,39 @@ impl AsyncComponent for Client {
             ClientInput::FetchAvatar { jid } => {
                 sender.oneshot_command(async move { ClientCommand::FetchAvatar { jid } });
             }
+            ClientInput::FetchHistory { chat_jid, anchor } => {
+                let handle = self.handle.lock().await;
+                if let Some(client) = handle.as_ref() {
+                    let Ok(jid) = chat_jid.parse::<Jid>() else {
+                        tracing::error!("Failed to parse JID: {chat_jid}");
+                        return;
+                    };
+
+                    // Without an anchor the phone returns the newest
+                    // messages; with one, the history older than it.
+                    let (msg_id, from_me, timestamp_ms) = match anchor {
+                        Some(anchor) => (anchor.server_id, anchor.from_me, anchor.timestamp_ms),
+                        None => (String::new(), false, Timestamp::now().as_millisecond()),
+                    };
+
+                    match Box::pin(client.fetch_message_history(
+                        &jid,
+                        &msg_id,
+                        from_me,
+                        timestamp_ms,
+                        HISTORY_FETCH_COUNT,
+                    ))
+                    .await
+                    {
+                        Ok(_) => {
+                            tracing::debug!("Requested on-demand history for: {chat_jid}");
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to request history for {chat_jid}: {e}");
+                        }
+                    }
+                }
+            }
             ClientInput::ResolveLidPn { chat_jid, lid } => {
                 sender
                     .oneshot_command(async move { ClientCommand::ResolveLidPn { chat_jid, lid } });
@@ -631,7 +676,12 @@ impl AsyncComponent for Client {
                         .with_device_props(
                             DevicePropsOverride::new()
                                 .with_os(self.os_type.clone())
-                                .with_platform_type(PlatformType::Desktop),
+                                .with_platform_type(PlatformType::Desktop)
+                                .with_history_sync_config(HistorySyncConfig {
+                                    on_demand_ready: Some(true),
+                                    complete_on_demand_ready: Some(true),
+                                    ..default_history_sync_config()
+                                }),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
@@ -1113,6 +1163,7 @@ impl AsyncComponent for Client {
 
                     let _ = sender_clone.output(ClientOutput::HistorySyncProgress {
                         progress: history_sync.progress(),
+                        on_demand: history_sync.sync_type() == SYNC_TYPE_ON_DEMAND,
                     });
 
                     let Some(sync) = history_sync.get() else {
