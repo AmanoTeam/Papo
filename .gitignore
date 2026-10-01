@@ -8,7 +8,6 @@ src/config.rs
 *.ui.in~
 *.ui~
 /.flatpak/
-/vendor
 /.vscode
 .flatpak-builder/
 result

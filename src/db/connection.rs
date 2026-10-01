@@ -13,14 +13,14 @@ use toasty_core::{
     driver::operation::{RawSql, RawSqlRet},
     stmt::Direction,
 };
-use toasty_driver_turso::{EncryptionOpts, Turso};
+use toasty_driver_sqlite::Sqlite;
 
 use crate::{
     DATA_DIR,
     db::{DbError, entities::Session, keyring::KeyringService},
 };
 
-/// Opens the central `papo.db` database with AES-256-GCM encryption.
+/// Opens the central `papo.db` database with `SQLCipher` encryption.
 ///
 /// The encryption key is fetched or created via the keyring service.
 /// The database stores session metadata (one row per `WhatsApp` account).
@@ -34,33 +34,92 @@ pub async fn open_main_db(keyring: &KeyringService) -> Result<Db, DbError> {
 /// Opens (or creates) an encrypted database file with the given models.
 ///
 /// The schema is only pushed on first creation; existing databases are
-/// opened as-is. If the file is corrupt or was encrypted with a different
-/// key, it is quarantined (renamed to `{name}.corrupt-{timestamp}`) and
-/// a fresh database is created in its place.
+/// opened as-is. If the file is corrupt, was encrypted with a different
+/// key, or was written by a different database engine, it is quarantined
+/// (renamed to `{name}.corrupt-{timestamp}`) and a fresh database is
+/// created in its place.
 pub(crate) async fn open_encrypted_db(
     path: &Path,
     hexkey: &str,
     models: impl Fn() -> ModelSet,
 ) -> Result<Db, DbError> {
     let is_fresh = !path.exists();
-    let driver = create_driver(path, hexkey);
+    let driver = Sqlite::open_encrypted(path, hexkey);
 
-    if let Ok(mut db) = Db::builder().models(models()).build(driver).await {
+    if let Ok(mut db) = Db::builder()
+        .max_pool_size(1)
+        .models(models())
+        .build(driver)
+        .await
+    {
         if is_fresh {
             db.push_schema().await?;
-        } else {
+        } else if db_is_readable(&mut db).await {
             ensure_indices(&mut db).await;
+        } else {
+            quarantine_file(path);
+            return recreate_encrypted_db(path, hexkey, models).await;
         }
+
+        set_sync_mode(&mut db).await;
 
         return Ok(db);
     }
 
     quarantine_file(path);
-    let driver = create_driver(path, hexkey);
-    let db = Db::builder().models(models()).build(driver).await?;
+
+    recreate_encrypted_db(path, hexkey, models).await
+}
+
+/// Creates a fresh encrypted database on a freshly quarantined path.
+async fn recreate_encrypted_db(
+    path: &Path,
+    hexkey: &str,
+    models: impl Fn() -> ModelSet,
+) -> Result<Db, DbError> {
+    let driver = Sqlite::open_encrypted(path, hexkey);
+    let mut db = Db::builder()
+        .max_pool_size(1)
+        .models(models())
+        .build(driver)
+        .await?;
     db.push_schema().await?;
+    set_sync_mode(&mut db).await;
 
     Ok(db)
+}
+
+/// Proves the engine can actually read the file. Touching
+/// `sqlite_master` decrypts the first page, so an unreadable database
+/// fails here instead of at an arbitrary later query. `LIMIT 0` keeps
+/// the statement row-free.
+async fn db_is_readable(db: &mut Db) -> bool {
+    db.exec_raw_sql(RawSql {
+        sql: "SELECT * FROM sqlite_master LIMIT 0".to_owned(),
+        ret: RawSqlRet::None,
+        params: Vec::new(),
+    })
+    .await
+    .is_ok()
+}
+
+/// Relaxes the WAL fsync mode. With WAL, committed transactions only need
+/// to survive an app crash, and `synchronous = NORMAL` lets the periodic
+/// checkpoint carry the fsync instead. The pragma is per-connection, but
+/// the pool is capped at a single connection for the whole session, so one
+/// call covers every statement.
+async fn set_sync_mode(db: &mut Db) {
+    let result = db
+        .exec_raw_sql(RawSql {
+            sql: "PRAGMA synchronous = NORMAL".to_owned(),
+            ret: RawSqlRet::None,
+            params: Vec::new(),
+        })
+        .await;
+
+    if let Err(e) = result {
+        tracing::warn!("Failed to relax the database sync mode: {e}");
+    }
 }
 
 /// Creates any index declared in the schema but missing from an existing
@@ -108,16 +167,6 @@ async fn ensure_indices(db: &mut Db) {
     }
 }
 
-/// Creates a Turso driver with AES-256-GCM page encryption enabled.
-pub(crate) fn create_driver(path: &Path, hexkey: &str) -> Turso {
-    Turso::file(path)
-        .experimental_encryption(EncryptionOpts {
-            cipher: "aes256gcm".into(),
-            hexkey: hexkey.into(),
-        })
-        .experimental_multiprocess_wal(true)
-}
-
 /// Renames a corrupt or unreadable database file to `{name}.corrupt-{timestamp}`
 /// and removes its WAL/SHM sidecars. Does nothing if the file does not exist.
 pub(crate) fn quarantine_file(path: &Path) {
@@ -160,21 +209,250 @@ fn remove_sidecars(path: &Path) {
 mod tests {
     use std::{env, fs};
 
+    use toasty_core::{driver::operation::TypedValue, schema::db::Type, stmt::Value as SqlValue};
     use tokio::runtime::Runtime;
     use uuid::Uuid;
+    use whatsapp_rust::wacore::{
+        appstate::processor::AppStateMutationMAC, store::traits::LidPnMappingEntry,
+    };
 
     use super::*;
-    use crate::db::entities::{Chat, Message};
+    use crate::db::{
+        entities::{Chat, Message},
+        protocol::{LidMapping, MutationMac, TcToken},
+    };
 
     #[test]
     fn fresh_create_and_crud() {
         Runtime::new().unwrap().block_on(async {
             let db = Db::builder()
                 .models(toasty::models!(Chat, Message))
-                .build(Turso::in_memory())
+                .build(Sqlite::in_memory())
                 .await
                 .unwrap();
             db.push_schema().await.unwrap();
+        });
+    }
+
+    /// Checks the batched multi-row lid-mapping upsert used by
+    /// `put_lid_mappings` against a real engine: table and column names,
+    /// positional placeholders, and the conflict clause.
+    #[test]
+    fn batched_lid_mapping_upsert() {
+        Runtime::new().unwrap().block_on(async {
+            let mut db = Db::builder()
+                .models(toasty::models!(LidMapping))
+                .build(Sqlite::in_memory())
+                .await
+                .unwrap();
+            db.push_schema().await.unwrap();
+
+            let row = |lid: &str, phone: &str| LidPnMappingEntry {
+                lid: lid.to_string(),
+                phone_number: phone.to_string(),
+                created_at: 1,
+                updated_at: 2,
+                learning_source: "history".to_string(),
+            };
+
+            let entries = vec![row("lid-1", "111"), row("lid-2", "222")];
+
+            let mut sql = String::from(
+                "INSERT INTO \"lid_mappings\" \
+                 (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") VALUES ",
+            );
+            let mut params = Vec::new();
+            for (index, entry) in entries.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?, ?, ?)");
+                params.extend([
+                    TypedValue {
+                        value: SqlValue::String(entry.lid.clone()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::I64(entry.created_at),
+                        ty: Type::Integer(8),
+                    },
+                    TypedValue {
+                        value: SqlValue::I64(entry.updated_at),
+                        ty: Type::Integer(8),
+                    },
+                    TypedValue {
+                        value: SqlValue::String(entry.phone_number.clone()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::String(entry.learning_source.clone()),
+                        ty: Type::Text,
+                    },
+                ]);
+            }
+            sql.push_str(
+                " ON CONFLICT(\"lid\") DO UPDATE SET \
+                 \"created_at\" = excluded.\"created_at\", \
+                 \"updated_at\" = excluded.\"updated_at\", \
+                 \"phone_number\" = excluded.\"phone_number\", \
+                 \"learning_source\" = excluded.\"learning_source\"",
+            );
+
+            db.exec_raw_sql(RawSql {
+                sql,
+                params,
+                ret: RawSqlRet::None,
+            })
+            .await
+            .unwrap();
+
+            let count = LidMapping::all().exec(&mut db).await.unwrap().len();
+            assert_eq!(count, 2);
+
+            // Upserting the same lids must overwrite, not duplicate.
+            let mut updated = entries;
+            updated[1].phone_number = "999".to_string();
+            let conflict_row = &updated[1];
+
+            db.exec_raw_sql(RawSql {
+                sql: "INSERT INTO \"lid_mappings\" (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") \
+                      VALUES (?, ?, ?, ?, ?) \
+                      ON CONFLICT(\"lid\") DO UPDATE SET \
+                      \"created_at\" = excluded.\"created_at\", \
+                      \"updated_at\" = excluded.\"updated_at\", \
+                      \"phone_number\" = excluded.\"phone_number\", \
+                      \"learning_source\" = excluded.\"learning_source\""
+                    .to_string(),
+                params: vec![
+                    TypedValue {
+                        value: SqlValue::String(conflict_row.lid.clone()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::I64(conflict_row.created_at),
+                        ty: Type::Integer(8),
+                    },
+                    TypedValue {
+                        value: SqlValue::I64(conflict_row.updated_at),
+                        ty: Type::Integer(8),
+                    },
+                    TypedValue {
+                        value: SqlValue::String(conflict_row.phone_number.clone()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::String(conflict_row.learning_source.clone()),
+                        ty: Type::Text,
+                    },
+                ],
+                ret: RawSqlRet::None,
+            })
+            .await
+            .unwrap();
+
+            let all = LidMapping::all().exec(&mut db).await.unwrap();
+            assert_eq!(all.len(), 2);
+            assert!(all
+                .iter()
+                .any(|m| m.lid == "lid-2" && m.phone_number == "999"));
+        });
+    }
+
+    /// Runs the exact production multi-row `mutation_macs` upsert against the
+    /// real engine: table and column names, the composite conflict target and
+    /// the blob binding.
+    #[test]
+    fn batched_mutation_mac_upsert() {
+        Runtime::new().unwrap().block_on(async {
+            let mut db = Db::builder()
+                .models(toasty::models!(MutationMac))
+                .build(Sqlite::in_memory())
+                .await
+                .unwrap();
+            db.push_schema().await.unwrap();
+
+            let hex = |bytes: &[u8]| -> String {
+                bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+            };
+
+            let row = |index_mac: &[u8], value_mac: &[u8]| AppStateMutationMAC {
+                index_mac: index_mac.to_vec(),
+                value_mac: value_mac.to_vec(),
+            };
+            let mutations = vec![row(&[1, 2, 3], &[9]), row(&[4, 5, 6], &[8])];
+
+            let mut sql = String::from(
+                "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") VALUES ",
+            );
+            let mut params = Vec::new();
+            for (index, mutation) in mutations.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?)");
+                params.extend([
+                    TypedValue {
+                        value: SqlValue::String("critical_block".to_string()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::String(hex(&mutation.index_mac)),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::Bytes(mutation.value_mac.clone()),
+                        ty: Type::Blob,
+                    },
+                ]);
+            }
+            sql.push_str(
+                " ON CONFLICT(\"name\", \"index_mac\") \
+                 DO UPDATE SET \"value_mac\" = excluded.\"value_mac\"",
+            );
+
+            db.exec_raw_sql(RawSql {
+                sql,
+                params,
+                ret: RawSqlRet::None,
+            })
+            .await
+            .unwrap();
+
+            let count = MutationMac::all().exec(&mut db).await.unwrap().len();
+            assert_eq!(count, 2);
+
+            // Upserting the same (name, index_mac) must overwrite the value.
+            db.exec_raw_sql(RawSql {
+                sql: "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") \
+                      VALUES (?, ?, ?) \
+                      ON CONFLICT(\"name\", \"index_mac\") DO UPDATE SET \
+                      \"value_mac\" = excluded.\"value_mac\""
+                    .to_string(),
+                params: vec![
+                    TypedValue {
+                        value: SqlValue::String("critical_block".to_string()),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::String(hex(&[1, 2, 3])),
+                        ty: Type::Text,
+                    },
+                    TypedValue {
+                        value: SqlValue::Bytes(vec![7]),
+                        ty: Type::Blob,
+                    },
+                ],
+                ret: RawSqlRet::None,
+            })
+            .await
+            .unwrap();
+
+            let all = MutationMac::all().exec(&mut db).await.unwrap();
+            assert_eq!(all.len(), 2);
+            assert!(
+                all.iter()
+                    .any(|m| m.index_mac == hex(&[1, 2, 3]) && m.value_mac == vec![7])
+            );
         });
     }
 
@@ -187,7 +465,7 @@ mod tests {
             let path = dir.join("test.db");
             let key = "0".repeat(64);
 
-            let driver = create_driver(&path, &key);
+            let driver = Sqlite::open_encrypted(&path, &key);
             let db = Db::builder()
                 .models(toasty::models!(Chat, Message))
                 .build(driver)

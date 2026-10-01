@@ -28,9 +28,9 @@ relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
 oo7 = "0.7.0-alpha"
-toasty = { version = "0.10", default-features = false, features = ["jiff", "migration", "turso"] }
+toasty = { version = "0.10", default-features = false, features = ["jiff", "migration"] }
 toasty-core = "0.10"
-toasty-driver-turso = "0.10"
+toasty-driver-sqlite = { version = "0.10", features = ["sqlcipher"] }
 
 # Utilities
 rand = "0.10"
@@ -67,3 +67,8 @@ whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "6f07
 
 [build-dependencies]
 relm4-icons-build = "0.11"
+
+# Vendored copy of toasty-driver-sqlite with a `sqlcipher` feature and
+# `Sqlite::open_encrypted` added; see vendor/toasty-driver-sqlite.
+[patch.crates-io]
+toasty-driver-sqlite = { path = "vendor/toasty-driver-sqlite" }

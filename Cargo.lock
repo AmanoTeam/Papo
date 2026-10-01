@@ -2458,9 +2458,9 @@ dependencies = [
 
 [[package]]
 name = "gvdb"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc3adcee31520d9e6948d21ed883171c4af26c6bc96ac171769b5aba2fa6d486"
+checksum = "c28284f834fe0083db924efe590a684fe81c661c6269fc536ae964ab01adc111"
 dependencies = [
  "flate2",
  "quick-xml",
@@ -4014,7 +4014,7 @@ dependencies = [
  "strum 0.28.0",
  "toasty",
  "toasty-core",
- "toasty-driver-turso",
+ "toasty-driver-sqlite",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6150,8 +6150,6 @@ dependencies = [
 [[package]]
 name = "toasty-driver-sqlite"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dc7c7bdc6db7b857528680ef3be77f3a156cd187e600e2cab1e8a425d55edf4"
 dependencies = [
  "async-trait",
  "rusqlite",
