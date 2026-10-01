@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::HashSet,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -254,6 +255,7 @@ pub struct ChatsSyncedEntry {
 
 fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
+    let mut explicit_statuses = Vec::new();
     for hist_msg in &conv.messages {
         if let Some(web_msg) = hist_msg.message.as_option()
             && let Some(msg) = web_msg.message.as_option()
@@ -266,6 +268,16 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
 
+            let explicit_status = matches!(
+                web_msg.status,
+                Some(
+                    Status::SERVER_ACK
+                        | Status::DELIVERY_ACK
+                        | Status::READ
+                        | Status::PLAYED
+                        | Status::ERROR
+                )
+            );
             let status = match web_msg.status {
                 Some(Status::SERVER_ACK) => MessageStatus::Sent,
                 Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
@@ -304,8 +316,50 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
                 sender_jid,
                 sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
             });
+            explicit_statuses.push(explicit_status);
         }
     }
+
+    // Rewrite the statusless messages the phone considers read.
+    //
+    // A conversation's unread count only covers its latest messages;
+    // older pages are implicitly read. Only trust the counter when the
+    // batch includes the conversation's last message.
+    let includes_latest = conv
+        .last_msg_timestamp
+        .is_some_and(|latest| synced_messages.iter().any(|m| m.timestamp == latest));
+    let unread_count = if includes_latest {
+        usize::try_from(conv.unread_count.unwrap_or_default()).unwrap_or_default()
+    } else {
+        0
+    };
+
+    // The newest `unread_count` incoming messages stay unread; every
+    // other statusless incoming one was read on the phone.
+    let mut incoming = (0..synced_messages.len())
+        .filter(|&index| !synced_messages[index].outgoing)
+        .collect::<Vec<usize>>();
+    incoming.sort_by_key(|&index| Reverse(synced_messages[index].timestamp));
+    for (rank, &index) in incoming.iter().enumerate() {
+        if rank >= unread_count && !explicit_statuses[index] {
+            synced_messages[index].status = MessageStatus::Read;
+        }
+    }
+
+    // Outgoing messages followed by a newer incoming reply were read by
+    // the peer; only the trailing ones keep their delivery progress.
+    if let Some(newest_incoming) = incoming
+        .first()
+        .map(|&index| synced_messages[index].timestamp)
+    {
+        for (index, message) in synced_messages.iter_mut().enumerate() {
+            if message.outgoing && !explicit_statuses[index] && message.timestamp < newest_incoming
+            {
+                message.status = MessageStatus::Read;
+            }
+        }
+    }
+
     synced_messages
 }
 
