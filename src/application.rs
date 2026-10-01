@@ -38,7 +38,7 @@ use crate::{
     i18n, i18n_f,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
-    state::{Chat, ChatMessage, Media, MediaType, MessageStatus, TypingSender},
+    state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
     utils::{bare_jid, format_lid_as_number, get_first_name},
 };
 
@@ -76,6 +76,7 @@ pub struct Application {
     session_page: AppSessionPage,
     user_push_name: Option<String>,
     synced_history_chats: HashSet<String>,
+    history_fetch_attempted: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -216,8 +217,13 @@ pub enum AppMsg {
         archived: Option<bool>,
     },
 
+    FetchHistory {
+        chat_jid: String,
+        anchor: Option<HistoryAnchor>,
+    },
     HistorySyncProgress {
         progress: Option<u32>,
+        on_demand: bool,
     },
     HistorySyncCompleted,
     OfflineSyncCompleted,
@@ -974,9 +980,13 @@ impl AsyncComponent for Application {
                         archived,
                     },
 
-                    ClientOutput::HistorySyncProgress { progress } => {
-                        AppMsg::HistorySyncProgress { progress }
-                    }
+                    ClientOutput::HistorySyncProgress {
+                        progress,
+                        on_demand,
+                    } => AppMsg::HistorySyncProgress {
+                        progress,
+                        on_demand,
+                    },
                     ClientOutput::HistorySyncCompleted => AppMsg::HistorySyncCompleted,
                     ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
@@ -1032,6 +1042,10 @@ impl AsyncComponent for Application {
                         AppMsg::SendTextMessage { text, recipient }
                     }
 
+                    ChatViewOutput::FetchHistory { chat_jid, anchor } => {
+                        AppMsg::FetchHistory { chat_jid, anchor }
+                    }
+
                     ChatViewOutput::TypingStateChanged {
                         chat_jid,
                         composing,
@@ -1075,6 +1089,7 @@ impl AsyncComponent for Application {
             session_page: AppSessionPage::Empty,
             user_push_name: None,
             synced_history_chats: HashSet::new(),
+            history_fetch_attempted: HashSet::new(),
         };
 
         let split_view = &model.split_view;
@@ -1171,6 +1186,7 @@ impl AsyncComponent for Application {
                 self.state = AppState::Pairing;
                 self.chats.clear();
                 self.synced_history_chats.clear();
+                self.history_fetch_attempted.clear();
                 self.deactivate_history_sync();
 
                 let session_uuid = self.session.uuid.clone();
@@ -1230,6 +1246,7 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;
                 self.synced_history_chats.clear();
+                self.history_fetch_attempted.clear();
                 self.activate_history_sync(None, &sender);
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
@@ -1875,8 +1892,25 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppMsg::HistorySyncProgress { progress } => {
-                self.activate_history_sync(progress, &sender);
+            AppMsg::FetchHistory { chat_jid, anchor } => {
+                let chat_jid = self.resolve_jid(&chat_jid).await;
+
+                let proceed =
+                    anchor.is_some() || self.history_fetch_attempted.insert(chat_jid.clone());
+                if proceed {
+                    self.client
+                        .emit(ClientInput::FetchHistory { chat_jid, anchor });
+                }
+            }
+            AppMsg::HistorySyncProgress {
+                progress,
+                on_demand,
+            } => {
+                if !on_demand {
+                    self.activate_history_sync(progress, &sender);
+                } else if self.history_sync.active {
+                    self.forward_sync_status();
+                }
             }
             AppMsg::HistorySyncCompleted => {
                 tracing::info!("History sync completed");
@@ -1994,6 +2028,11 @@ impl AsyncComponent for Application {
 
                     if !messages.is_empty() {
                         self.synced_history_chats.insert(chat_jid.clone());
+
+                        // Tell an open chat view that its history landed.
+                        self.chat_view.emit(ChatViewInput::HistoryBackfilled {
+                            chat_jid: chat_jid.clone(),
+                        });
                     }
 
                     let is_new_chat = !self.chats.iter().any(|c| c.jid == jid);

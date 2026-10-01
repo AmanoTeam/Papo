@@ -2,7 +2,11 @@ mod history;
 mod momentum;
 mod rows;
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use adw::prelude::*;
 use gtk::{gdk, glib, pango};
@@ -15,7 +19,7 @@ use self::{history::ChatHistory, momentum::Momentum, rows::ChatRow};
 use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
-    state::{Chat, ChatMessage, MessageStatus, TypingSender},
+    state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
     widgets::TypingDots,
 };
 
@@ -28,6 +32,8 @@ const UNREAD_BAND_BOTTOM_MAX_ROWS: usize = 8;
 /// Maximum number of rows (messages + separators) to keep loaded.
 const MAX_LOADED_ROWS: u32 = 600;
 const INITIAL_LOAD_COUNT: usize = 120;
+/// Cooldown between on-demand history requests for one chat.
+const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub struct ChatView {
@@ -41,6 +47,7 @@ pub struct ChatView {
     generation: u64,
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
+    history_fetch_at: Option<Instant>,
 }
 
 /// Feedback for an ongoing history sync, shown in the banner.
@@ -92,6 +99,9 @@ pub enum ChatViewInput {
         synced: usize,
         total: usize,
     },
+    HistoryBackfilled {
+        chat_jid: String,
+    },
 
     ScrollToBottom,
 }
@@ -102,9 +112,20 @@ pub enum ChatViewOutput {
     ChatClosed,
     MarkChatRead(String),
 
-    SendTextMessage { text: String, recipient: String },
+    SendTextMessage {
+        text: String,
+        recipient: String,
+    },
 
-    TypingStateChanged { chat_jid: String, composing: bool },
+    TypingStateChanged {
+        chat_jid: String,
+        composing: bool,
+    },
+
+    FetchHistory {
+        chat_jid: String,
+        anchor: Option<HistoryAnchor>,
+    },
 }
 
 #[derive(Debug)]
@@ -402,6 +423,7 @@ impl AsyncComponent for ChatView {
             generation: 0,
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            history_fetch_at: None,
         };
 
         let list_view = model.history.view().view.clone();
@@ -504,18 +526,6 @@ impl AsyncComponent for ChatView {
         _root: &Self::Root,
     ) {
         match input {
-            ChatViewInput::SyncProgress {
-                active,
-                percent,
-                synced,
-                total,
-            } => {
-                self.state.sync = active.then_some(SyncFeedback {
-                    total,
-                    synced,
-                    percent,
-                });
-            }
             ChatViewInput::Open(chat) => {
                 self.generation += 1;
 
@@ -538,9 +548,9 @@ impl AsyncComponent for ChatView {
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
                 self.state.typing_generation += 1;
+                self.history_fetch_at = None;
 
                 self.chat = Some(chat.clone());
-
                 self.state.typing.clear();
                 self.rebuild_typing_avatars();
 
@@ -723,6 +733,66 @@ impl AsyncComponent for ChatView {
                 }
             }
 
+            ChatViewInput::SyncProgress {
+                active,
+                percent,
+                synced,
+                total,
+            } => {
+                self.state.sync = active.then_some(SyncFeedback {
+                    total,
+                    synced,
+                    percent,
+                });
+            }
+            ChatViewInput::HistoryBackfilled { chat_jid } => {
+                let Some(chat) = self.chat.clone() else {
+                    return;
+                };
+                if chat.jid != chat_jid {
+                    return;
+                }
+
+                self.history_fetch_at = None;
+                if self.history.is_empty() {
+                    // The chat was empty when opened: reload the initial
+                    // window now that history arrived.
+                    self.state.is_loading = true;
+
+                    let db = self.db.clone();
+                    let generation = self.generation;
+                    sender.oneshot_command(async move {
+                        let messages = chat
+                            .load_messages(&db, INITIAL_LOAD_COUNT)
+                            .await
+                            .unwrap_or_default();
+
+                        ChatViewCommand::InitialMessagesLoaded {
+                            generation,
+                            messages,
+                            had_unread: false,
+                        }
+                    });
+                } else if let Some(before_ts) = self.history.oldest_timestamp() {
+                    // Prepend the history that landed above the window.
+                    self.state.is_loading = true;
+
+                    let db = self.db.clone();
+                    let generation = self.generation;
+                    sender.oneshot_command(async move {
+                        let messages = chat
+                            .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
+                            .await
+                            .unwrap_or_default();
+
+                        ChatViewCommand::OlderMessagesLoaded {
+                            generation,
+                            messages,
+                        }
+                    });
+                }
+            }
+
             ChatViewInput::ScrollToBottom => {
                 // If either end has been trimmed, the view is a "window" into the
                 // message history — reload from scratch to jump to the real latest.
@@ -780,6 +850,18 @@ impl AsyncComponent for ChatView {
                     .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
+
+                // A chat whose stored history is shorter than a page may be
+                // missing older messages, including chats too short to
+                // scroll: ask the phone for the recent history.
+                if messages.len() < INITIAL_LOAD_COUNT
+                    && let Some(ref chat) = self.chat
+                {
+                    let _ = sender.output(ChatViewOutput::FetchHistory {
+                        chat_jid: chat.jid.clone(),
+                        anchor: None,
+                    });
+                }
 
                 // A tall unread band opens at its top, with context rows
                 // above; reaching the bottom then marks the chat read.
@@ -953,6 +1035,21 @@ impl AsyncComponent for ChatView {
                             messages,
                         }
                     });
+                } else if at_top
+                    && !self.history.has_older()
+                    && let Some(ref chat) = self.chat
+                    && self
+                        .history_fetch_at
+                        .is_none_or(|at| at.elapsed() >= HISTORY_FETCH_RETRY)
+                {
+                    // The local history is exhausted at the top: ask the
+                    // phone for older messages on demand, paced by the
+                    // retry cooldown.
+                    self.history_fetch_at = Some(Instant::now());
+                    let _ = sender.output(ChatViewOutput::FetchHistory {
+                        chat_jid: chat.jid.clone(),
+                        anchor: self.oldest_message_anchor(),
+                    });
                 }
             }
         }
@@ -960,6 +1057,27 @@ impl AsyncComponent for ChatView {
 }
 
 impl ChatView {
+    /// Anchor for an on-demand history request, taken from the oldest
+    /// message row in view. Rows without a server id cannot anchor, and
+    /// neither can a window without messages.
+    fn oldest_message_anchor(&self) -> Option<HistoryAnchor> {
+        for index in 0..self.history.len() {
+            if let Some(ChatRow::Message { message, .. }) = self.history.get_row(index) {
+                if message.server_id.is_empty() {
+                    continue;
+                }
+
+                return Some(HistoryAnchor {
+                    from_me: message.outgoing,
+                    server_id: message.server_id,
+                    timestamp_ms: message.timestamp.as_millisecond(),
+                });
+            }
+        }
+
+        None
+    }
+
     fn update_presence(&mut self) {
         if let Some(ref mut chat) = self.chat {
             if chat.is_group() {
