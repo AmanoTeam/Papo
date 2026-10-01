@@ -54,8 +54,8 @@ meson install -C build
 - [x] Go-to-bottom button
 - [x] Read receipts
 - [x] Send text messages
-- [x] History sync (after pairing)
-- [x] Local message storage (libSQL)
+- [x] History sync
+- [x] Local message storage (SQLite)
 - [x] Chat filters (all, unread, groups)
 - [x] Profile pictures (chat list)
 - [x] Online status indicators (chat view subtitle)
@@ -72,7 +72,7 @@ meson install -C build
 - [ ] Message search
 - [ ] Message reactions
 - [ ] Reply/quote messages
-- [ ] Database encryption
+- [x] Database encryption
 - [x] Unread messages divider
 - [ ] Message draft persistence
 - [x] Typing indicators
