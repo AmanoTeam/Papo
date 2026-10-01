@@ -438,6 +438,26 @@ impl SessionStore {
             .collect()
     }
 
+    pub async fn learn_lid_mapping(
+        &self,
+        lid: &str,
+        phone_number: &str,
+    ) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock().lock().await;
+        let mut db = self.db.clone();
+        let now = Timestamp::now().as_millisecond();
+
+        LidMapping::upsert_by_lid(lid)
+            .phone_number(phone_number.to_string())
+            .created_at(now)
+            .updated_at(now)
+            .learning_source("history_sync".to_string())
+            .exec(&mut db)
+            .await?;
+
+        Ok(())
+    }
+
     /// Loads messages for a chat, most recent first, up to `limit`.
     pub async fn load_messages(
         &self,

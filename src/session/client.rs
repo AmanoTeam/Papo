@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -8,7 +8,7 @@ use std::{
 use adw::prelude::*;
 use jiff::Timestamp;
 use relm4::prelude::*;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time};
 use uuid::Uuid;
 use whatsapp_rust::{
     Jid, TokioRuntime,
@@ -21,9 +21,11 @@ use whatsapp_rust::{
         message::MessageInfo,
         presence::{ChatPresence, ChatPresenceMedia, ReceiptType},
     },
-    wacore::store::DevicePropsOverride,
+    wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
-        Conversation, Message, device_props::PlatformType, web_message_info::Status,
+        Conversation, Message,
+        device_props::{HistorySyncConfig, PlatformType},
+        web_message_info::Status,
     },
 };
 
@@ -31,11 +33,19 @@ use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
     session::AvatarCache,
-    state::{ChatMessage, Media, MessageStatus},
+    state::{ChatMessage, HistoryAnchor, Media, MessageStatus},
     utils::bare_jid,
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
+
+/// How long an on-demand request may stay unanswered before the next
+/// queued request is sent anyway.
+const HISTORY_FETCH_ACK: Duration = Duration::from_secs(5);
+/// Messages requested per on-demand history fetch.
+const HISTORY_FETCH_COUNT: i32 = 50;
+/// History sync chunk type that answers an on-demand request.
+const SYNC_TYPE_ON_DEMAND: i32 = 6;
 
 #[derive(Clone)]
 pub struct Client {
@@ -45,6 +55,7 @@ pub struct Client {
     os_type: String,
 
     avatar_cache: Option<AvatarCache>,
+    history_queue: HistoryQueue,
     inflight_avatars: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -113,6 +124,10 @@ pub enum ClientInput {
     FetchAvatar {
         jid: String,
     },
+    FetchHistory {
+        chat_jid: String,
+        anchor: Option<HistoryAnchor>,
+    },
     ResolveLidPn {
         chat_jid: String,
         lid: String,
@@ -144,6 +159,7 @@ pub enum ClientOutput {
     Syncing,
     HistorySyncProgress {
         progress: Option<u32>,
+        on_demand: bool,
     },
 
     CallOffer {
@@ -189,11 +205,9 @@ pub enum ClientOutput {
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
-
     ChatReadOnDevice {
         jid: String,
     },
-
     ChatPropertyUpdate {
         jid: String,
         pinned: Option<bool>,
@@ -223,10 +237,29 @@ pub enum ClientOutput {
         lid: String,
         phone: Option<String>,
     },
+    LidMappingsLearned {
+        pairs: Vec<(String, String)>,
+    },
 
     Error {
         message: String,
     },
+}
+
+/// One queued on-demand history request.
+#[derive(Debug, Clone)]
+struct HistoryFetch {
+    anchor: Option<HistoryAnchor>,
+    chat_jid: String,
+}
+
+/// On-demand history requests are paced one at a time: the phone drops
+/// bursts of them, answering only a steady trickle.
+#[derive(Debug, Default, Clone)]
+struct HistoryQueue {
+    pending: VecDeque<HistoryFetch>,
+    fetch_seq: u64,
+    in_flight: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,13 +281,18 @@ pub struct ChatsSyncedEntry {
     pub pinned: bool,
     pub archived: bool,
     pub messages: Vec<SyncedMessage>,
+    pub on_demand: bool,
     pub participants: Vec<(String, Option<String>)>,
     pub unread_count: Option<u32>,
     pub mute_end_time: Option<u64>,
     pub last_message_time: Option<u64>,
 }
 
-fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMessage> {
+fn extract_synced_messages(
+    conv: &Conversation,
+    chat_jid: &str,
+    on_demand: bool,
+) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
     let mut explicit_statuses = Vec::new();
     for hist_msg in &conv.messages {
@@ -361,6 +399,19 @@ fn extract_synced_messages(conv: &Conversation, chat_jid: &str) -> Vec<SyncedMes
         }
     }
 
+    // On-demand pages are history the user is actively reading through:
+    // incoming messages always land read, whatever stale receipt the
+    // phone still carries for them.
+    if on_demand {
+        for message in &mut synced_messages {
+            if !message.outgoing
+                && !matches!(message.status, MessageStatus::Read | MessageStatus::Played)
+            {
+                message.status = MessageStatus::Read;
+            }
+        }
+    }
+
     synced_messages
 }
 
@@ -390,11 +441,83 @@ pub enum ClientCommand {
         chat_jid: String,
         lid: String,
     },
+    DriveHistoryQueue,
+    HistoryFetchTimeout {
+        seq: u64,
+    },
 }
 
 impl Client {
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
+    }
+
+    /// Sends the next queued on-demand history request, one at a time.
+    async fn drive_history_queue(&mut self, sender: &AsyncComponentSender<Self>) {
+        loop {
+            let (seq, fetch) = {
+                let queue = &mut self.history_queue;
+                if queue.in_flight.is_some() {
+                    return;
+                }
+                let Some(fetch) = queue.pending.pop_front() else {
+                    return;
+                };
+                queue.fetch_seq += 1;
+                queue.in_flight = Some(queue.fetch_seq);
+                (queue.fetch_seq, fetch)
+            };
+
+            let handle = self.handle.lock().await;
+            let Some(client) = handle.as_ref() else {
+                // Not connected yet: put the request back and wait.
+                drop(handle);
+                let queue = &mut self.history_queue;
+                queue.in_flight = None;
+                queue.pending.push_front(fetch);
+                return;
+            };
+
+            let Ok(jid) = fetch.chat_jid.parse::<Jid>() else {
+                tracing::error!("Failed to parse JID: {}", fetch.chat_jid);
+                drop(handle);
+                self.history_queue.in_flight = None;
+                continue;
+            };
+
+            // Without an anchor the phone returns the newest messages;
+            // with one, the history older than it.
+            let (msg_id, from_me, timestamp_ms) = match fetch.anchor {
+                Some(anchor) => (anchor.server_id, anchor.from_me, anchor.timestamp_ms),
+                None => (String::new(), false, Timestamp::now().as_millisecond()),
+            };
+
+            match Box::pin(client.fetch_message_history(
+                &jid,
+                &msg_id,
+                from_me,
+                timestamp_ms,
+                HISTORY_FETCH_COUNT,
+            ))
+            .await
+            {
+                Ok(_) => {
+                    tracing::debug!("Requested on-demand history for: {}", fetch.chat_jid);
+
+                    // If the phone never answers, pass the slot on.
+                    sender.oneshot_command(async move {
+                        time::sleep(HISTORY_FETCH_ACK).await;
+                        ClientCommand::HistoryFetchTimeout { seq }
+                    });
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to request history for {}: {e}", fetch.chat_jid);
+                    drop(handle);
+                    self.history_queue.in_flight = None;
+                }
+            }
+        }
     }
 }
 
@@ -437,6 +560,7 @@ impl AsyncComponent for Client {
             handle: Arc::new(Mutex::new(None)),
             os_type,
             avatar_cache,
+            history_queue: HistoryQueue::default(),
             inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
         };
 
@@ -458,6 +582,7 @@ impl AsyncComponent for Client {
         match input {
             ClientInput::NewSession { store } => {
                 self.store = store;
+                self.history_queue = HistoryQueue::default();
                 self.update_state(ClientState::Loading);
                 sender.oneshot_command(async { ClientCommand::Start });
             }
@@ -597,6 +722,21 @@ impl AsyncComponent for Client {
             ClientInput::FetchAvatar { jid } => {
                 sender.oneshot_command(async move { ClientCommand::FetchAvatar { jid } });
             }
+            ClientInput::FetchHistory { chat_jid, anchor } => {
+                // The phone drops bursts of on-demand requests, answering
+                // only a steady trickle: queue this one and pace it out.
+                // Newest requests go first — that is the chat the user is
+                // looking at, while requests for chats already left keep
+                // their turn behind it.
+                self.history_queue
+                    .pending
+                    .retain(|fetch| fetch.chat_jid != chat_jid);
+                self.history_queue
+                    .pending
+                    .push_front(HistoryFetch { anchor, chat_jid });
+
+                sender.oneshot_command(async move { ClientCommand::DriveHistoryQueue });
+            }
             ClientInput::ResolveLidPn { chat_jid, lid } => {
                 sender
                     .oneshot_command(async move { ClientCommand::ResolveLidPn { chat_jid, lid } });
@@ -631,7 +771,12 @@ impl AsyncComponent for Client {
                         .with_device_props(
                             DevicePropsOverride::new()
                                 .with_os(self.os_type.clone())
-                                .with_platform_type(PlatformType::Desktop),
+                                .with_platform_type(PlatformType::Desktop)
+                                .with_history_sync_config(HistorySyncConfig {
+                                    on_demand_ready: Some(true),
+                                    complete_on_demand_ready: Some(true),
+                                    ..default_history_sync_config()
+                                }),
                         )
                         .with_transport_factory(TokioWebSocketTransportFactory::new())
                         .on_event(move |event, _client| {
@@ -751,7 +896,6 @@ impl AsyncComponent for Client {
 
                                     Event::HistorySync(history_sync) => {
                                         let history_sync = history_sync.clone();
-
                                         sender.oneshot_command(async move {
                                             ClientCommand::HistorySync { history_sync }
                                         });
@@ -1100,6 +1244,16 @@ impl AsyncComponent for Client {
                 });
             }
             ClientCommand::HistorySync { history_sync } => {
+                // An on-demand answer frees the request slot so the next
+                // queued chat asks right away; a late answer to an already
+                // timed-out request just finds the slot empty.
+                if history_sync.sync_type() == SYNC_TYPE_ON_DEMAND
+                    && self.history_queue.in_flight.take().is_some()
+                {
+                    tracing::debug!("On-demand history answer received; passing the slot on");
+                    self.drive_history_queue(&sender).await;
+                }
+
                 let sender_clone = sender.clone();
                 relm4::spawn_blocking(move || {
                     // Sync types: 0 bootstrap, 1 status v3, 2 full, 3 recent,
@@ -1111,8 +1265,10 @@ impl AsyncComponent for Client {
                         history_sync.progress()
                     );
 
+                    let on_demand = history_sync.sync_type() == SYNC_TYPE_ON_DEMAND;
                     let _ = sender_clone.output(ClientOutput::HistorySyncProgress {
                         progress: history_sync.progress(),
+                        on_demand,
                     });
 
                     let Some(sync) = history_sync.get() else {
@@ -1120,11 +1276,53 @@ impl AsyncComponent for Client {
                         return;
                     };
 
+                    let mut lid_pairs = Vec::new();
+                    for mapping in &sync.phone_number_to_lid_mappings {
+                        let Some(pn) = mapping
+                            .pn_jid
+                            .as_deref()
+                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
+                        else {
+                            continue;
+                        };
+                        let Some(lid) = mapping
+                            .lid_jid
+                            .as_deref()
+                            .filter(|lid| lid.ends_with("@lid"))
+                        else {
+                            continue;
+                        };
+
+                        lid_pairs.push((
+                            lid.strip_suffix("@lid").unwrap_or(lid).to_string(),
+                            pn.strip_suffix("@s.whatsapp.net").unwrap_or(pn).to_string(),
+                        ));
+                    }
+
                     let mut entries = Vec::new();
 
                     for conv in &sync.conversations {
-                        let chat_jid = conv.new_jid.clone().unwrap_or_else(|| conv.id.clone());
+                        let chat_jid = conv
+                            .pn_jid
+                            .as_deref()
+                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
+                            .map(str::to_string)
+                            .or_else(|| conv.new_jid.clone())
+                            .unwrap_or_else(|| conv.id.clone());
                         let is_group = chat_jid.ends_with("@g.us");
+
+                        if let Some(pn) = conv
+                            .pn_jid
+                            .as_deref()
+                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
+                            && conv.id.ends_with("@lid")
+                            && let Some(lid) = conv.id.strip_suffix("@lid")
+                        {
+                            lid_pairs.push((
+                                lid.to_string(),
+                                pn.strip_suffix("@s.whatsapp.net").unwrap_or(pn).to_string(),
+                            ));
+                        }
 
                         // Extract participants for groups.
                         let mut participants = Vec::new();
@@ -1134,7 +1332,7 @@ impl AsyncComponent for Client {
                             }
                         }
 
-                        let messages = extract_synced_messages(conv, &chat_jid);
+                        let messages = extract_synced_messages(conv, &chat_jid, on_demand);
 
                         entries.push(ChatsSyncedEntry {
                             jid: chat_jid,
@@ -1142,11 +1340,19 @@ impl AsyncComponent for Client {
                             pinned: conv.pinned.is_some_and(|p| p > 0),
                             archived: conv.archived.unwrap_or(false),
                             messages,
+                            on_demand,
                             participants,
                             unread_count: conv.unread_count,
                             mute_end_time: conv.mute_end_time,
                             last_message_time: conv.last_msg_timestamp,
                         });
+                    }
+
+                    if !lid_pairs.is_empty() {
+                        lid_pairs.sort();
+                        lid_pairs.dedup();
+                        let _ = sender_clone
+                            .output(ClientOutput::LidMappingsLearned { pairs: lid_pairs });
                     }
 
                     let _ = sender_clone.output(ClientOutput::ChatsSynced { entries });
@@ -1173,6 +1379,20 @@ impl AsyncComponent for Client {
                         lid,
                         phone,
                     });
+                }
+            }
+            ClientCommand::DriveHistoryQueue => {
+                self.drive_history_queue(&sender).await;
+            }
+            ClientCommand::HistoryFetchTimeout { seq } => {
+                // An unanswered request held the slot long enough: pass it
+                // on. A stale timeout (the answer arrived, or the chat view
+                // moved on) finds a different slot owner and does nothing.
+                if self.history_queue.in_flight == Some(seq) {
+                    tracing::debug!("On-demand history request timed out; passing the slot on");
+
+                    self.history_queue.in_flight = None;
+                    self.drive_history_queue(&sender).await;
                 }
             }
         }

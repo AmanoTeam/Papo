@@ -21,6 +21,15 @@ pub struct Chat {
     pub last_message_time: Timestamp,
 }
 
+/// Anchor for an on-demand history request: the phone returns history
+/// older than this message. A missing anchor asks for the newest messages.
+#[derive(Clone, Debug)]
+pub struct HistoryAnchor {
+    pub from_me: bool,
+    pub server_id: String,
+    pub timestamp_ms: i64,
+}
+
 impl Chat {
     pub async fn upsert(&self, store: &SessionStore) -> Result<(), toasty::Error> {
         store.save_chat(self).await
