@@ -32,6 +32,7 @@ use crate::{
     i18n, i18n_f,
     session::AvatarCache,
     state::{ChatMessage, Media, MessageStatus},
+    utils::bare_jid,
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -964,10 +965,11 @@ impl AsyncComponent for Client {
                     return;
                 }
 
-                let avatar_cache = self.avatar_cache.clone();
-                let client_handle = Arc::clone(&self.handle);
+                let store = self.store.clone();
                 let inflight = Arc::clone(&self.inflight_avatars);
+                let avatar_cache = self.avatar_cache.clone();
                 let sender_clone = sender.clone();
+                let client_handle = Arc::clone(&self.handle);
 
                 relm4::spawn(async move {
                     let result = async {
@@ -998,17 +1000,62 @@ impl AsyncComponent for Client {
                             return None;
                         };
 
-                        let picture = match client.contacts().get_profile_picture(&jid, false).await
+                        let lookup = match client
+                            .contacts()
+                            .lookup_profile_picture(&jid, false, None)
+                            .await
                         {
-                            Ok(Some(pic)) => pic,
-                            Ok(None) => {
-                                tracing::debug!("No profile picture available for {jid_str}");
-                                return None;
-                            }
+                            Ok(lookup) => lookup,
                             Err(e) => {
                                 tracing::error!("Failed to get profile picture for {jid_str}: {e}");
                                 return None;
                             }
+                        };
+                        tracing::debug!("Profile picture lookup for {jid_str}: {lookup:?}");
+                        let mut picture = lookup.into_found();
+
+                        // A hidden picture can depend on the jid form the
+                        // server knows this peer by, so retry once with the
+                        // lid or phone-number sibling of the same contact.
+                        if picture.is_none() {
+                            let sibling = if jid_str.ends_with("@lid") {
+                                let bare = bare_jid(&jid_str);
+                                store.lid_to_pn_jid(&bare).await
+                            } else if jid_str.ends_with("@s.whatsapp.net") {
+                                let bare = bare_jid(&jid_str);
+                                store.pn_to_lid_jids(&bare).await.into_iter().next()
+                            } else {
+                                None
+                            };
+
+                            if let Some(sibling_str) = sibling
+                                && let Ok(sibling_jid) = sibling_str.parse::<Jid>()
+                            {
+                                match client
+                                    .contacts()
+                                    .lookup_profile_picture(&sibling_jid, false, None)
+                                    .await
+                                {
+                                    Ok(lookup) => {
+                                        tracing::debug!(
+                                            "Profile picture lookup for {jid_str} \
+                                             via {sibling_str}: {lookup:?}"
+                                        );
+                                        picture = lookup.into_found();
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "Sibling profile picture lookup for \
+                                             {jid_str} via {sibling_str} failed: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        let Some(picture) = picture else {
+                            tracing::debug!("No profile picture available for {jid_str}");
+                            return None;
                         };
                         tracing::info!("Got profile picture URL for {jid_str}");
 
