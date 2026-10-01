@@ -234,7 +234,7 @@ impl SessionStore {
 
         let mut flipped = Vec::new();
         for mut message in messages {
-            if message.status == 0 || message.status == 4 || message.status == 5 {
+            if message.status != 1 && message.status != 2 {
                 message.update().status(1).exec(&mut db).await?;
                 flipped.push(Uuid::parse_str(&message.local_id).unwrap_or_else(|_| Uuid::new_v4()));
             }
