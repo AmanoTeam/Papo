@@ -249,14 +249,17 @@ impl ChatHistory {
     }
 
     /// Append a single live message to the bottom. Updates only the newest
-    /// cursor.
-    pub(crate) fn append_live(&mut self, message: ChatMessage) {
+    /// cursor. `at_bottom` tells whether the user is watching the newest
+    /// messages, in which case an arrival is seen live and never counts
+    /// as unread.
+    pub(crate) fn append_live(&mut self, message: ChatMessage, at_bottom: bool) {
         // Convert to local date for separator comparison.
         let msg_date = message.timestamp.to_zoned(TimeZone::system()).date();
         let in_unread = self
             .row_metadata
             .iter()
             .any(|m| matches!(m, RowMetadata::UnreadDivider));
+        let unread = !message.outgoing && in_unread && !at_bottom;
         let date_break = self.last_message_date != Some(msg_date);
 
         let back_is_message = matches!(self.row_metadata.back(), Some(RowMetadata::Message { .. }));
@@ -309,14 +312,14 @@ impl ChatHistory {
         self.list.append(ChatRow::Message {
             last: true,
             first,
-            unread: in_unread,
+            unread,
             message,
             last_of_segment: in_unread,
             first_of_segment,
         });
         self.row_metadata.push_back(RowMetadata::Message {
             ts,
-            unread: in_unread,
+            unread,
             last_of_segment: in_unread,
             first_of_segment,
         });
@@ -691,80 +694,6 @@ impl ChatHistory {
         })
     }
 
-    /// Updates the unread flag of a message row's metadata mirror.
-    pub(crate) fn set_message_row_unread(&mut self, index: u32, unread: bool) {
-        let index = usize::try_from(index).expect("row index fits usize");
-        if let Some(RowMetadata::Message { unread: meta, .. }) = self.row_metadata.get_mut(index) {
-            *meta = unread;
-        }
-    }
-
-    /// Remove the unread messages divider row, if present, and clear the
-    /// unread marking from every message row that followed it.
-    pub(crate) fn remove_unread_divider(&mut self, at_bottom: bool) {
-        let Some(index) = self
-            .row_metadata
-            .iter()
-            .position(|m| matches!(m, RowMetadata::UnreadDivider))
-        else {
-            return;
-        };
-
-        let adj = self.list.view.vadjustment();
-        let saved_scroll = if at_bottom {
-            None
-        } else {
-            adj.as_ref().map(AdjustmentExt::value)
-        };
-
-        let index = u32::try_from(index).expect("row index fits u32");
-        let mut objects = Vec::with_capacity((self.list.len() - index - 1) as usize);
-        for i in (index + 1)..self.list.len() {
-            if let Some(row) = self.get_row(i) {
-                let row = match row {
-                    ChatRow::Message {
-                        last,
-                        first,
-                        message,
-                        unread: true,
-                        last_of_segment: _,
-                        first_of_segment: _,
-                    } => ChatRow::Message {
-                        last,
-                        first,
-                        message,
-                        unread: false,
-                        last_of_segment: false,
-                        first_of_segment: false,
-                    },
-                    other => other,
-                };
-                objects.push(glib::BoxedAnyObject::new(row));
-            }
-        }
-
-        self.store()
-            .splice(index, self.list.len() - index, &objects);
-        self.row_metadata.remove(index as usize);
-        for meta in self.row_metadata.iter_mut().skip(index as usize) {
-            if let RowMetadata::Message {
-                unread,
-                last_of_segment,
-                first_of_segment,
-                ..
-            } = meta
-            {
-                *unread = false;
-                *last_of_segment = false;
-                *first_of_segment = false;
-            }
-        }
-
-        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
-            glib::idle_add_local_once(move || adj.set_value(value));
-        }
-    }
-
     /// Remove the row at `index` and re-insert a replacement, preserving scroll.
     pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
         let adj = self.list.view.vadjustment();
@@ -783,7 +712,7 @@ impl ChatHistory {
     }
 
     /// Scroll the list view to the bottom (last row).
-    pub(crate) fn scroll_to_bottom(&self) {
+    pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
         fn scroll(view: &gtk::ListView) -> bool {
             let count = view.model().map_or(0, |model| model.n_items());
             if count == 0 {
@@ -809,6 +738,7 @@ impl ChatHistory {
             }
         });
 
+        let mut on_settled = Some(on_settled);
         glib::timeout_add_local(Duration::from_millis(16), move || {
             attempts += 1;
 
@@ -822,6 +752,11 @@ impl ChatHistory {
 
             if (settled && stable) || attempts >= 15 {
                 view.set_opacity(1.0);
+
+                if let Some(on_settled) = on_settled.take() {
+                    on_settled();
+                }
+
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue

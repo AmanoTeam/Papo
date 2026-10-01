@@ -617,7 +617,6 @@ impl AsyncComponent for ChatView {
                     if self.state.is_at_bottom {
                         let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
                     }
-                    self.history.remove_unread_divider(self.state.is_at_bottom);
                 }
             }
             ChatViewInput::EntryChanged => {
@@ -668,10 +667,10 @@ impl AsyncComponent for ChatView {
                 }
 
                 let outgoing = message.outgoing;
-                self.history.append_live(*message);
+                self.history.append_live(*message, self.state.is_at_bottom);
 
                 if self.state.is_at_bottom {
-                    self.scroll_to_bottom();
+                    self.scroll_to_bottom(|| {});
                 } else if !outgoing {
                     self.state.unread_count += 1;
                 }
@@ -710,32 +709,17 @@ impl AsyncComponent for ChatView {
                 self.rebuild_typing_avatars();
             }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
-                let is_read = matches!(status, MessageStatus::Read | MessageStatus::Played);
-
                 if let Some(index) = self
                     .history
                     .find_message_index(|message| message.local_id == local_id)
                     && let Some(mut row) = self.history.get_row(index)
                 {
-                    if let ChatRow::Message {
-                        message, unread, ..
-                    } = &mut row
-                    {
+                    if let ChatRow::Message { message, .. } = &mut row {
                         message.status = status;
-                        if is_read {
-                            *unread = false;
-                        }
                     }
 
                     self.history
                         .replace_row(index, row, self.state.is_at_bottom);
-                    if is_read {
-                        self.history.set_message_row_unread(index, false);
-                    }
-                }
-
-                if is_read && !self.history.has_unread_messages() {
-                    self.history.remove_unread_divider(self.state.is_at_bottom);
                 }
             }
 
@@ -765,7 +749,7 @@ impl AsyncComponent for ChatView {
                     }
                 } else {
                     // Scroll to the last message.
-                    self.scroll_to_bottom();
+                    self.scroll_to_bottom(|| {});
                     self.state.is_at_bottom = true;
                     self.state.unread_count = 0;
                 }
@@ -809,12 +793,15 @@ impl AsyncComponent for ChatView {
                     self.state.is_at_bottom = false;
                 } else {
                     // Scroll to the last message.
-                    self.scroll_to_bottom();
+                    let jid = self.chat.as_ref().map(|chat| chat.jid.clone());
+                    self.scroll_to_bottom(move || {
+                        // Marking flips the rows in view, so let the
+                        // scrolled reveal settle before the cascade.
+                        if had_unread && let Some(jid) = jid {
+                            let _ = sender.output(ChatViewOutput::MarkChatRead(jid));
+                        }
+                    });
                     self.state.is_at_bottom = true;
-
-                    if had_unread && let Some(ref chat) = self.chat {
-                        let _ = sender.output(ChatViewOutput::MarkChatRead(chat.jid.clone()));
-                    }
                 }
             }
             ChatViewCommand::OlderMessagesLoaded {
@@ -861,7 +848,7 @@ impl AsyncComponent for ChatView {
                 self.history.trim_top(MAX_LOADED_ROWS);
 
                 if self.state.is_at_bottom {
-                    self.scroll_to_bottom();
+                    self.scroll_to_bottom(|| {});
                 }
 
                 let command_sender = sender.command_sender().clone();
@@ -884,7 +871,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_loading = false;
 
                 // Scroll to the last message.
-                self.scroll_to_bottom();
+                self.scroll_to_bottom(|| {});
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
             }
@@ -1112,9 +1099,9 @@ impl ChatView {
         }
     }
 
-    fn scroll_to_bottom(&self) {
+    fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
         self.momentum.stop();
         self.momentum.pause_recording();
-        self.history.scroll_to_bottom();
+        self.history.scroll_to_bottom(on_settled);
     }
 }
