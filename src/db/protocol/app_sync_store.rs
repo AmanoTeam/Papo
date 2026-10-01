@@ -1,3 +1,12 @@
+use std::collections::{HashMap, HashSet};
+
+use toasty::Executor;
+use toasty_core::{
+    driver::operation::{RawSql, RawSqlRet, TypedValue},
+    schema::db::Type,
+    stmt::Value as SqlValue,
+};
+
 use whatsapp_rust::{
     async_trait, serde_json,
     wacore::{
@@ -153,14 +162,48 @@ impl AppSyncStore for ProtocolBackend {
         _version: u64,
         mutations: &[AppStateMutationMAC],
     ) -> StoreResult<()> {
+        // Chunked so the bound-parameter count stays well below SQLite's
+        // variable limit even for large bootstraps.
+        const CHUNK: usize = 500;
+
         let _guard = self.store.write_lock().lock().await;
         let mut db = self.store.db().clone();
-        for mutation in mutations {
-            MutationMac::upsert_by_name_and_index_mac(name, hex_encode(&mutation.index_mac))
-                .value_mac(mutation.value_mac.clone())
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
+
+        for chunk in mutations.chunks(CHUNK) {
+            let mut sql = String::with_capacity(chunk.len() * 48);
+            sql.push_str(
+                "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") VALUES ",
+            );
+
+            let mut params = Vec::with_capacity(chunk.len() * 3);
+            for (i, mutation) in chunk.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?)");
+                params.push(TypedValue {
+                    value: SqlValue::String(name.to_owned()),
+                    ty: Type::Text,
+                });
+                params.push(TypedValue {
+                    value: SqlValue::String(hex_encode(&mutation.index_mac)),
+                    ty: Type::Text,
+                });
+                params.push(TypedValue {
+                    value: SqlValue::Bytes(mutation.value_mac.clone()),
+                    ty: Type::Blob,
+                });
+            }
+
+            sql.push_str(" ON CONFLICT(\"name\", \"index_mac\") DO UPDATE SET \"value_mac\" = excluded.\"value_mac\"");
+
+            db.exec_raw_sql(RawSql {
+                sql,
+                params,
+                ret: RawSqlRet::None,
+            })
+            .await
+            .map_err(db_err)?;
         }
 
         Ok(())
@@ -178,19 +221,72 @@ impl AppSyncStore for ProtocolBackend {
         )
     }
 
+    async fn get_mutation_macs(
+        &self,
+        name: &str,
+        index_macs: &[[u8; 32]],
+    ) -> StoreResult<HashMap<[u8; 32], Vec<u8>>> {
+        let mut db = self.store.db().clone();
+        let rows = MutationMac::filter_by_name(name)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+
+        let wanted = index_macs.iter().copied().collect::<HashSet<[u8; 32]>>();
+        let mut macs = HashMap::with_capacity(wanted.len());
+        for entity in rows {
+            // Rows that fail to decode are treated as absent.
+            let Some(bytes) = hex_decode(&entity.index_mac).ok() else {
+                continue;
+            };
+            let Ok(index_mac) = <[u8; 32]>::try_from(bytes) else {
+                continue;
+            };
+
+            if wanted.contains(&index_mac) {
+                macs.insert(index_mac, entity.value_mac);
+            }
+        }
+
+        Ok(macs)
+    }
+
     async fn delete_mutation_macs(&self, name: &str, index_macs: &[Vec<u8>]) -> StoreResult<()> {
+        // Chunked to keep the IN list within the bound-parameter limit.
+        const CHUNK: usize = 500;
+
+        if index_macs.is_empty() {
+            return Ok(());
+        }
+
         let _guard = self.store.write_lock().lock().await;
         let mut db = self.store.db().clone();
-        for index_mac in index_macs {
-            if let Some(mac) =
-                MutationMac::filter_by_name_and_index_mac(name, hex_encode(index_mac))
-                    .first()
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?
-            {
-                mac.delete().exec(&mut db).await.map_err(db_err)?;
+
+        for chunk in index_macs.chunks(CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "DELETE FROM \"mutation_macs\" WHERE \"name\" = ? AND \"index_mac\" IN ({placeholders})"
+            );
+
+            let mut params = Vec::with_capacity(chunk.len() + 1);
+            params.push(TypedValue {
+                value: SqlValue::String(name.to_owned()),
+                ty: Type::Text,
+            });
+            for index_mac in chunk {
+                params.push(TypedValue {
+                    value: SqlValue::String(hex_encode(index_mac)),
+                    ty: Type::Text,
+                });
             }
+
+            db.exec_raw_sql(RawSql {
+                sql,
+                params,
+                ret: RawSqlRet::None,
+            })
+            .await
+            .map_err(db_err)?;
         }
 
         Ok(())
@@ -199,13 +295,17 @@ impl AppSyncStore for ProtocolBackend {
     async fn clear_mutation_macs(&self, name: &str) -> StoreResult<()> {
         let _guard = self.store.write_lock().lock().await;
         let mut db = self.store.db().clone();
-        let macs = MutationMac::filter_by_name(name)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        for mac in macs {
-            mac.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+
+        db.exec_raw_sql(RawSql {
+            sql: "DELETE FROM \"mutation_macs\" WHERE \"name\" = ?".to_owned(),
+            params: vec![TypedValue {
+                value: SqlValue::String(name.to_owned()),
+                ty: Type::Text,
+            }],
+            ret: RawSqlRet::None,
+        })
+        .await
+        .map_err(db_err)?;
 
         Ok(())
     }

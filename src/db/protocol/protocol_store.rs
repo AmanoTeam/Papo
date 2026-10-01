@@ -1,4 +1,10 @@
 use jiff::Timestamp;
+use toasty::Executor;
+use toasty_core::{
+    driver::operation::{RawSql, RawSqlRet, TypedValue},
+    schema::db::Type,
+    stmt::Value as SqlValue,
+};
 
 use whatsapp_rust::{
     async_trait, serde_json,
@@ -124,6 +130,72 @@ impl ProtocolStore for ProtocolBackend {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
+
+        Ok(())
+    }
+
+    /// Persists a whole learned batch in one statement and one write-lock
+    /// acquisition instead of one upsert per entry; the per-entry default
+    /// spends the whole dispatch budget of a history-sync chunk on
+    /// lock churn.
+    async fn put_lid_mappings(&self, entries: &[LidPnMappingEntry]) -> StoreResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let _guard = self.store.write_lock().lock().await;
+        let mut db = self.store.db().clone();
+
+        let mut sql = String::from(
+            "INSERT INTO \"lid_mappings\" \
+             (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") VALUES ",
+        );
+        let mut params = Vec::with_capacity(entries.len() * 5);
+
+        for (index, entry) in entries.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str("(?, ?, ?, ?, ?)");
+            params.extend([
+                TypedValue {
+                    value: SqlValue::String(entry.lid.clone()),
+                    ty: Type::Text,
+                },
+                TypedValue {
+                    value: SqlValue::I64(entry.created_at),
+                    ty: Type::Integer(8),
+                },
+                TypedValue {
+                    value: SqlValue::I64(entry.updated_at),
+                    ty: Type::Integer(8),
+                },
+                TypedValue {
+                    value: SqlValue::String(entry.phone_number.clone()),
+                    ty: Type::Text,
+                },
+                TypedValue {
+                    value: SqlValue::String(entry.learning_source.clone()),
+                    ty: Type::Text,
+                },
+            ]);
+        }
+
+        sql.push_str(
+            " ON CONFLICT(\"lid\") DO UPDATE SET \
+             \"created_at\" = excluded.\"created_at\", \
+             \"updated_at\" = excluded.\"updated_at\", \
+             \"phone_number\" = excluded.\"phone_number\", \
+             \"learning_source\" = excluded.\"learning_source\"",
+        );
+
+        db.exec_raw_sql(RawSql {
+            sql,
+            params,
+            ret: RawSqlRet::None,
+        })
+        .await
+        .map_err(db_err)?;
 
         Ok(())
     }
