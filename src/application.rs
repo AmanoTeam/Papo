@@ -2002,15 +2002,17 @@ impl AsyncComponent for Application {
                             jid: chat_jid.clone(),
                         });
 
-                        let chat_name = name.unwrap_or_else(|| {
-                            if jid.ends_with("@g.us") {
-                                format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
-                            } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
-                                i18n!("You")
-                            } else {
-                                format_lid_as_number(&jid)
-                            }
-                        });
+                        let chat_name = name
+                            .or_else(|| self.contacts.get(&jid).cloned())
+                            .unwrap_or_else(|| {
+                                if jid.ends_with("@g.us") {
+                                    format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
+                                } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
+                                    i18n!("You")
+                                } else {
+                                    format_lid_as_number(&jid)
+                                }
+                            });
 
                         // Create last message time from timestamp (already in seconds).
                         let last_message_time = last_message_time
