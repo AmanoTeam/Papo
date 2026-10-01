@@ -34,6 +34,9 @@ const MAX_LOADED_ROWS: u32 = 600;
 const INITIAL_LOAD_COUNT: usize = 120;
 /// Cooldown between on-demand history requests for one chat.
 const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
+/// How long to wait for a phone answer before asking again. Requests
+/// made while the phone app is asleep are dropped rather than queued.
+const HISTORY_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug)]
 pub struct ChatView {
@@ -47,7 +50,11 @@ pub struct ChatView {
     generation: u64,
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
+    /// In-flight marker for an on-demand history request; doubles as the
+    /// retry clock, since a response or the retry window clears it.
     history_fetch_at: Option<Instant>,
+    history_exhausted: bool,
+    history_fetch_anchored: bool,
 }
 
 /// Feedback for an ongoing history sync, shown in the banner.
@@ -59,12 +66,14 @@ struct SyncFeedback {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ChatViewState {
     sync: Option<SyncFeedback>,
     typing: Vec<TypingSender>,
     presence: Option<String>,
     is_typing: bool,
     is_loading: bool,
+    is_at_top: bool,
     is_at_bottom: bool,
     unread_count: usize,
     typing_generation: u64,
@@ -101,6 +110,7 @@ pub enum ChatViewInput {
     },
     HistoryBackfilled {
         chat_jid: String,
+        has_messages: bool,
     },
 
     ScrollToBottom,
@@ -143,9 +153,18 @@ pub enum ChatViewCommand {
         generation: u64,
         messages: Vec<ChatMessage>,
     },
+
     JumpLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
+    },
+    FetchRetryTimeout {
+        generation: u64,
+    },
+    BackfillLoaded {
+        generation: u64,
+        older: Vec<ChatMessage>,
+        newer: Vec<ChatMessage>,
     },
 
     ScrollSettled {
@@ -282,7 +301,8 @@ impl AsyncComponent for ChatView {
                     set_halign: gtk::Align::Center,
                     set_valign: gtk::Align::Start,
                     #[watch]
-                    set_reveal_child: model.chat.is_some() && model.state.is_loading,
+                    set_reveal_child: model.chat.is_some()
+                        && (model.state.is_loading || model.is_fetching_history()),
                     set_transition_type: gtk::RevealerTransitionType::Crossfade,
                     set_transition_duration: 350,
 
@@ -414,6 +434,7 @@ impl AsyncComponent for ChatView {
                 presence: None,
                 is_loading: true,
                 is_typing: false,
+                is_at_top: false,
                 is_at_bottom: true,
                 unread_count: 0,
                 typing_generation: 0,
@@ -424,6 +445,8 @@ impl AsyncComponent for ChatView {
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             history_fetch_at: None,
+            history_exhausted: false,
+            history_fetch_anchored: false,
         };
 
         let list_view = model.history.view().view.clone();
@@ -502,9 +525,12 @@ impl AsyncComponent for ChatView {
                     });
                 }
             } else {
-                was_at_top.set(false);
+                // Leaving the top matters as much as arriving: on-demand
+                // fetches are level-checked against the tracked position.
+                let left_top = was_at_top.replace(false);
+                let bottom_toggled = at_bottom != was_at_bottom.get();
 
-                if at_bottom != was_at_bottom.get() {
+                if left_top || bottom_toggled {
                     was_at_bottom.set(at_bottom);
                     command_sender.emit(ChatViewCommand::ScrollPositionChanged {
                         at_top: false,
@@ -545,10 +571,14 @@ impl AsyncComponent for ChatView {
                 // Reset state.
                 self.state.presence = None;
                 self.state.is_loading = true;
+                self.state.is_at_top = false;
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
                 self.state.typing_generation += 1;
+
                 self.history_fetch_at = None;
+                self.history_exhausted = false;
+                self.history_fetch_anchored = false;
 
                 self.chat = Some(chat.clone());
                 self.state.typing.clear();
@@ -745,7 +775,10 @@ impl AsyncComponent for ChatView {
                     percent,
                 });
             }
-            ChatViewInput::HistoryBackfilled { chat_jid } => {
+            ChatViewInput::HistoryBackfilled {
+                chat_jid,
+                has_messages,
+            } => {
                 let Some(chat) = self.chat.clone() else {
                     return;
                 };
@@ -754,6 +787,13 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history_fetch_at = None;
+
+                // The phone answered with nothing for this chat: stop asking.
+                if !has_messages {
+                    self.history_exhausted = true;
+                    return;
+                }
+
                 if self.history.is_empty() {
                     // The chat was empty when opened: reload the initial
                     // window now that history arrived.
@@ -773,21 +813,33 @@ impl AsyncComponent for ChatView {
                             had_unread: false,
                         }
                     });
-                } else if let Some(before_ts) = self.history.oldest_timestamp() {
-                    // Prepend the history that landed above the window.
+                } else {
                     self.state.is_loading = true;
 
+                    let before_ts = self.history.oldest_timestamp();
+                    let after_ts = self.history.newest_timestamp();
                     let db = self.db.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
-                        let messages = chat
-                            .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
-                            .await
-                            .unwrap_or_default();
+                        let older = match before_ts {
+                            Some(before_ts) => chat
+                                .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
+                                .await
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        };
+                        let newer = match after_ts {
+                            Some(after_ts) => chat
+                                .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
+                                .await
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        };
 
-                        ChatViewCommand::OlderMessagesLoaded {
+                        ChatViewCommand::BackfillLoaded {
                             generation,
-                            messages,
+                            older,
+                            newer,
                         }
                     });
                 }
@@ -853,18 +905,28 @@ impl AsyncComponent for ChatView {
 
                 // A chat whose stored history is shorter than a page may be
                 // missing older messages, including chats too short to
-                // scroll: ask the phone for the recent history.
+                // scroll: ask the phone for the history before the oldest
+                // stored message.
                 if messages.len() < INITIAL_LOAD_COUNT
                     && let Some(ref chat) = self.chat
                 {
+                    let anchor = self.oldest_message_anchor();
+                    self.history_fetch_at = Some(Instant::now());
+                    self.history_fetch_anchored = anchor.is_some();
+
                     let _ = sender.output(ChatViewOutput::FetchHistory {
                         chat_jid: chat.jid.clone(),
-                        anchor: None,
+                        anchor,
                     });
+                    self.schedule_fetch_timeout(&sender);
+                }
+
+                if had_unread && let Some(jid) = self.chat.as_ref().map(|chat| chat.jid.clone()) {
+                    let _ = sender.output(ChatViewOutput::MarkChatRead(jid));
                 }
 
                 // A tall unread band opens at its top, with context rows
-                // above; reaching the bottom then marks the chat read.
+                // above; the view marks the chat read above already.
                 let tall_unread_band =
                     self.history.unread_message_row_count() > UNREAD_BAND_BOTTOM_MAX_ROWS;
 
@@ -875,14 +937,7 @@ impl AsyncComponent for ChatView {
                     self.state.is_at_bottom = false;
                 } else {
                     // Scroll to the last message.
-                    let jid = self.chat.as_ref().map(|chat| chat.jid.clone());
-                    self.scroll_to_bottom(move || {
-                        // Marking flips the rows in view, so let the
-                        // scrolled reveal settle before the cascade.
-                        if had_unread && let Some(jid) = jid {
-                            let _ = sender.output(ChatViewOutput::MarkChatRead(jid));
-                        }
-                    });
+                    self.scroll_to_bottom(|| {});
                     self.state.is_at_bottom = true;
                 }
             }
@@ -938,6 +993,7 @@ impl AsyncComponent for ChatView {
                     command_sender.emit(ChatViewCommand::ScrollSettled { generation });
                 });
             }
+
             ChatViewCommand::JumpLoaded {
                 generation,
                 messages,
@@ -957,24 +1013,89 @@ impl AsyncComponent for ChatView {
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
             }
+            ChatViewCommand::FetchRetryTimeout { generation } => {
+                // The request was answered or replaced if the marker moved
+                // on; only a timed-out pending request is re-sent.
+                if generation != self.generation
+                    || self.history_exhausted
+                    || self
+                        .history_fetch_at
+                        .is_none_or(|armed| armed.elapsed() < HISTORY_FETCH_TIMEOUT)
+                {
+                    return;
+                }
+
+                if let Some(ref chat) = self.chat {
+                    self.history_fetch_at = Some(Instant::now());
+
+                    let _ = sender.output(ChatViewOutput::FetchHistory {
+                        chat_jid: chat.jid.clone(),
+                        anchor: self
+                            .history_fetch_anchored
+                            .then(|| self.oldest_message_anchor())
+                            .flatten(),
+                    });
+                    self.schedule_fetch_timeout(&sender);
+                }
+            }
+            ChatViewCommand::BackfillLoaded {
+                generation,
+                older,
+                newer,
+            } => {
+                if generation != self.generation {
+                    return;
+                }
+
+                // An anchored request that surfaced nothing older means the
+                // phone has no history beyond the window: stop chaining.
+                if self.history_fetch_anchored && older.is_empty() {
+                    self.history_exhausted = true;
+                }
+
+                if !older.is_empty() {
+                    self.history.set_has_older(older.len() == LOAD_MORE_COUNT);
+
+                    let (baseline, velocity) = self.momentum.capture();
+
+                    self.history.prepend_messages(&older);
+
+                    // Trim excess rows from the bottom to stay within MAX_LOADED_ROWS.
+                    self.history.trim_bottom(MAX_LOADED_ROWS);
+
+                    self.momentum.continue_from(baseline, velocity);
+                }
+
+                if !newer.is_empty() {
+                    self.history.set_has_newer(newer.len() == LOAD_MORE_COUNT);
+
+                    self.history.append_newer(&newer);
+
+                    // Trim excess rows from the top to stay within MAX_LOADED_ROWS.
+                    self.history.trim_top(MAX_LOADED_ROWS);
+
+                    if self.state.is_at_bottom {
+                        self.scroll_to_bottom(|| {});
+                    }
+                }
+
+                self.state.is_loading = false;
+
+                let command_sender = sender.command_sender().clone();
+                glib::idle_add_local_once(move || {
+                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
+                });
+            }
+
             ChatViewCommand::ScrollSettled { generation } => {
                 if generation == self.generation {
                     self.state.is_loading = false;
-                }
-            }
-            ChatViewCommand::TypingTimeout { generation } => {
-                if generation == self.state.typing_generation
-                    && self.state.is_typing
-                    && let Some(ref chat) = self.chat
-                {
-                    self.state.is_typing = false;
-                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
-                        chat_jid: chat.jid.clone(),
-                        composing: false,
-                    });
+                    self.maybe_fetch_older_history(&sender);
                 }
             }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
+                self.state.is_at_top = at_top;
+
                 if at_bottom != self.state.is_at_bottom {
                     self.state.is_at_bottom = at_bottom;
                     if at_bottom {
@@ -1035,20 +1156,22 @@ impl AsyncComponent for ChatView {
                             messages,
                         }
                     });
-                } else if at_top
-                    && !self.history.has_older()
-                    && let Some(ref chat) = self.chat
-                    && self
-                        .history_fetch_at
-                        .is_none_or(|at| at.elapsed() >= HISTORY_FETCH_RETRY)
-                {
+                } else if at_top {
                     // The local history is exhausted at the top: ask the
-                    // phone for older messages on demand, paced by the
-                    // retry cooldown.
-                    self.history_fetch_at = Some(Instant::now());
-                    let _ = sender.output(ChatViewOutput::FetchHistory {
+                    // phone for older messages on demand.
+                    self.maybe_fetch_older_history(&sender);
+                }
+            }
+
+            ChatViewCommand::TypingTimeout { generation } => {
+                if generation == self.state.typing_generation
+                    && self.state.is_typing
+                    && let Some(ref chat) = self.chat
+                {
+                    self.state.is_typing = false;
+                    let _ = sender.output(ChatViewOutput::TypingStateChanged {
                         chat_jid: chat.jid.clone(),
-                        anchor: self.oldest_message_anchor(),
+                        composing: false,
                     });
                 }
             }
@@ -1057,6 +1180,53 @@ impl AsyncComponent for ChatView {
 }
 
 impl ChatView {
+    /// Whether an on-demand history request is waiting for the phone,
+    /// within its retry window.
+    fn is_fetching_history(&self) -> bool {
+        self.history_fetch_at
+            .is_some_and(|at| at.elapsed() < HISTORY_FETCH_RETRY)
+    }
+
+    /// Ask the phone for the history older than the window, when the view
+    /// sits at the top of an exhausted local history.
+    ///
+    /// Level-checked from both scroll events and settle callbacks, so
+    /// history landing while the view is parked at the top keeps the
+    /// requests going without further scrolling. `history_fetch_at` marks
+    /// a request in flight and paces retries: a backfill response clears
+    /// it and the retry window re-arms it.
+    fn maybe_fetch_older_history(&mut self, sender: &AsyncComponentSender<Self>) {
+        if !self.state.is_at_top
+            || self.state.is_loading
+            || self.history_exhausted
+            || self.history.has_older()
+            || self.is_fetching_history()
+        {
+            return;
+        }
+
+        if let Some(ref chat) = self.chat {
+            let anchor = self.oldest_message_anchor();
+            self.history_fetch_at = Some(Instant::now());
+            self.history_fetch_anchored = anchor.is_some();
+            let _ = sender.output(ChatViewOutput::FetchHistory {
+                chat_jid: chat.jid.clone(),
+                anchor,
+            });
+            self.schedule_fetch_timeout(sender);
+        }
+    }
+
+    /// Re-sends an unanswered request every `HISTORY_FETCH_TIMEOUT` while
+    /// the chat stays open, since the phone app drops them while asleep.
+    fn schedule_fetch_timeout(&self, sender: &AsyncComponentSender<Self>) {
+        let generation = self.generation;
+        let command_sender = sender.command_sender().clone();
+        glib::timeout_add_local_once(HISTORY_FETCH_TIMEOUT, move || {
+            command_sender.emit(ChatViewCommand::FetchRetryTimeout { generation });
+        });
+    }
+
     /// Anchor for an on-demand history request, taken from the oldest
     /// message row in view. Rows without a server id cannot anchor, and
     /// neither can a window without messages.

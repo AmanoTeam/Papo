@@ -62,9 +62,11 @@ pub struct Application {
     /// Whether the client is connected to `WhatsApp`.
     client_connected: bool,
     /// Receipts that arrived before their message; applied when it lands.
-    pending_receipts: HashMap<String, VecDeque<(String, MessageStatus)>>,
+    pending_receipts: HashMap<String, VecDeque<(String, MessageStatus, bool)>>,
     /// Avatar fetches queued while the client was not connected yet.
     pending_avatar_fetches: Vec<String>,
+    /// Read marks that arrived while the chats were not loaded yet.
+    pending_read_chats: HashSet<String>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -76,7 +78,6 @@ pub struct Application {
     session_page: AppSessionPage,
     user_push_name: Option<String>,
     synced_history_chats: HashSet<String>,
-    history_fetch_attempted: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, AsRefStr, PartialEq, EnumString)]
@@ -185,6 +186,10 @@ pub enum AppMsg {
         lid: String,
         phone: Option<String>,
     },
+    LidMappingsLearned {
+        pairs: Vec<(String, String)>,
+    },
+
     TypingExpired {
         chat_jid: String,
         sender_jid: String,
@@ -208,7 +213,6 @@ pub enum AppMsg {
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
-
     ChatReadOnDevice(String),
     ChatPropertyUpdate {
         jid: String,
@@ -261,6 +265,10 @@ pub enum AppCmd {
     MarkedChatRead {
         chat: Chat,
         flipped: Vec<Uuid>,
+    },
+    HistoryBackfilled {
+        chat_jid: String,
+        has_messages: bool,
     },
 }
 
@@ -365,18 +373,40 @@ impl Application {
         }
     }
 
+    /// The phone may key a conversation by either jid form (LID or phone
+    /// number). Attach it to the chat row papo knows, preferring the
+    /// resolved canonical form so history lands where live messages do.
+    async fn sync_target_jid(&self, jid: &str) -> String {
+        let resolved = self.resolve_jid(jid).await;
+        if self.chats.iter().any(|c| c.jid == resolved) {
+            return resolved;
+        }
+
+        if self.chats.iter().any(|c| c.jid == jid) {
+            return jid.to_string();
+        }
+
+        resolved
+    }
+
     /// Applies a receipt to a stored message. Returns `true` when the status
     /// advanced. Receipts for unknown messages are buffered until the message
-    /// arrives.
+    /// arrives. `incoming_only` receipts (read/played on the phone) never
+    /// touch outgoing messages.
     async fn apply_receipt(
         &mut self,
         chat: &Chat,
         chat_jid: &str,
         msg_id: String,
         status: MessageStatus,
+        incoming_only: bool,
     ) -> bool {
         match chat.find_message(&self.db, &msg_id).await {
             Ok(Some(message)) => {
+                if incoming_only && message.outgoing {
+                    return false;
+                }
+
                 if status != MessageStatus::Failed && status.stage() <= message.status.stage() {
                     return false;
                 }
@@ -402,7 +432,7 @@ impl Application {
                     buffer.remove(0);
                 }
 
-                buffer.push_back((msg_id, status));
+                buffer.push_back((msg_id, status, incoming_only));
                 false
             }
             Err(e) => {
@@ -419,8 +449,9 @@ impl Application {
 
         for (chat_jid, receipts) in buffered {
             if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
-                for (msg_id, status) in receipts {
-                    self.apply_receipt(&chat, &chat_jid, msg_id, status).await;
+                for (msg_id, status, incoming_only) in receipts {
+                    self.apply_receipt(&chat, &chat_jid, msg_id, status, incoming_only)
+                        .await;
                 }
 
                 self.chat_list.emit(ChatListInput::UpdateChat {
@@ -430,6 +461,26 @@ impl Application {
             } else {
                 self.pending_receipts.insert(chat_jid, receipts);
             }
+        }
+    }
+
+    /// Marks a chat as read because the user read it on the phone. Chats
+    /// that are not loaded yet are buffered until the cache loads.
+    fn mark_read_on_device(&mut self, chat_jid: String) {
+        if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
+            let db = self.db.clone();
+            let sender = self.sender.clone();
+            sender.oneshot_command(async move {
+                let flipped = chat
+                    .mark_read(&db, false)
+                    .await
+                    .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
+                    .unwrap_or_default();
+
+                AppCmd::MarkedChatRead { chat, flipped }
+            });
+        } else {
+            self.pending_read_chats.insert(chat_jid);
         }
     }
 
@@ -475,8 +526,11 @@ impl Application {
         // Apply a buffered receipt that arrived ahead of the message.
         if !message.server_id.is_empty()
             && let Some(buffer) = self.pending_receipts.get_mut(chat_jid)
-            && let Some(index) = buffer.iter().position(|(id, _)| *id == message.server_id)
-            && let Some((_, status)) = buffer.remove(index)
+            && let Some(index) = buffer
+                .iter()
+                .position(|(id, _, _)| *id == message.server_id)
+            && let Some((_, status, incoming_only)) = buffer.remove(index)
+            && (!incoming_only || !message.outgoing)
             && (status == MessageStatus::Failed || status.stage() > message.status.stage())
         {
             message.status = status;
@@ -1013,6 +1067,9 @@ impl AsyncComponent for Application {
                         lid,
                         phone,
                     },
+                    ClientOutput::LidMappingsLearned { pairs } => {
+                        AppMsg::LidMappingsLearned { pairs }
+                    }
 
                     ClientOutput::Error { message } => AppMsg::Error { message },
                     _ => AppMsg::Unknown,
@@ -1088,8 +1145,8 @@ impl AsyncComponent for Application {
             },
             session_page: AppSessionPage::Empty,
             user_push_name: None,
+            pending_read_chats: HashSet::new(),
             synced_history_chats: HashSet::new(),
-            history_fetch_attempted: HashSet::new(),
         };
 
         let split_view = &model.split_view;
@@ -1186,7 +1243,7 @@ impl AsyncComponent for Application {
                 self.state = AppState::Pairing;
                 self.chats.clear();
                 self.synced_history_chats.clear();
-                self.history_fetch_attempted.clear();
+                self.pending_read_chats.clear();
                 self.deactivate_history_sync();
 
                 let session_uuid = self.session.uuid.clone();
@@ -1246,7 +1303,7 @@ impl AsyncComponent for Application {
                 self.page = AppPage::Session;
                 self.state = AppState::Syncing;
                 self.synced_history_chats.clear();
-                self.history_fetch_attempted.clear();
+                self.pending_read_chats.clear();
                 self.activate_history_sync(None, &sender);
             }
             AppMsg::PairWithPhoneNumber { phone_number } => {
@@ -1445,21 +1502,24 @@ impl AsyncComponent for Application {
                 chat_jid = self.resolve_jid(&chat_jid).await;
                 let own_chat = self.user_jid.as_ref().is_some_and(|u| *u == chat_jid);
 
-                // `ReadSelf`/`PlayedSelf` mean the user read their own
-                // message on another device; they only mark `Read`/`Played`
-                // in the own chat.
-                let status = match receipt_type {
-                    ReceiptType::ReadSelf if own_chat => Some(MessageStatus::Read),
-                    ReceiptType::PlayedSelf if own_chat => Some(MessageStatus::Played),
-                    ReceiptType::ReadSelf | ReceiptType::PlayedSelf => None,
-                    receipt_type => MessageStatus::try_from(receipt_type).ok(),
+                // `ReadSelf`/`PlayedSelf` mean the user read the message on
+                // the phone. In the own chat (outgoing messages) that marks
+                // the delivery status; elsewhere it only clears the unread
+                // state of incoming messages.
+                let (status, incoming_only) = match receipt_type {
+                    ReceiptType::ReadSelf if own_chat => (Some(MessageStatus::Read), false),
+                    ReceiptType::PlayedSelf if own_chat => (Some(MessageStatus::Played), false),
+                    ReceiptType::ReadSelf => (Some(MessageStatus::Read), true),
+                    ReceiptType::PlayedSelf => (Some(MessageStatus::Played), true),
+                    receipt_type => (MessageStatus::try_from(receipt_type).ok(), false),
                 };
 
                 if let Some(status) = status
                     && let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned()
                 {
                     for msg_id in message_ids {
-                        self.apply_receipt(&chat, &chat_jid, msg_id, status).await;
+                        self.apply_receipt(&chat, &chat_jid, msg_id, status, incoming_only)
+                            .await;
                     }
 
                     self.chat_list.emit(ChatListInput::UpdateChat {
@@ -1475,7 +1535,7 @@ impl AsyncComponent for Application {
                             buffer.remove(0);
                         }
 
-                        buffer.push_back((msg_id, status));
+                        buffer.push_back((msg_id, status, incoming_only));
                     }
                 }
             }
@@ -1660,6 +1720,14 @@ impl AsyncComponent for Application {
                     }
                 }
             }
+            AppMsg::LidMappingsLearned { pairs } => {
+                for (lid, phone) in pairs {
+                    if let Err(e) = self.db.learn_lid_mapping(&lid, &phone).await {
+                        tracing::error!("Failed to learn LID mapping {lid} -> {phone}: {e}");
+                    }
+                }
+            }
+
             AppMsg::TypingExpired {
                 chat_jid,
                 sender_jid,
@@ -1833,19 +1901,7 @@ impl AsyncComponent for Application {
             }
             AppMsg::ChatReadOnDevice(jid) => {
                 let chat_jid = self.resolve_jid(&jid).await;
-                if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
-                    let db = self.db.clone();
-                    let sender = self.sender.clone();
-                    sender.oneshot_command(async move {
-                        let flipped = chat
-                            .mark_read(&db, false)
-                            .await
-                            .inspect_err(|e| tracing::error!("Failed to mark a chat as read: {e}"))
-                            .unwrap_or_default();
-
-                        AppCmd::MarkedChatRead { chat, flipped }
-                    });
-                }
+                self.mark_read_on_device(chat_jid);
             }
             AppMsg::ChatPropertyUpdate {
                 jid,
@@ -1895,12 +1951,10 @@ impl AsyncComponent for Application {
             AppMsg::FetchHistory { chat_jid, anchor } => {
                 let chat_jid = self.resolve_jid(&chat_jid).await;
 
-                let proceed =
-                    anchor.is_some() || self.history_fetch_attempted.insert(chat_jid.clone());
-                if proceed {
-                    self.client
-                        .emit(ClientInput::FetchHistory { chat_jid, anchor });
-                }
+                // The client component paces the actual requests: the
+                // phone drops bursts, so papo queues them one at a time.
+                self.client
+                    .emit(ClientInput::FetchHistory { chat_jid, anchor });
             }
             AppMsg::HistorySyncProgress {
                 progress,
@@ -1989,6 +2043,13 @@ impl AsyncComponent for Application {
                         }
 
                         self.flush_pending_receipts().await;
+
+                        // Read marks buffered while chats were not loaded.
+                        let pending_read = mem::take(&mut self.pending_read_chats);
+                        for chat_jid in pending_read {
+                            self.mark_read_on_device(chat_jid);
+                        }
+
                         self.cache_loaded = true;
                         self.sweep_own_chat();
                     }
@@ -2020,19 +2081,24 @@ impl AsyncComponent for Application {
                         pinned,
                         archived,
                         messages,
+                        on_demand,
+                        unread_count,
                         participants,
                         last_message_time,
                         ..
                     } = entry;
+                    let jid = self.sync_target_jid(&jid).await;
                     let chat_jid = jid.clone();
 
                     if !messages.is_empty() {
                         self.synced_history_chats.insert(chat_jid.clone());
+                    }
 
-                        // Tell an open chat view that its history landed.
-                        self.chat_view.emit(ChatViewInput::HistoryBackfilled {
-                            chat_jid: chat_jid.clone(),
-                        });
+                    // The phone's own unread state for the chat: zero
+                    // means the user read it there, which no receipt will
+                    // ever announce after the fact.
+                    if unread_count.is_some_and(|count| count == 0) {
+                        self.mark_read_on_device(chat_jid.clone());
                     }
 
                     let is_new_chat = !self.chats.iter().any(|c| c.jid == jid);
@@ -2160,6 +2226,7 @@ impl AsyncComponent for Application {
                         let mut dup_count = 0;
                         let mut skip_count = 0;
                         let total = messages.len();
+                        let has_messages = total > 0;
 
                         for (synced_msg, sender_name) in messages.into_iter().zip(resolved_names) {
                             let media = synced_msg.media_type.map(|t| Media {
@@ -2224,6 +2291,17 @@ impl AsyncComponent for Application {
                                 });
                             }
                         }
+
+                        // Tell an open chat view that its history landed,
+                        // only once the messages are durably saved.
+                        if has_messages || on_demand {
+                            sender.oneshot_command(async move {
+                                AppCmd::HistoryBackfilled {
+                                    chat_jid,
+                                    has_messages,
+                                }
+                            });
+                        }
                     });
                 }
 
@@ -2259,6 +2337,15 @@ impl AsyncComponent for Application {
                 self.chat_list.emit(ChatListInput::UpdateChat {
                     chat,
                     move_to_top: false,
+                });
+            }
+            AppCmd::HistoryBackfilled {
+                chat_jid,
+                has_messages,
+            } => {
+                self.chat_view.emit(ChatViewInput::HistoryBackfilled {
+                    chat_jid,
+                    has_messages,
                 });
             }
         }
