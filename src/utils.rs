@@ -1,4 +1,11 @@
-use std::{error::Error, path::Path};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::SystemTime,
+};
 
 use adw::prelude::*;
 use fast_qr::{
@@ -6,8 +13,8 @@ use fast_qr::{
     convert::{Builder, Shape, image::ImageBuilder},
 };
 use glib::Bytes;
-use glycin::Loader;
-use gtk::{gdk, gio, glib};
+use glycin::{Loader, MemoryFormatSelection};
+use gtk::{gdk, gio::File, glib};
 use jiff::{Zoned, civil::Date};
 use relm4::prelude::*;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
@@ -101,19 +108,127 @@ pub fn extract_phone_from_jid(jid: &str) -> String {
     format!("+{}", jid.split('@').next().unwrap_or(jid))
 }
 
-/// Load an avatar into a texture from a local path.
+/// Edge length in pixels that avatar textures are downscaled to fit.
+/// Full-resolution profile pictures would otherwise live in texture
+/// memory at megabytes each, and the chat list reloads them on every
+/// update.
+const AVATAR_MAX_EDGE: usize = 96;
+
+type AvatarCache = HashMap<PathBuf, (SystemTime, gdk::Texture)>;
+
+fn avatar_cache() -> &'static Mutex<AvatarCache> {
+    static CACHE: OnceLock<Mutex<AvatarCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Load an avatar into a texture from a local path, downscaled to keep
+/// texture memory small. Textures are cached by path until the file
+/// changes, so repeated chat list updates only bump the reference count.
 pub async fn load_avatar<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
-    let file = gio::File::for_path(&path);
+    let path = path.as_ref().to_path_buf();
+    let mtime = fs::metadata(&path).ok()?.modified().ok()?;
 
-    match file.load_bytes_future().await {
-        Ok((bytes, _)) => gdk::Texture::from_bytes(&bytes).ok(),
-        Err(e) => {
-            tracing::error!(
-                "Failed to load avatar from {}: {e}",
-                path.as_ref().display()
-            );
-
-            None
+    {
+        let cache = avatar_cache().lock().expect("avatar cache poisoned");
+        if let Some((cached_mtime, texture)) = cache.get(&path)
+            && *cached_mtime == mtime
+        {
+            return Some(texture.clone());
         }
     }
+
+    let file = File::for_path(&path);
+    let (bytes, _) = match file.load_bytes_future().await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!("Failed to load avatar from {}: {e}", path.display());
+
+            return None;
+        }
+    };
+
+    let texture = downscale_avatar(bytes).await;
+    if let Some(texture) = texture.clone() {
+        avatar_cache()
+            .lock()
+            .expect("avatar cache poisoned")
+            .insert(path, (mtime, texture));
+    }
+
+    texture
+}
+
+/// Decodes an image and box-filter downscales it so the longest edge
+/// fits within [`AVATAR_MAX_EDGE`], producing a small texture instead of
+/// a full-resolution one.
+async fn downscale_avatar(bytes: Bytes) -> Option<gdk::Texture> {
+    let mut loader = Loader::new_bytes(bytes);
+    loader.accepted_memory_formats(MemoryFormatSelection::R8g8b8a8Premultiplied);
+    let mut image = loader.load().await.ok()?;
+    let frame = image.next_frame().await.ok()?;
+
+    let width = usize::try_from(frame.width()).ok()?;
+    let height = usize::try_from(frame.height()).ok()?;
+    let stride = usize::try_from(frame.stride()).ok()?;
+    if width == 0 || height == 0 || stride < width * 4 {
+        return None;
+    }
+
+    if width.max(height) <= AVATAR_MAX_EDGE {
+        return Some(frame.texture());
+    }
+
+    let long_edge = width.max(height);
+    let new_width = (width * AVATAR_MAX_EDGE / long_edge).max(1);
+    let new_height = (height * AVATAR_MAX_EDGE / long_edge).max(1);
+
+    let src = frame.buf_bytes();
+    let src = src.as_ref();
+    if src.len() < height * stride {
+        return None;
+    }
+
+    // Box filter: every destination pixel averages the source box that
+    // maps onto it. The frame is 8-bit RGBA premultiplied, so averaging
+    // bytes per channel position is valid.
+    let mut out = vec![0u8; new_width * new_height * 4];
+    for ty in 0..new_height {
+        let y0 = ty * height / new_height;
+        let y1 = ((ty + 1) * height / new_height).clamp(y0 + 1, height);
+
+        for tx in 0..new_width {
+            let x0 = tx * width / new_width;
+            let x1 = ((tx + 1) * width / new_width).clamp(x0 + 1, width);
+
+            let (mut r, mut g, mut b, mut a, mut count) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for y in y0..y1 {
+                let row = y * stride;
+
+                for x in x0..x1 {
+                    let px = row + x * 4;
+                    r += u64::from(src[px]);
+                    g += u64::from(src[px + 1]);
+                    b += u64::from(src[px + 2]);
+                    a += u64::from(src[px + 3]);
+                    count += 1;
+                }
+            }
+
+            let px = (ty * new_width + tx) * 4;
+            out[px] = u8::try_from(r / count).ok()?;
+            out[px + 1] = u8::try_from(g / count).ok()?;
+            out[px + 2] = u8::try_from(b / count).ok()?;
+            out[px + 3] = u8::try_from(a / count).ok()?;
+        }
+    }
+
+    let texture = gdk::MemoryTexture::new(
+        i32::try_from(new_width).ok()?,
+        i32::try_from(new_height).ok()?,
+        gdk::MemoryFormat::R8g8b8a8Premultiplied,
+        &Bytes::from_owned(out),
+        new_width * 4,
+    );
+
+    Some(texture.upcast())
 }
