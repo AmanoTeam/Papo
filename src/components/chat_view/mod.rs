@@ -23,7 +23,7 @@ use crate::{
 };
 
 const LOAD_MORE_COUNT: usize = 70;
-const INITIAL_LOAD_COUNT: usize = 120;
+const INITIAL_LOAD_COUNT: usize = 40;
 /// Cooldown between on-demand history requests for one chat.
 const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
 /// How long to wait for a phone answer before asking again. Requests
