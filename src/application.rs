@@ -1193,6 +1193,14 @@ impl AsyncComponent for Application {
             glib::ControlFlow::Continue
         });
 
+        // Mirror libadwaita's own back navigation gesture as a chat close.
+        let notify_sender = sender.clone();
+        split_view.connect_notify(Some("show-content"), move |split_view, _| {
+            if !split_view.shows_content() {
+                notify_sender.input(AppMsg::ChatClosed);
+            }
+        });
+
         actions.add_action(shortcuts_action);
         actions.add_action(about_action);
         actions.add_action(quit_action);
