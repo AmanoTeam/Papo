@@ -1124,7 +1124,7 @@ impl AsyncComponent for Client {
 
                         let cached_path = cache.get_cached_path(&jid_str);
                         if let Some(path) = cached_path {
-                            tracing::debug!("Avatar already cached for {jid_str}");
+                            tracing::trace!("Avatar already cached for {jid_str}");
                             return Some(path);
                         }
 
@@ -1155,7 +1155,7 @@ impl AsyncComponent for Client {
                                 return None;
                             }
                         };
-                        tracing::debug!("Profile picture lookup for {jid_str}: {lookup:?}");
+                        tracing::trace!("Profile picture lookup for {jid_str}: {lookup:?}");
                         let mut picture = lookup.into_found();
 
                         // A hidden picture can depend on the jid form the
@@ -1198,10 +1198,10 @@ impl AsyncComponent for Client {
                         }
 
                         let Some(picture) = picture else {
-                            tracing::debug!("No profile picture available for {jid_str}");
+                            tracing::trace!("No profile picture available for {jid_str}");
                             return None;
                         };
-                        tracing::info!("Got profile picture URL for {jid_str}");
+                        tracing::trace!("Got profile picture URL for {jid_str}");
 
                         // Download the avatar using the client's HTTP client.
                         let request = HttpRequest::get(&picture.url);
@@ -1229,7 +1229,7 @@ impl AsyncComponent for Client {
                             }
                         };
 
-                        tracing::info!("Avatar downloaded and cached for {jid_str}");
+                        tracing::trace!("Avatar downloaded and cached for {jid_str}");
                         Some(path)
                     }
                     .await;

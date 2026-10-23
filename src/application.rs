@@ -549,7 +549,7 @@ impl Application {
                 .flatten()
                 .is_some()
         {
-            tracing::debug!("Skipping duplicate message: {}", message.server_id);
+            tracing::trace!("Skipping duplicate message: {}", message.server_id);
             return;
         }
 
@@ -1437,7 +1437,7 @@ impl AsyncComponent for Application {
                         move_to_top: false,
                     });
 
-                    tracing::debug!("Updated avatar for chat: {}", jid);
+                    tracing::trace!("Updated avatar for chat: {}", jid);
                 }
             }
             AppMsg::ContactUpdate {
