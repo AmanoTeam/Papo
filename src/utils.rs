@@ -103,6 +103,16 @@ pub fn bare_jid(jid: &str) -> String {
     }
 }
 
+/// Whether the jid addresses a contact by its linked-device identity.
+pub fn is_lid_jid(jid: &str) -> bool {
+    jid.ends_with("@lid")
+}
+
+/// Whether the jid addresses a contact by their phone number.
+pub fn is_phone_jid(jid: &str) -> bool {
+    jid.ends_with("@s.whatsapp.net") || jid.ends_with("@c.us")
+}
+
 /// Extracts phone number from JID/LID.
 pub fn extract_phone_from_jid(jid: &str) -> String {
     format!("+{}", jid.split('@').next().unwrap_or(jid))

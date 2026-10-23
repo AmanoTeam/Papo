@@ -39,7 +39,7 @@ use crate::{
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
     state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
-    utils::{bare_jid, format_lid_as_number, get_first_name},
+    utils::{bare_jid, format_lid_as_number, get_first_name, is_lid_jid, is_phone_jid},
 };
 
 /// Seconds without history sync chunks after which the sync feedback hides.
@@ -343,22 +343,52 @@ impl Application {
         }
     }
 
-    fn resolve_sender_name(
+    /// The one name-resolution source: the direct contact entry first,
+    /// then the contact seen under the jid's other identity (a LID
+    /// mapped to its phone number or the other way around).
+    async fn resolve_name(&self, jid: &str) -> Option<String> {
+        let bare = bare_jid(jid);
+
+        if let Some(name) = self.contacts.get(&bare).filter(|n| !n.is_empty()) {
+            return Some(name.clone());
+        } else if is_lid_jid(&bare)
+            && let Some(phone) = self.db.lid_to_pn_jid(&bare).await
+            && let Some(name) = self.contacts.get(&phone).filter(|n| !n.is_empty())
+        {
+            return Some(name.clone());
+        }
+
+        if is_phone_jid(&bare) {
+            for lid in self.db.pn_to_lid_jids(&bare).await {
+                let bare_lid = bare_jid(&lid);
+
+                if let Some(name) = self.contacts.get(&bare_lid).filter(|n| !n.is_empty()) {
+                    return Some(name.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    async fn resolve_sender_name(
         &self,
         jid: &str,
         alt_jid: Option<&str>,
         chat: Option<&Chat>,
         stored: Option<&str>,
     ) -> Option<String> {
-        self.contacts
-            .get(jid)
-            .or_else(|| alt_jid.and_then(|alt| self.contacts.get(alt)))
+        if let Some(name) = self.resolve_name(jid).await {
+            return Some(name);
+        } else if let Some(alt) = alt_jid
+            && let Some(name) = self.resolve_name(alt).await
+        {
+            return Some(name);
+        }
+
+        chat.and_then(|c| c.participants.get(jid))
+            .filter(|n| **n != i18n!("Unknown"))
             .cloned()
-            .or_else(|| {
-                chat.and_then(|c| c.participants.get(jid))
-                    .filter(|n| **n != i18n!("Unknown"))
-                    .cloned()
-            })
             .or_else(|| stored.filter(|n| !n.is_empty()).map(ToString::to_string))
     }
 
@@ -540,15 +570,20 @@ impl Application {
 
         // Create a new chat if it doesn't exists.
         if !self.chats.iter().any(|c| c.jid == chat_jid) {
+            let sender_name = if message.outgoing {
+                None
+            } else {
+                message.sender_name.clone().filter(|n| !n.is_empty())
+            };
+
             let name = if is_group {
                 format!("{} {}", i18n!("Group"), &chat_jid[..8])
             } else if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
                 i18n!("You")
-            } else if !message.outgoing {
-                message
-                    .sender_name
-                    .clone()
-                    .unwrap_or_else(|| format_lid_as_number(chat_jid))
+            } else if let Some(name) = sender_name {
+                name
+            } else if let Some(name) = self.resolve_name(chat_jid).await {
+                name
             } else {
                 format_lid_as_number(chat_jid)
             };
@@ -1799,12 +1834,14 @@ impl AsyncComponent for Application {
                         } else {
                             self.resolve_jid(&info.source.sender.to_string()).await
                         };
-                        let sender_name = self.resolve_sender_name(
-                            &sender_jid,
-                            Some(&info.source.sender.to_string()),
-                            self.chats.iter().find(|c| c.jid == chat_jid),
-                            Some(info.push_name.as_str()),
-                        );
+                        let sender_name = self
+                            .resolve_sender_name(
+                                &sender_jid,
+                                Some(&info.source.sender.to_string()),
+                                self.chats.iter().find(|c| c.jid == chat_jid),
+                                Some(info.push_name.as_str()),
+                            )
+                            .await;
 
                         let own_chat = self.user_jid.as_ref().is_some_and(|u| *u == chat_jid);
                         let status = if outgoing && own_chat {
@@ -2043,6 +2080,7 @@ impl AsyncComponent for Application {
                         }
 
                         self.chats.extend(chats);
+
                         for chat in &self.chats {
                             self.chat_list.emit(ChatListInput::AddChat {
                                 chat: chat.clone(),
@@ -2115,17 +2153,20 @@ impl AsyncComponent for Application {
                             jid: chat_jid.clone(),
                         });
 
-                        let chat_name = name
-                            .or_else(|| self.contacts.get(&jid).cloned())
-                            .unwrap_or_else(|| {
-                                if jid.ends_with("@g.us") {
-                                    format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
-                                } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
-                                    i18n!("You")
-                                } else {
-                                    format_lid_as_number(&jid)
-                                }
-                            });
+                        let mut chat_name = name.or_else(|| self.contacts.get(&jid).cloned());
+                        if chat_name.is_none() && !jid.ends_with("@g.us") {
+                            chat_name = self.resolve_name(&jid).await;
+                        }
+
+                        let chat_name = chat_name.unwrap_or_else(|| {
+                            if jid.ends_with("@g.us") {
+                                format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
+                            } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
+                                i18n!("You")
+                            } else {
+                                format_lid_as_number(&jid)
+                            }
+                        });
 
                         // Create last message time from timestamp (already in seconds).
                         let last_message_time = last_message_time
@@ -2214,17 +2255,18 @@ impl AsyncComponent for Application {
                     }
 
                     let chat_ref = self.chats.iter().find(|c| c.jid == chat_jid);
-                    let resolved_names = messages
-                        .iter()
-                        .map(|m| {
+                    let mut resolved_names = Vec::with_capacity(messages.len());
+                    for message in &messages {
+                        resolved_names.push(
                             self.resolve_sender_name(
-                                &m.sender_jid,
+                                &message.sender_jid,
                                 None,
                                 chat_ref,
-                                m.sender_name.as_deref(),
+                                message.sender_name.as_deref(),
                             )
-                        })
-                        .collect::<Vec<_>>();
+                            .await,
+                        );
+                    }
 
                     // Spawn database operations in background task.
                     let chat_clone = chat_ref.cloned();

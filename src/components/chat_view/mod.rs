@@ -517,22 +517,25 @@ impl AsyncComponent for ChatView {
                 }
             });
 
-        // Level-checked near the top: as long as the view sits within
-        // two pages of the top, every adjustment change is a chance to
-        // load more. Anchoring grows the value when a prepend lands,
-        // which moves the view out of the band and stops the requests;
-        // the guards in the handler also pace them.
+        // Level-checked near the top, but only while the user is
+        // actually scrolling up: an anchoring bump after a prepend
+        // grows the value the other way, and without this filter those
+        // bumps load page after page in a self-sustaining storm. NaN
+        // seeds the previous value so the first tick never computes a
+        // direction.
         let was_at_top = Rc::new(Cell::new(false));
         let was_at_bottom = Rc::new(Cell::new(true));
+        let prev_value = Rc::new(Cell::new(f64::NAN));
         adj.connect_value_changed(move |adj| {
             let value = adj.value();
             let page = adj.page_size();
             let upper = adj.upper();
+            let moving_up = value < prev_value.replace(value);
 
             let near_top = value < page * 2.0 && upper > page;
             let at_bottom = value + page >= upper - 25.0;
 
-            if near_top {
+            if near_top && moving_up {
                 was_at_top.set(true);
                 was_at_bottom.set(false);
 
@@ -540,7 +543,7 @@ impl AsyncComponent for ChatView {
                     at_top: true,
                     at_bottom: false,
                 });
-            } else {
+            } else if !moving_up {
                 let left_top = was_at_top.replace(false);
                 let bottom_toggled = at_bottom != was_at_bottom.get();
 
