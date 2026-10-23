@@ -58,9 +58,12 @@
   padding: 4px 10px;
   font-size: 0.85em;
   border-radius: 8px;
-  background-color: color-mix(in srgb,
-      var(--card-bg-color) 100%,
-      transparent 20%);
+  background-color: var(--card-bg-color);
+
+  &.loading-toast {
+    background-color: var(--popover-bg-color);
+  }
+
 }
 
 .unread-row {

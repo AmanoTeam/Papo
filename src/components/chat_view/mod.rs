@@ -333,7 +333,7 @@ impl AsyncComponent for ChatView {
                     gtk::Box {
                         set_spacing: 8,
                         set_margin_top: 12,
-                        set_css_classes: &["service-message", "card"],
+                        set_css_classes: &["service-message", "loading-toast"],
                         set_orientation: gtk::Orientation::Horizontal,
 
                         adw::Spinner {
@@ -992,7 +992,6 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
-                let fill_started = Instant::now();
                 self.history.prepend_messages(&messages);
             }
             ChatViewCommand::OlderMessagesLoaded {
@@ -1049,8 +1048,10 @@ impl AsyncComponent for ChatView {
                 self.state.unread_count = 0;
             }
             ChatViewCommand::FetchRetryTimeout { generation } => {
-                // The request was answered or replaced if the marker moved
-                // on; only a timed-out pending request is re-sent.
+                // Give up on this attempt: the phone did not answer and
+                // the queue slot has moved on. Release the marker so the
+                // loading feedback goes away; scrolling back to the edge
+                // re-requests, and a late answer still lands on its own.
                 if generation != self.generation
                     || self.history_exhausted
                     || self
@@ -1060,18 +1061,7 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
-                if let Some(ref chat) = self.chat {
-                    self.history_fetch_at = Some(Instant::now());
-
-                    let _ = sender.output(ChatViewOutput::FetchHistory {
-                        chat_jid: chat.jid.clone(),
-                        anchor: self
-                            .history_fetch_anchored
-                            .then(|| self.oldest_message_anchor())
-                            .flatten(),
-                    });
-                    self.schedule_fetch_timeout(&sender);
-                }
+                self.history_fetch_at = None;
             }
             ChatViewCommand::BackfillLoaded {
                 generation,
