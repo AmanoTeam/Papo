@@ -3,6 +3,7 @@ mod rows;
 
 use std::{
     cell::Cell,
+    collections::VecDeque,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -22,7 +23,10 @@ use crate::{
     widgets::TypingDots,
 };
 
-const LOAD_MORE_COUNT: usize = 70;
+/// Rows emitted per step while streaming history in.
+const LOAD_MORE_COUNT: usize = 20;
+/// First slice of the inital window shown at once.
+const FILL_STREAM_CHUNK: usize = 20;
 const INITIAL_LOAD_COUNT: usize = 40;
 /// Cooldown between on-demand history requests for one chat.
 const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
@@ -150,6 +154,10 @@ pub enum ChatViewOutput {
 
 #[derive(Debug)]
 pub enum ChatViewCommand {
+    FillChunk {
+        generation: u64,
+        messages: Vec<ChatMessage>,
+    },
     InitialMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
@@ -177,9 +185,6 @@ pub enum ChatViewCommand {
         newer: Vec<ChatMessage>,
     },
 
-    ScrollSettled {
-        generation: u64,
-    },
     ScrollPositionChanged {
         at_top: bool,
         at_bottom: bool,
@@ -528,15 +533,13 @@ impl AsyncComponent for ChatView {
             let at_bottom = value + page >= upper - 25.0;
 
             if near_top {
+                was_at_top.set(true);
                 was_at_bottom.set(false);
 
-                if !was_at_top.get() {
-                    was_at_top.set(true);
-                    command_sender.emit(ChatViewCommand::ScrollPositionChanged {
-                        at_top: true,
-                        at_bottom: false,
-                    });
-                }
+                command_sender.emit(ChatViewCommand::ScrollPositionChanged {
+                    at_top: true,
+                    at_bottom: false,
+                });
             } else {
                 let left_top = was_at_top.replace(false);
                 let bottom_toggled = at_bottom != was_at_bottom.get();
@@ -894,16 +897,22 @@ impl AsyncComponent for ChatView {
         match command {
             ChatViewCommand::InitialMessagesLoaded {
                 generation,
-                messages,
+                mut messages,
                 had_unread,
             } => {
                 if generation != self.generation {
                     return;
                 }
 
+                let full_len = messages.len();
+                let tail = if !had_unread && full_len > FILL_STREAM_CHUNK {
+                    messages.split_off(FILL_STREAM_CHUNK)
+                } else {
+                    Vec::new()
+                };
+
                 self.history.fill(&messages);
-                self.history
-                    .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
+                self.history.set_has_older(full_len == INITIAL_LOAD_COUNT);
 
                 self.state.is_loading = false;
 
@@ -911,7 +920,7 @@ impl AsyncComponent for ChatView {
                 // missing older messages, including chats too short to
                 // scroll: ask the phone for the history before the oldest
                 // stored message.
-                if messages.len() < INITIAL_LOAD_COUNT
+                if full_len < INITIAL_LOAD_COUNT
                     && let Some(ref chat) = self.chat
                 {
                     let anchor = self.oldest_message_anchor();
@@ -945,6 +954,43 @@ impl AsyncComponent for ChatView {
                     self.scroll_to_bottom(|| {});
                     self.state.is_at_bottom = true;
                 }
+
+                if !tail.is_empty() {
+                    let mut queue = tail
+                        .chunks(FILL_STREAM_CHUNK)
+                        .map(<[ChatMessage]>::to_vec)
+                        .collect::<VecDeque<Vec<ChatMessage>>>();
+                    let chunk_sender = sender.command_sender().clone();
+                    let stream_generation = generation;
+
+                    glib::idle_add_local(move || {
+                        let Some(chunk) = queue.pop_front() else {
+                            return glib::ControlFlow::Break;
+                        };
+
+                        chunk_sender.emit(ChatViewCommand::FillChunk {
+                            generation: stream_generation,
+                            messages: chunk,
+                        });
+
+                        if queue.is_empty() {
+                            glib::ControlFlow::Break
+                        } else {
+                            glib::ControlFlow::Continue
+                        }
+                    });
+                }
+            }
+            ChatViewCommand::FillChunk {
+                generation,
+                messages,
+            } => {
+                if generation != self.generation {
+                    return;
+                }
+
+                let fill_started = Instant::now();
+                self.history.prepend_messages(&messages);
             }
             ChatViewCommand::OlderMessagesLoaded {
                 generation,
@@ -957,11 +1003,7 @@ impl AsyncComponent for ChatView {
                 self.history
                     .set_has_older(messages.len() == LOAD_MORE_COUNT);
                 self.history.prepend_messages(&messages);
-
-                let command_sender = sender.command_sender().clone();
-                glib::idle_add_local_once(move || {
-                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
-                });
+                self.state.is_loading = false;
             }
             ChatViewCommand::NewerMessagesLoaded {
                 generation,
@@ -977,15 +1019,11 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history.append_newer(&messages);
+                self.state.is_loading = false;
 
                 if self.state.is_at_bottom {
                     self.scroll_to_bottom(|| {});
                 }
-
-                let command_sender = sender.command_sender().clone();
-                glib::idle_add_local_once(move || {
-                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
-                });
             }
 
             ChatViewCommand::JumpLoaded {
@@ -1062,17 +1100,6 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.state.is_loading = false;
-
-                let command_sender = sender.command_sender().clone();
-                glib::idle_add_local_once(move || {
-                    command_sender.emit(ChatViewCommand::ScrollSettled { generation });
-                });
-            }
-
-            ChatViewCommand::ScrollSettled { generation } => {
-                if generation == self.generation {
-                    self.state.is_loading = false;
-                }
             }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
                 self.state.is_at_top = at_top;
