@@ -91,6 +91,10 @@ pub(crate) struct ChatHistory {
     list: TypedListView<ChatRow, gtk::NoSelection>,
     /// Metadata mirror of `list`, used for cursor tracking.
     row_metadata: VecDeque<RowMetadata>,
+    /// Index of a front separator that became a duplicate of the
+    /// prepended batch's own day separator; removed once the layout of
+    /// that prepend has settled.
+    pending_sep_removal: Option<u32>,
 
     has_older: bool,
     has_newer: bool,
@@ -108,6 +112,7 @@ impl ChatHistory {
         Self {
             list: TypedListView::new(),
             row_metadata: VecDeque::new(),
+            pending_sep_removal: None,
             has_older: false,
             has_newer: false,
             oldest_loaded_timestamp: None,
@@ -348,24 +353,32 @@ impl ChatHistory {
         let front_is_message =
             matches!(self.row_metadata.front(), Some(RowMetadata::Message { .. }));
 
-        // Remove duplicate date separator if the last prepended date matches
-        // the first existing date separator.
-        let remove_old_separator = matches!(
+        // The front separator labels the batch's newest day when the
+        // previous page ended inside that day.
+        let front_separator_matches = matches!(
             self.row_metadata.front(),
             Some(RowMetadata::Separator(date)) if *date == newest_date
         );
 
         let boundary_group = match &old_top_row {
             Some(ChatRow::Message { message: prev, .. }) => {
-                (front_is_message || remove_old_separator) && same_group(prev, newest)
+                (front_is_message || front_separator_matches) && same_group(prev, newest)
             }
             _ => false,
         };
 
-        let (rows, mut metas) = build_prepend_rows(messages, boundary_group);
+        let (rows, metas) = build_prepend_rows(messages, boundary_group);
+
+        // A front separator matching the batch's newest day is duplicated
+        // by the batch's own separator; it is removed only once the
+        // layout settles (see `remove_pending_separator`).
+        self.pending_sep_removal = front_separator_matches
+            .then(|| u32::try_from(rows.len()).ok())
+            .flatten();
 
         let objects: Vec<glib::BoxedAnyObject> =
             rows.into_iter().map(glib::BoxedAnyObject::new).collect();
+
         if let Some(scrolled_window) = self
             .list
             .view
@@ -375,52 +388,11 @@ impl ChatHistory {
             scrolled_window.set_kinetic_scrolling(false);
             scrolled_window.set_kinetic_scrolling(true);
         }
-        if let Some(anchor) = self
-            .row_metadata
-            .iter()
-            .position(|m| matches!(m, RowMetadata::Message { .. }))
-            .and_then(|i| u32::try_from(i).ok())
-        {
-            let info = gtk::ScrollInfo::new();
-            info.set_enable_vertical(true);
-            self.list
-                .view
-                .scroll_to(anchor, gtk::ListScrollFlags::NONE, Some(info));
-        }
-        self.store()
-            .splice(0, u32::from(remove_old_separator), &objects);
 
-        if remove_old_separator {
-            self.row_metadata.pop_front();
-        }
-        metas.reverse();
-        for meta in metas {
+        self.store().splice(0, 0, &objects);
+
+        for meta in metas.into_iter().rev() {
             self.row_metadata.push_front(meta);
-        }
-
-        if boundary_group
-            && let (
-                Ok(inserted),
-                Some(ChatRow::Message {
-                    last,
-                    first: _,
-                    unread,
-                    message,
-                    last_of_segment,
-                    first_of_segment,
-                }),
-            ) = (u32::try_from(objects.len()), old_top_row)
-        {
-            let updated = ChatRow::Message {
-                last,
-                first: false,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
-            };
-            let object = glib::BoxedAnyObject::new(updated);
-            self.store().splice(inserted, 1, &[object]);
         }
 
         // Update first_message_date to the oldest prepended message's date.
@@ -428,6 +400,36 @@ impl ChatHistory {
             self.first_message_date =
                 Some(oldest_msg.timestamp.to_zoned(TimeZone::system()).date());
         }
+    }
+
+    /// Removes the day separator duplicated by the last prepend. Called
+    /// once that prepend's layout settled: the duplicate sits far below
+    /// the anchored top rows by then, and the guard on the row above
+    /// keeps a stale index from ever removing an unrelated row.
+    pub(crate) fn remove_pending_separator(&mut self) {
+        let Some(index) = self.pending_sep_removal.take() else {
+            return;
+        };
+        let Ok(slot) = usize::try_from(index) else {
+            return;
+        };
+
+        let Some(RowMetadata::Separator(date)) = self.row_metadata.get(slot) else {
+            return;
+        };
+        let Some(ChatRow::Message { message, .. }) =
+            index.checked_sub(1).and_then(|above| self.get_row(above))
+        else {
+            return;
+        };
+
+        if message.timestamp.to_zoned(TimeZone::system()).date() != *date {
+            return;
+        }
+
+        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
+        self.store().splice(index, 1, &empty);
+        self.row_metadata.remove(slot);
     }
 
     /// Append a batch of newer messages to the bottom; iterated forward.
@@ -683,90 +685,9 @@ impl ChatHistory {
             .and_then(|i| u32::try_from(i).ok())
     }
 
-    /// Number of message rows below the unread divider.
-    pub(crate) fn unread_message_row_count(&self) -> usize {
-        self.unread_divider_index().map_or(0, |index| {
-            self.row_metadata
-                .iter()
-                .skip(usize::try_from(index).expect("row index fits usize") + 1)
-                .filter(|m| matches!(m, RowMetadata::Message { .. }))
-                .count()
-        })
-    }
-
-    /// Remove the row at `index` and re-insert a replacement, preserving scroll.
-    pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
-        let adj = self.list.view.vadjustment();
-        let saved_scroll = if at_bottom {
-            None
-        } else {
-            adj.as_ref().map(AdjustmentExt::value)
-        };
-
-        let object = glib::BoxedAnyObject::new(new_row);
-        self.store().splice(index, 1, &[object]);
-
-        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
-            glib::idle_add_local_once(move || adj.set_value(value));
-        }
-    }
-
-    /// Scroll the list view to the bottom (last row).
-    pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
-        fn scroll(view: &gtk::ListView) -> bool {
-            let count = view.model().map_or(0, |model| model.n_items());
-            if count == 0 {
-                return true;
-            }
-
-            let info = gtk::ScrollInfo::new();
-            info.set_enable_vertical(true);
-            view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
-
-            view.vadjustment()
-                .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
-        }
-
-        let view = self.list.view.clone();
-        let mut attempts = 0;
-        let mut last_upper: Option<f64> = None;
-
-        glib::idle_add_local_once({
-            let view = view.clone();
-            move || {
-                scroll(&view);
-            }
-        });
-
-        let mut on_settled = Some(on_settled);
-        glib::timeout_add_local(Duration::from_millis(16), move || {
-            attempts += 1;
-
-            let upper = view.vadjustment().map(|adj| adj.upper());
-            let settled = scroll(&view);
-            let stable = match (upper, last_upper) {
-                (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
-                _ => false,
-            };
-            last_upper = upper;
-
-            if (settled && stable) || attempts >= 15 {
-                view.set_opacity(1.0);
-
-                if let Some(on_settled) = on_settled.take() {
-                    on_settled();
-                }
-
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
-    }
-
     /// Scrolls to the bottom (forcing full layout), then up so the row at
-    /// `target` is revealed at the top edge. Used to open a chat at the top
-    /// of its unread band, with earlier messages kept above as context.
+    /// `target` is revealed at the top edge. Used to open a chat at the
+    /// unread divider, with earlier messages kept above as context.
     pub(crate) fn scroll_to_unread_boundary(&self, target: u32) {
         fn scroll_to_row(view: &gtk::ListView, index: u32) {
             let info = gtk::ScrollInfo::new();
@@ -827,6 +748,84 @@ impl ChatHistory {
                     last_value = None;
                 }
 
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    /// Remove the row at `index` and re-insert a replacement, preserving scroll.
+    pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
+        let adj = self.list.view.vadjustment();
+        let saved_scroll = if at_bottom {
+            None
+        } else {
+            adj.as_ref().map(AdjustmentExt::value)
+        };
+
+        let object = glib::BoxedAnyObject::new(new_row);
+        self.store().splice(index, 1, &[object]);
+
+        if let (Some(adj), Some(value)) = (adj, saved_scroll) {
+            glib::idle_add_local_once(move || adj.set_value(value));
+        }
+    }
+
+    /// Current adjustment (value, upper), for scroll diagnostics.
+    pub(crate) fn scroll_position(&self) -> (f64, f64) {
+        self.list
+            .view
+            .vadjustment()
+            .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
+    }
+
+    /// Scroll the list view to the bottom (last row).
+    pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
+        fn scroll(view: &gtk::ListView) -> bool {
+            let count = view.model().map_or(0, |model| model.n_items());
+            if count == 0 {
+                return true;
+            }
+
+            let info = gtk::ScrollInfo::new();
+            info.set_enable_vertical(true);
+            view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+
+            view.vadjustment()
+                .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
+        }
+
+        let view = self.list.view.clone();
+        let mut attempts = 0;
+        let mut last_upper: Option<f64> = None;
+
+        glib::idle_add_local_once({
+            let view = view.clone();
+            move || {
+                scroll(&view);
+            }
+        });
+
+        let mut on_settled = Some(on_settled);
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            attempts += 1;
+
+            let upper = view.vadjustment().map(|adj| adj.upper());
+            let settled = scroll(&view);
+            let stable = match (upper, last_upper) {
+                (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
+                _ => false,
+            };
+            last_upper = upper;
+
+            if (settled && stable) || attempts >= 15 {
+                view.set_opacity(1.0);
+
+                if let Some(on_settled) = on_settled.take() {
+                    on_settled();
+                }
+
+                glib::ControlFlow::Break
+            } else {
                 glib::ControlFlow::Continue
             }
         });
