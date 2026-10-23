@@ -1,151 +1,403 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{cell::RefCell, fmt, time::Duration};
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gio, glib, subclass::prelude::*};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
-use relm4::{prelude::*, typed_view::list::TypedListView};
+use relm4::{prelude::*, typed_view::list::RelmListItem};
 
 use super::rows::ChatRow;
-use crate::state::{ChatMessage, MessageStatus};
+use crate::{
+    state::{ChatMessage, MessageStatus},
+    utils::format_date_label,
+};
 
+/// Whether two messages render in the same author group.
 fn same_group(a: &ChatMessage, b: &ChatMessage) -> bool {
     (a.outgoing && b.outgoing) || (!a.outgoing && !b.outgoing && a.sender_jid == b.sender_jid)
 }
 
-fn build_prepend_rows(
-    messages: &[ChatMessage],
-    boundary_group: bool,
-) -> (Vec<ChatRow>, Vec<RowMetadata>) {
-    let mut rows = Vec::with_capacity(messages.len());
-    let mut metas = Vec::with_capacity(messages.len());
-    let mut prev_date: Option<Date> = None;
-    let mut prev_msg: Option<&ChatMessage> = None;
-    let tz = TimeZone::system();
+/// The local calendar day of a message, used for section boundaries.
+fn message_day(message: &ChatMessage) -> Date {
+    message.timestamp.to_zoned(TimeZone::system()).date()
+}
 
-    // Reverse messages to get chronological order for prepending.
-    for (i, msg) in messages.iter().enumerate().rev() {
-        let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
+mod imp {
+    use super::{Cast, Date, RefCell, StaticType, gio, glib, gtk};
+    use gtk::subclass::prelude::*;
 
-        let first = if prev_date == Some(msg_date)
-            && let Some(prev) = prev_msg
-        {
-            !same_group(prev, msg)
-        } else {
+    /// One row: the boxed `ChatRow` plus its precomputed calendar day,
+    /// so section boundaries stay a cheap ordered scan.
+    pub struct TimelineItem {
+        pub object: glib::BoxedAnyObject,
+        pub day: Date,
+    }
+
+    #[derive(Default)]
+    pub struct TimelineModel {
+        pub rows: RefCell<Vec<TimelineItem>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for TimelineModel {
+        const NAME: &'static str = "PapoTimelineModel";
+        type Type = super::TimelineModel;
+        type Interfaces = (gio::ListModel, gtk::SectionModel);
+    }
+
+    impl ObjectImpl for TimelineModel {}
+
+    impl ListModelImpl for TimelineModel {
+        fn item_type(&self) -> glib::Type {
+            glib::BoxedAnyObject::static_type()
+        }
+
+        fn n_items(&self) -> u32 {
+            u32::try_from(self.rows.borrow().len()).expect("row count fits u32")
+        }
+
+        fn item(&self, position: u32) -> Option<glib::Object> {
+            let rows = self.rows.borrow();
+            rows.get(usize::try_from(position).ok()?)
+                .map(|item| item.object.clone().upcast())
+        }
+    }
+
+    impl SectionModelImpl for TimelineModel {
+        fn section(&self, position: u32) -> (u32, u32) {
+            let rows = self.rows.borrow();
+            let len = u32::try_from(rows.len()).expect("row count fits u32");
+            if position >= len {
+                return (len, u32::MAX);
+            }
+
+            let day = rows[usize::try_from(position).expect("checked above")].day;
+            let first_in = rows.partition_point(|row| row.day < day);
+            let first_out = rows.partition_point(|row| row.day <= day);
+            (
+                u32::try_from(first_in).expect("row count fits u32"),
+                u32::try_from(first_out).expect("row count fits u32"),
+            )
+        }
+    }
+}
+
+glib::wrapper! {
+    /// The chat timeline as a flat list of rows, with calendar days
+    /// exposed as [`gtk::SectionModel`] sections: day headers are
+    /// rendered by the header factory instead of being list items, so
+    /// a prepend is a pure insertion of message rows.
+    pub struct TimelineModel(ObjectSubclass<imp::TimelineModel>)
+        @implements gio::ListModel, gtk::SectionModel;
+}
+
+/// Key under a row root keeps its widgets between factory callbacks.
+const ROW_WIDGETS_KEY: &str = "papo-row-widgets";
+
+impl TimelineModel {
+    fn new() -> Self {
+        glib::Object::new()
+    }
+
+    fn len(&self) -> u32 {
+        u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32")
+    }
+
+    fn row(&self, index: u32) -> Option<ChatRow> {
+        let rows = self.imp().rows.borrow();
+        rows.get(usize::try_from(index).ok()?)
+            .map(|item| item.object.borrow::<ChatRow>().clone())
+    }
+
+    fn last_row(&self) -> Option<ChatRow> {
+        let rows = self.imp().rows.borrow();
+        rows.last()
+            .map(|item| item.object.borrow::<ChatRow>().clone())
+    }
+
+    /// Index of the first row matching `predicate`.
+    fn position_row(&self, predicate: impl Fn(&ChatRow) -> bool) -> Option<u32> {
+        let rows = self.imp().rows.borrow();
+        rows.iter()
+            .position(|item| predicate(&item.object.borrow::<ChatRow>()))
+            .and_then(|index| u32::try_from(index).ok())
+    }
+
+    fn any_row(&self, predicate: impl Fn(&ChatRow) -> bool) -> bool {
+        let rows = self.imp().rows.borrow();
+        rows.iter()
+            .any(|item| predicate(&item.object.borrow::<ChatRow>()))
+    }
+
+    /// The precomputed calendar day of the row at `index`.
+    fn row_day(&self, index: u32) -> Option<Date> {
+        let rows = self.imp().rows.borrow();
+        rows.get(usize::try_from(index).ok()?).map(|item| item.day)
+    }
+
+    // Mutations. Each one releases the borrow before emitting
+    // items-changed, so GTK never observes the model mid-update.
+
+    fn clear(&self) {
+        let removed = {
+            let mut rows = self.imp().rows.borrow_mut();
+            let removed = rows.len();
+            rows.clear();
+            removed
+        };
+
+        if removed > 0 {
+            let removed = u32::try_from(removed).expect("row count fits u32");
+            self.upcast_ref::<gio::ListModel>()
+                .items_changed(0, removed, 0);
+        }
+    }
+
+    /// Appends a batch of rows to the bottom, in chronological order.
+    fn append_batch(&self, batch: Vec<(ChatRow, Date)>) {
+        let (position, added) = {
+            let mut rows = self.imp().rows.borrow_mut();
+            let position = rows.len();
+            let added = batch.len();
+            rows.extend(batch.into_iter().map(|(row, day)| imp::TimelineItem {
+                object: glib::BoxedAnyObject::new(row),
+                day,
+            }));
+            (position, added)
+        };
+
+        if added > 0 {
+            let position = u32::try_from(position).expect("row count fits u32");
+            let added = u32::try_from(added).expect("row count fits u32");
+            self.upcast_ref::<gio::ListModel>()
+                .items_changed(position, 0, added);
+        }
+    }
+
+    /// Prepends a batch of rows to the top, in chronological order
+    /// (oldest first); a single pure insertion of the whole batch.
+    fn prepend_batch(&self, batch: Vec<(ChatRow, Date)>) {
+        let added = {
+            let mut rows = self.imp().rows.borrow_mut();
+            let added = batch.len();
+            rows.splice(
+                0..0,
+                batch.into_iter().map(|(row, day)| imp::TimelineItem {
+                    object: glib::BoxedAnyObject::new(row),
+                    day,
+                }),
+            );
+            added
+        };
+
+        if added > 0 {
+            let added = u32::try_from(added).expect("row count fits u32");
+            self.upcast_ref::<gio::ListModel>()
+                .items_changed(0, 0, added);
+        }
+    }
+
+    /// Replaces the row at `index`, keeping its position.
+    fn replace(&self, index: u32, row: ChatRow, day: Date) {
+        let Some(slot) = usize::try_from(index).ok() else {
+            return;
+        };
+
+        let replaced = {
+            let mut rows = self.imp().rows.borrow_mut();
+            let Some(current) = rows.get_mut(slot) else {
+                return;
+            };
+            *current = imp::TimelineItem {
+                object: glib::BoxedAnyObject::new(row),
+                day,
+            };
             true
         };
 
-        // Insert a date separator if the date changed.
-        if prev_date != Some(msg_date) {
-            rows.push(ChatRow::DateSeparator(msg_date));
-            metas.push(RowMetadata::Separator(msg_date));
-            prev_date = Some(msg_date);
+        if replaced {
+            self.upcast_ref::<gio::ListModel>()
+                .items_changed(index, 1, 1);
         }
-
-        let last = if i == 0 {
-            !boundary_group
-        } else {
-            let next = &messages[i - 1];
-            let next_date = next.timestamp.to_zoned(tz.clone()).date();
-            next_date != msg_date || !same_group(msg, next)
-        };
-
-        let ts = msg.timestamp;
-        rows.push(ChatRow::Message {
-            last,
-            first,
-            unread: false,
-            message: msg.clone(),
-            last_of_segment: false,
-            first_of_segment: false,
-        });
-        metas.push(RowMetadata::Message {
-            ts,
-            unread: false,
-            last_of_segment: false,
-            first_of_segment: false,
-        });
-        prev_msg = Some(msg);
     }
-
-    (rows, metas)
 }
 
-/// Metadata for a single row in the message list, used for cursor tracking
-/// when trimming rows during bidirectional pagination.
-#[derive(Clone, Debug)]
-pub(crate) enum RowMetadata {
-    /// A message row, with its timestamp.
-    Message {
-        ts: Timestamp,
-        unread: bool,
-        last_of_segment: bool,
-        first_of_segment: bool,
-    },
-    Separator(Date),
-    UnreadDivider,
+/// Builds the message row factory, reusing the row widgets and binding
+/// code behind [`RelmListItem`]. Mirrors the widget-stash pattern of
+/// `relm4`'s own typed list factory.
+fn build_row_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+
+    factory.connect_setup(|_, list_item| {
+        let list_item = list_item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
+        let (root, widgets) = <ChatRow as RelmListItem>::setup(list_item);
+        // SAFETY: the widgets live as long as `root`, which the list
+        // item owns; they are only touched through steals that hand
+        // the value back before this object can be destroyed.
+        unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
+        list_item.set_child(Some(&root));
+    });
+
+    factory.connect_bind(|_, list_item| {
+        let list_item = list_item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
+        let Some(item) = list_item.item() else {
+            return;
+        };
+        let Some(wrapper) = item.downcast_ref::<glib::BoxedAnyObject>() else {
+            return;
+        };
+        let Some(mut root) = list_item
+            .child()
+            .and_downcast::<<ChatRow as RelmListItem>::Root>()
+        else {
+            return;
+        };
+
+        let mut row = wrapper.borrow_mut::<ChatRow>();
+        // SAFETY: as in setup — the stash lives as long as the root.
+        let mut widgets =
+            unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
+                .expect("row widgets stashed in setup");
+        row.bind(&mut widgets, &mut root);
+        unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
+    });
+
+    factory.connect_unbind(|_, list_item| {
+        let list_item = list_item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+
+        let Some(item) = list_item.item() else {
+            return;
+        };
+        let Some(wrapper) = item.downcast_ref::<glib::BoxedAnyObject>() else {
+            return;
+        };
+        let Some(mut root) = list_item
+            .child()
+            .and_downcast::<<ChatRow as RelmListItem>::Root>()
+        else {
+            return;
+        };
+
+        let mut row = wrapper.borrow_mut::<ChatRow>();
+        // SAFETY: as in setup — the stash lives as long as the root.
+        let mut widgets =
+            unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
+                .expect("row widgets stashed in setup");
+        row.unbind(&mut widgets, &mut root);
+        unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
+    });
+
+    factory.connect_teardown(|_, list_item| {
+        let list_item = list_item
+            .downcast_ref::<gtk::ListItem>()
+            .expect("Needs to be ListItem");
+        <ChatRow as RelmListItem>::teardown(list_item);
+    });
+
+    factory
+}
+
+/// Installs the day-header factory that renders section starts as the
+/// same centered date label the old separator rows used.
+fn setup_day_headers(view: &gtk::ListView, timeline: &TimelineModel) {
+    let factory = gtk::SignalListItemFactory::new();
+
+    factory.connect_setup(|_, header| {
+        let header = header
+            .downcast_ref::<gtk::ListHeader>()
+            .expect("Needs to be ListHeader");
+
+        let label = gtk::Label::builder()
+            .halign(gtk::Align::Center)
+            .css_classes(["service-message", "caption", "dimmed"])
+            .margin_top(4)
+            .margin_bottom(4)
+            .build();
+        header.set_child(Some(&label));
+    });
+
+    let timeline = timeline.clone();
+    factory.connect_bind(move |_, header| {
+        let header = header
+            .downcast_ref::<gtk::ListHeader>()
+            .expect("Needs to be ListHeader");
+
+        let Some(label) = header.child().and_downcast::<gtk::Label>() else {
+            return;
+        };
+        let Some(day) = timeline.row_day(header.start()) else {
+            return;
+        };
+
+        label.set_label(&format_date_label(day));
+    });
+
+    view.set_header_factory(Some(&factory));
 }
 
 /// Owns the message list view and all pagination state for a single open chat.
-#[derive(Debug)]
 pub(crate) struct ChatHistory {
-    list: TypedListView<ChatRow, gtk::NoSelection>,
-    /// Metadata mirror of `list`, used for cursor tracking.
-    row_metadata: VecDeque<RowMetadata>,
-    /// Index of a front separator that became a duplicate of the
-    /// prepended batch's own day separator; removed once the layout of
-    /// that prepend has settled.
-    pending_sep_removal: Option<u32>,
-
-    has_older: bool,
+    view: gtk::ListView,
+    timeline: TimelineModel,
     has_newer: bool,
-
+    has_older: bool,
     oldest_loaded_timestamp: Option<Timestamp>,
     newest_loaded_timestamp: Option<Timestamp>,
-    /// Date of the first displayed message (top), for prepend separator logic.
-    first_message_date: Option<Date>,
-    /// Date of the last appended message (bottom), for append separator logic.
-    last_message_date: Option<Date>,
+}
+
+impl fmt::Debug for ChatHistory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatHistory")
+            .field("rows", &self.timeline.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ChatHistory {
     pub(crate) fn new() -> Self {
+        let timeline = TimelineModel::new();
+        let selection = gtk::NoSelection::new(Some(timeline.clone()));
+        let view = gtk::ListView::new(Some(selection), Some(build_row_factory()));
+        setup_day_headers(&view, &timeline);
+
         Self {
-            list: TypedListView::new(),
-            row_metadata: VecDeque::new(),
-            pending_sep_removal: None,
-            has_older: false,
+            view,
+            timeline,
             has_newer: false,
+            has_older: false,
             oldest_loaded_timestamp: None,
             newest_loaded_timestamp: None,
-            first_message_date: None,
-            last_message_date: None,
         }
     }
 
-    pub(crate) fn view(&self) -> &TypedListView<ChatRow, gtk::NoSelection> {
-        &self.list
+    pub(crate) fn view(&self) -> &gtk::ListView {
+        &self.view
     }
 
     /// Number of loaded rows.
     pub(crate) fn len(&self) -> u32 {
-        self.list.len()
+        self.timeline.len()
     }
 
     /// Whether the history is empty.
     pub(crate) fn is_empty(&self) -> bool {
-        self.list.is_empty()
+        self.timeline.len() == 0
     }
 
     /// Clear all rows and reset all cursors.
     pub(crate) fn clear(&mut self) {
-        self.list.clear();
-        self.row_metadata.clear();
+        self.timeline.clear();
         self.has_older = false;
         self.has_newer = false;
         self.oldest_loaded_timestamp = None;
         self.newest_loaded_timestamp = None;
-        self.first_message_date = None;
-        self.last_message_date = None;
     }
 
     pub(crate) fn has_older(&self) -> bool {
@@ -172,9 +424,9 @@ impl ChatHistory {
         self.newest_loaded_timestamp
     }
 
-    /// Fill the history with an initial batch of messages.
+    /// Fill the history with an initial batch of messages, newest first.
     pub(crate) fn fill(&mut self, messages: &[ChatMessage]) -> bool {
-        self.list.view.set_opacity(0.0);
+        self.view.set_opacity(0.0);
 
         if messages.is_empty() {
             return false;
@@ -195,60 +447,54 @@ impl ChatHistory {
         });
 
         let tz = TimeZone::system();
+        let mut rows: Vec<(ChatRow, Date)> = Vec::with_capacity(messages.len() + 1);
         let mut in_unread = false;
+        let mut prev_date: Option<Date> = None;
+        // The chronologically previous (older) message, already appended.
+        let mut prev_msg: Option<&ChatMessage> = None;
+
         for (i, msg) in messages.iter().enumerate().rev() {
-            // Convert to local date for separator comparison.
             let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
+            let date_break = prev_date != Some(msg_date);
 
-            // Insert a date separator if the date changed.
-            if self.last_message_date != Some(msg_date) {
-                self.list.append(ChatRow::DateSeparator(msg_date));
-                self.row_metadata
-                    .push_back(RowMetadata::Separator(msg_date));
-                self.last_message_date = Some(msg_date);
-            }
-
-            if Some(i) == unread_boundary {
-                self.list.append(ChatRow::UnreadDivider);
-                self.row_metadata.push_back(RowMetadata::UnreadDivider);
+            let divider_pushed = if Some(i) == unread_boundary {
+                rows.push((ChatRow::UnreadDivider, msg_date));
                 in_unread = true;
-            }
+                true
+            } else {
+                false
+            };
 
-            // Track the first message date for prepend separators.
-            if self.first_message_date.is_none() {
-                self.first_message_date = Some(msg_date);
-            }
-
-            let first = match (self.row_metadata.back(), messages.get(i + 1)) {
-                (Some(RowMetadata::Message { .. }), Some(prev)) => !same_group(prev, msg),
+            let first = match prev_msg {
+                Some(prev) if !date_break => !same_group(prev, msg),
                 _ => true,
             };
-            let first_of_segment = match self.row_metadata.back() {
-                Some(RowMetadata::Separator(_)) => in_unread,
-                _ => false,
-            };
+            let first_of_segment = in_unread && date_break && !divider_pushed;
+
+            // The chronologically next (newer) message.
             let next = (i > 0).then(|| &messages[i - 1]);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
                 || next.is_some_and(|n| !same_group(msg, n));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
-            let ts = msg.timestamp;
-            self.list.append(ChatRow::Message {
-                last,
-                first,
-                unread: in_unread,
-                message: msg.clone(),
-                last_of_segment,
-                first_of_segment,
-            });
-            self.row_metadata.push_back(RowMetadata::Message {
-                ts,
-                unread: in_unread,
-                last_of_segment,
-                first_of_segment,
-            });
+            rows.push((
+                ChatRow::Message {
+                    last,
+                    first,
+                    unread: in_unread,
+                    message: msg.clone(),
+                    last_of_segment,
+                    first_of_segment,
+                },
+                msg_date,
+            ));
+
+            prev_date = Some(msg_date);
+            prev_msg = Some(msg);
         }
+
+        self.timeline.append_batch(rows);
 
         true
     }
@@ -258,79 +504,73 @@ impl ChatHistory {
     /// messages, in which case an arrival is seen live and never counts
     /// as unread.
     pub(crate) fn append_live(&mut self, message: ChatMessage, at_bottom: bool) {
-        // Convert to local date for separator comparison.
-        let msg_date = message.timestamp.to_zoned(TimeZone::system()).date();
+        let msg_date = message_day(&message);
         let in_unread = self
-            .row_metadata
-            .iter()
-            .any(|m| matches!(m, RowMetadata::UnreadDivider));
+            .timeline
+            .any_row(|row| matches!(row, ChatRow::UnreadDivider));
         let unread = !message.outgoing && in_unread && !at_bottom;
-        let date_break = self.last_message_date != Some(msg_date);
 
-        let back_is_message = matches!(self.row_metadata.back(), Some(RowMetadata::Message { .. }));
+        let old_bottom_idx = self.timeline.len().checked_sub(1);
+        let old_bottom_row = old_bottom_idx.and_then(|idx| self.timeline.row(idx));
 
-        let mut first = true;
-        if !date_break && back_is_message {
-            let idx = self.list.len() - 1;
-            if let Some(ChatRow::Message {
-                last: _,
-                first: prev_first,
-                unread: prev_unread,
-                message: prev,
-                last_of_segment: prev_last_of_segment,
-                first_of_segment: prev_first_of_segment,
-            }) = self.get_row(idx)
-                && same_group(&prev, &message)
-            {
-                first = false;
-                let updated = ChatRow::Message {
-                    last: false,
-                    first: prev_first,
-                    unread: prev_unread,
-                    message: prev,
-                    last_of_segment: prev_last_of_segment,
-                    first_of_segment: prev_first_of_segment,
-                };
-                let object = glib::BoxedAnyObject::new(updated);
-                self.store().splice(idx, 1, &[object]);
+        let bottom_group = match &old_bottom_row {
+            Some(ChatRow::Message { message: prev, .. }) => {
+                Some((message_day(prev), same_group(prev, &message)))
             }
-        }
+            _ => None,
+        };
+        let date_break = bottom_group.is_none_or(|(day, _)| day != msg_date);
+        let boundary_group = bottom_group.is_some_and(|(day, grouped)| day == msg_date && grouped);
 
         if in_unread && !date_break {
             self.demote_band_tail();
         }
 
-        // Insert a date separator if the date changed.
-        if date_break {
-            self.list.append(ChatRow::DateSeparator(msg_date));
-            self.row_metadata
-                .push_back(RowMetadata::Separator(msg_date));
-            self.last_message_date = Some(msg_date);
+        // The old bottom row is absorbed by the boundary group: it no
+        // longer renders the group tail.
+        if boundary_group
+            && let (
+                Some(idx),
+                Some(ChatRow::Message {
+                    last: _,
+                    first,
+                    unread: prev_unread,
+                    message: prev,
+                    last_of_segment: prev_last_of_segment,
+                    first_of_segment: prev_first_of_segment,
+                }),
+            ) = (old_bottom_idx, old_bottom_row)
+        {
+            let day = message_day(&prev);
+            let updated = ChatRow::Message {
+                last: false,
+                first,
+                unread: prev_unread,
+                message: prev,
+                last_of_segment: prev_last_of_segment,
+                first_of_segment: prev_first_of_segment,
+            };
+            self.timeline.replace(idx, updated, day);
         }
 
-        // Update newest loaded timestamp to this message.
-        let ts = message.timestamp;
-        self.newest_loaded_timestamp = Some(ts);
+        self.newest_loaded_timestamp = Some(message.timestamp);
 
-        let first_of_segment =
-            in_unread && matches!(self.row_metadata.back(), Some(RowMetadata::Separator(_)));
-        self.list.append(ChatRow::Message {
-            last: true,
-            first,
-            unread,
-            message,
-            last_of_segment: in_unread,
-            first_of_segment,
-        });
-        self.row_metadata.push_back(RowMetadata::Message {
-            ts,
-            unread,
-            last_of_segment: in_unread,
-            first_of_segment,
-        });
+        let first = !boundary_group;
+        let first_of_segment = in_unread && date_break;
+        self.timeline.append_batch(vec![(
+            ChatRow::Message {
+                last: true,
+                first,
+                unread,
+                message,
+                last_of_segment: in_unread,
+                first_of_segment,
+            },
+            msg_date,
+        )]);
     }
 
-    /// Prepend a batch of older messages to the top; reversed internally.
+    /// Prepend a batch of older messages to the top, newest first.
     pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) {
         if messages.is_empty() {
             return;
@@ -342,208 +582,153 @@ impl ChatHistory {
         }
 
         let newest = &messages[0];
-        let newest_date = newest.timestamp.to_zoned(TimeZone::system()).date();
-
-        let old_top_idx = self
-            .row_metadata
-            .iter()
-            .position(|m| matches!(m, RowMetadata::Message { .. }))
-            .and_then(|i| u32::try_from(i).ok());
-        let old_top_row = old_top_idx.and_then(|i| self.get_row(i));
-        let front_is_message =
-            matches!(self.row_metadata.front(), Some(RowMetadata::Message { .. }));
-
-        // The front separator labels the batch's newest day when the
-        // previous page ended inside that day.
-        let front_separator_matches = matches!(
-            self.row_metadata.front(),
-            Some(RowMetadata::Separator(date)) if *date == newest_date
-        );
+        let old_top_row = self
+            .timeline
+            .position_row(|row| matches!(row, ChatRow::Message { .. }))
+            .and_then(|idx| self.timeline.row(idx));
 
         let boundary_group = match &old_top_row {
-            Some(ChatRow::Message { message: prev, .. }) => {
-                (front_is_message || front_separator_matches) && same_group(prev, newest)
-            }
+            Some(ChatRow::Message { message: prev, .. }) => same_group(prev, newest),
             _ => false,
         };
 
-        let (rows, metas) = build_prepend_rows(messages, boundary_group);
+        let tz = TimeZone::system();
+        let mut rows: Vec<(ChatRow, Date)> = Vec::with_capacity(messages.len());
+        // Chronologically previous (older) state within the batch.
+        let mut prev_date: Option<Date> = None;
+        let mut prev_msg: Option<&ChatMessage> = None;
 
-        // A front separator matching the batch's newest day is duplicated
-        // by the batch's own separator; it is removed only once the
-        // layout settles (see `remove_pending_separator`).
-        self.pending_sep_removal = front_separator_matches
-            .then(|| u32::try_from(rows.len()).ok())
-            .flatten();
+        for (i, msg) in messages.iter().enumerate().rev() {
+            let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
 
-        let objects: Vec<glib::BoxedAnyObject> =
-            rows.into_iter().map(glib::BoxedAnyObject::new).collect();
+            let first = match prev_msg {
+                Some(prev) if prev_date == Some(msg_date) => !same_group(prev, msg),
+                _ => true,
+            };
+            let last = if i == 0 {
+                !boundary_group
+            } else {
+                let next = &messages[i - 1];
+                let next_date = next.timestamp.to_zoned(tz.clone()).date();
+                next_date != msg_date || !same_group(msg, next)
+            };
 
-        if let Some(scrolled_window) = self
-            .list
-            .view
-            .ancestor(gtk::ScrolledWindow::static_type())
-            .and_downcast::<gtk::ScrolledWindow>()
-        {
-            scrolled_window.set_kinetic_scrolling(false);
-            scrolled_window.set_kinetic_scrolling(true);
+            rows.push((
+                ChatRow::Message {
+                    last,
+                    first,
+                    unread: false,
+                    message: msg.clone(),
+                    last_of_segment: false,
+                    first_of_segment: false,
+                },
+                msg_date,
+            ));
+
+            prev_date = Some(msg_date);
+            prev_msg = Some(msg);
         }
 
-        self.store().splice(0, 0, &objects);
-
-        for meta in metas.into_iter().rev() {
-            self.row_metadata.push_front(meta);
-        }
-
-        // Update first_message_date to the oldest prepended message's date.
-        if let Some(oldest_msg) = messages.last() {
-            self.first_message_date =
-                Some(oldest_msg.timestamp.to_zoned(TimeZone::system()).date());
-        }
+        self.timeline.prepend_batch(rows);
     }
 
-    /// Removes the day separator duplicated by the last prepend. Called
-    /// once that prepend's layout settled: the duplicate sits far below
-    /// the anchored top rows by then, and the guard on the row above
-    /// keeps a stale index from ever removing an unrelated row.
-    pub(crate) fn remove_pending_separator(&mut self) {
-        let Some(index) = self.pending_sep_removal.take() else {
-            return;
-        };
-        let Ok(slot) = usize::try_from(index) else {
-            return;
-        };
-
-        let Some(RowMetadata::Separator(date)) = self.row_metadata.get(slot) else {
-            return;
-        };
-        let Some(ChatRow::Message { message, .. }) =
-            index.checked_sub(1).and_then(|above| self.get_row(above))
-        else {
-            return;
-        };
-
-        if message.timestamp.to_zoned(TimeZone::system()).date() != *date {
-            return;
-        }
-
-        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
-        self.store().splice(index, 1, &empty);
-        self.row_metadata.remove(slot);
-    }
-
-    /// Append a batch of newer messages to the bottom; iterated forward.
+    /// Append a batch of newer messages to the bottom, oldest first.
     pub(crate) fn append_newer(&mut self, messages: &[ChatMessage]) -> bool {
         if messages.is_empty() {
             return false;
         }
 
-        let oldest_batch = &messages[0];
         let tz = TimeZone::system();
+        let oldest_batch = &messages[0];
         let oldest_batch_date = oldest_batch.timestamp.to_zoned(tz.clone()).date();
-
         let in_unread = self
-            .row_metadata
-            .iter()
-            .any(|m| matches!(m, RowMetadata::UnreadDivider));
-        let bottom_is_separator =
-            matches!(self.row_metadata.back(), Some(RowMetadata::Separator(_)));
+            .timeline
+            .any_row(|row| matches!(row, ChatRow::UnreadDivider));
 
-        if in_unread && self.last_message_date == Some(oldest_batch_date) {
+        let old_bottom_idx = self.timeline.len().checked_sub(1);
+        let old_bottom_row = old_bottom_idx.and_then(|idx| self.timeline.row(idx));
+
+        let bottom_group = match &old_bottom_row {
+            Some(ChatRow::Message { message: prev, .. }) => {
+                Some((message_day(prev), same_group(prev, oldest_batch)))
+            }
+            _ => None,
+        };
+        let boundary_group =
+            bottom_group.is_some_and(|(day, grouped)| day == oldest_batch_date && grouped);
+
+        if in_unread && bottom_group.is_some_and(|(day, _)| day == oldest_batch_date) {
             self.demote_band_tail();
         }
 
-        let old_bottom_idx = self.list.len().checked_sub(1);
-        let old_bottom_row = old_bottom_idx.and_then(|i| self.get_row(i));
-
-        let boundary_group = match &old_bottom_row {
-            Some(ChatRow::Message { message: prev, .. }) => {
-                self.last_message_date == Some(oldest_batch_date) && same_group(prev, oldest_batch)
-            }
-            _ => false,
-        };
-
-        let mut rows = Vec::with_capacity(messages.len());
-        let mut metas = Vec::with_capacity(messages.len());
+        let mut rows: Vec<(ChatRow, Date)> = Vec::with_capacity(messages.len());
+        // Chronologically previous (older) state; seeded from the old
+        // bottom row so the batch groups with it.
+        let mut prev_date: Option<Date> = bottom_group.map(|(day, _)| day);
         let mut prev_msg: Option<&ChatMessage> = None;
 
         for (i, msg) in messages.iter().enumerate() {
             let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
+            let date_break = prev_date != Some(msg_date);
 
-            let mut first = true;
-            if i == 0 {
-                first = !boundary_group;
-            } else if self.last_message_date == Some(msg_date)
-                && let Some(prev) = prev_msg
-            {
-                first = !same_group(prev, msg);
-            }
-
-            // Insert a date separator if the date changed.
-            let first_of_segment = if self.last_message_date == Some(msg_date) {
-                i == 0 && bottom_is_separator && in_unread
+            let first = if i == 0 {
+                !boundary_group
+            } else if let Some(prev) = prev_msg {
+                !same_group(prev, msg)
             } else {
-                rows.push(ChatRow::DateSeparator(msg_date));
-                metas.push(RowMetadata::Separator(msg_date));
-                self.last_message_date = Some(msg_date);
-                in_unread
+                true
             };
+            let first_of_segment = in_unread && date_break;
 
+            // The chronologically next (newer) message.
             let next = messages.get(i + 1);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
                 || next.is_some_and(|n| !same_group(msg, n));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
-            let ts = msg.timestamp;
-            rows.push(ChatRow::Message {
-                last,
-                first,
-                unread: in_unread,
-                message: msg.clone(),
-                last_of_segment,
-                first_of_segment,
-            });
-            metas.push(RowMetadata::Message {
-                ts,
-                unread: in_unread,
-                last_of_segment,
-                first_of_segment,
-            });
+            rows.push((
+                ChatRow::Message {
+                    last,
+                    first,
+                    unread: in_unread,
+                    message: msg.clone(),
+                    last_of_segment,
+                    first_of_segment,
+                },
+                msg_date,
+            ));
+
+            prev_date = Some(msg_date);
             prev_msg = Some(msg);
         }
 
-        let objects = rows
-            .into_iter()
-            .map(glib::BoxedAnyObject::new)
-            .collect::<Vec<glib::BoxedAnyObject>>();
-        self.store().splice(self.list.len(), 0, &objects);
+        self.timeline.append_batch(rows);
 
-        self.row_metadata.extend(metas);
-
+        // The old bottom row is absorbed by the boundary group: it no
+        // longer renders the group tail.
         if boundary_group
             && let (
                 Some(idx),
                 Some(ChatRow::Message {
                     last: _,
                     first,
-                    unread,
-                    message,
-                    last_of_segment,
-                    first_of_segment,
+                    unread: prev_unread,
+                    message: prev,
+                    last_of_segment: prev_last_of_segment,
+                    first_of_segment: prev_first_of_segment,
                 }),
             ) = (old_bottom_idx, old_bottom_row)
         {
             let updated = ChatRow::Message {
                 last: false,
                 first,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
+                unread: prev_unread,
+                message: prev.clone(),
+                last_of_segment: prev_last_of_segment,
+                first_of_segment: prev_first_of_segment,
             };
-            let object = glib::BoxedAnyObject::new(updated);
-            self.store().splice(idx, 1, &[object]);
+            self.timeline.replace(idx, updated, message_day(&prev));
         }
 
         // Update the newest loaded timestamp cursor.
@@ -554,135 +739,32 @@ impl ChatHistory {
         true
     }
 
-    /// Trim rows from the bottom to stay within `max_rows`.
-    pub(crate) fn trim_bottom(&mut self, max_rows: u32) -> u32 {
-        let total = self.list.len();
-        if total <= max_rows {
-            return 0;
-        }
-
-        let to_remove = total - max_rows;
-        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
-        self.store().splice(max_rows, to_remove, &empty);
-        self.row_metadata.truncate(max_rows as usize);
-        self.has_newer = true;
-
-        // Update bottom cursors from remaining metadata.
-        self.update_bottom_cursors();
-
-        if let Some(idx) = self
-            .row_metadata
-            .iter()
-            .rposition(|m| matches!(m, RowMetadata::Message { .. }))
-            .and_then(|i| u32::try_from(i).ok())
-            && let Some(ChatRow::Message {
-                last,
-                first,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
-            }) = self.get_row(idx)
-            && !last
-        {
-            let updated = ChatRow::Message {
-                last: true,
-                first,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
-            };
-            let object = glib::BoxedAnyObject::new(updated);
-            self.store().splice(idx, 1, &[object]);
-        }
-
-        to_remove
-    }
-
-    /// Trim rows from the top to stay within `max_rows`.
-    pub(crate) fn trim_top(&mut self, max_rows: u32) -> u32 {
-        let total = self.list.len();
-        if total <= max_rows {
-            return 0;
-        }
-        let to_remove = total - max_rows;
-
-        if let Some(scrolled_window) = self
-            .list
-            .view
-            .ancestor(gtk::ScrolledWindow::static_type())
-            .and_downcast::<gtk::ScrolledWindow>()
-        {
-            scrolled_window.set_kinetic_scrolling(false);
-            scrolled_window.set_kinetic_scrolling(true);
-        }
-
-        let empty: Vec<glib::BoxedAnyObject> = Vec::new();
-        self.store().splice(0, to_remove, &empty);
-        self.row_metadata.drain(..to_remove as usize);
-        self.has_older = true;
-
-        // Update top cursors from remaining metadata.
-        self.update_top_cursors();
-
-        if let Some(idx) = self
-            .row_metadata
-            .iter()
-            .position(|m| matches!(m, RowMetadata::Message { .. }))
-            .and_then(|i| u32::try_from(i).ok())
-            && let Some(ChatRow::Message {
-                last,
-                first,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
-            }) = self.get_row(idx)
-            && !first
-        {
-            let updated = ChatRow::Message {
-                last,
-                first: true,
-                unread,
-                message,
-                last_of_segment,
-                first_of_segment,
-            };
-            let object = glib::BoxedAnyObject::new(updated);
-            self.store().splice(idx, 1, &[object]);
-        }
-
-        to_remove
-    }
-
     /// Find the index of the first message row matching `predicate`.
     pub(crate) fn find_message_index(
         &self,
         predicate: impl Fn(&ChatMessage) -> bool,
     ) -> Option<u32> {
-        self.list
-            .find(|row| matches!(row, ChatRow::Message { message, .. } if predicate(message)))
+        self.timeline.position_row(|row| match row {
+            ChatRow::Message { message, .. } => predicate(message),
+            _ => false,
+        })
     }
 
     /// Get a cloned copy of the row at `index`.
     pub(crate) fn get_row(&self, index: u32) -> Option<ChatRow> {
-        self.list.get(index).map(|item| item.borrow().clone())
+        self.timeline.row(index)
     }
 
     /// Whether any message row is still marked unread.
     pub(crate) fn has_unread_messages(&self) -> bool {
-        self.row_metadata
-            .iter()
-            .any(|m| matches!(m, RowMetadata::Message { unread: true, .. }))
+        self.timeline
+            .any_row(|row| matches!(row, ChatRow::Message { unread: true, .. }))
     }
 
     /// Index of the unread divider row, when the band is present.
     pub(crate) fn unread_divider_index(&self) -> Option<u32> {
-        self.row_metadata
-            .iter()
-            .position(|m| matches!(m, RowMetadata::UnreadDivider))
-            .and_then(|i| u32::try_from(i).ok())
+        self.timeline
+            .position_row(|row| matches!(row, ChatRow::UnreadDivider))
     }
 
     /// Scrolls to the bottom (forcing full layout), then up so the row at
@@ -709,7 +791,7 @@ impl ChatHistory {
                 .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
         }
 
-        let view = self.list.view.clone();
+        let view = self.view.clone();
         let mut attempts = 0;
         let mut pivoted = false;
         let mut last_upper = None::<f64>;
@@ -755,15 +837,18 @@ impl ChatHistory {
 
     /// Remove the row at `index` and re-insert a replacement, preserving scroll.
     pub(crate) fn replace_row(&self, index: u32, new_row: ChatRow, at_bottom: bool) {
-        let adj = self.list.view.vadjustment();
+        let adj = self.view.vadjustment();
         let saved_scroll = if at_bottom {
             None
         } else {
             adj.as_ref().map(AdjustmentExt::value)
         };
 
-        let object = glib::BoxedAnyObject::new(new_row);
-        self.store().splice(index, 1, &[object]);
+        let day = match &new_row {
+            ChatRow::Message { message, .. } => message_day(message),
+            _ => self.timeline.row_day(index).unwrap_or_default(),
+        };
+        self.timeline.replace(index, new_row, day);
 
         if let (Some(adj), Some(value)) = (adj, saved_scroll) {
             glib::idle_add_local_once(move || adj.set_value(value));
@@ -772,8 +857,7 @@ impl ChatHistory {
 
     /// Current adjustment (value, upper), for scroll diagnostics.
     pub(crate) fn scroll_position(&self) -> (f64, f64) {
-        self.list
-            .view
+        self.view
             .vadjustment()
             .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
     }
@@ -794,7 +878,7 @@ impl ChatHistory {
                 .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
         }
 
-        let view = self.list.view.clone();
+        let view = self.view.clone();
         let mut attempts = 0;
         let mut last_upper: Option<f64> = None;
 
@@ -831,111 +915,34 @@ impl ChatHistory {
         });
     }
 
-    /// The backing `gio::ListStore`, recovered through the public
-    /// selection model so row batches can be spliced with a single
-    /// items-changed emission.
-    fn store(&self) -> gio::ListStore {
-        self.list
-            .selection_model
-            .model()
-            .and_then(|model| model.downcast::<gio::ListStore>().ok())
-            .expect("unfiltered list view wraps the raw store")
-    }
-
-    /// Update bottom cursors (`newest_loaded_timestamp`, `last_message_date`)
-    /// from the `row_metadata` after trimming rows from the bottom.
-    fn update_bottom_cursors(&mut self) {
-        self.last_message_date = None;
-        self.newest_loaded_timestamp = None;
-
-        // Walk backward through metadata to find the newest message and last date.
-        for meta in self.row_metadata.iter().rev() {
-            match meta {
-                RowMetadata::Message { ts, .. } => {
-                    if self.newest_loaded_timestamp.is_none() {
-                        self.newest_loaded_timestamp = Some(*ts);
-                    }
-                }
-                RowMetadata::Separator(date) => {
-                    if self.last_message_date.is_none() {
-                        self.last_message_date = Some(*date);
-                    }
-                }
-                RowMetadata::UnreadDivider => {}
-            }
-
-            // Stop once both cursors are found.
-            if self.newest_loaded_timestamp.is_some() && self.last_message_date.is_some() {
-                break;
-            }
-        }
-    }
-
-    /// Update top cursors (`oldest_loaded_timestamp`, `first_message_date`)
-    /// from the `row_metadata` after trimming rows from the top.
-    fn update_top_cursors(&mut self) {
-        self.first_message_date = None;
-        self.oldest_loaded_timestamp = None;
-
-        // Walk forward through metadata to find the oldest message and first date.
-        for meta in &self.row_metadata {
-            match meta {
-                RowMetadata::Message { ts, .. } => {
-                    if self.oldest_loaded_timestamp.is_none() {
-                        self.oldest_loaded_timestamp = Some(*ts);
-                    }
-                }
-                RowMetadata::Separator(date) => {
-                    if self.first_message_date.is_none() {
-                        self.first_message_date = Some(*date);
-                    }
-                }
-                RowMetadata::UnreadDivider => {}
-            }
-
-            // Stop once both cursors are found.
-            if self.oldest_loaded_timestamp.is_some() && self.first_message_date.is_some() {
-                break;
-            }
-        }
-
-        // We trimmed from top, so there are definitely older messages to load.
-        self.has_older = true;
-    }
-
-    fn demote_band_tail(&mut self) {
-        if !matches!(
-            self.row_metadata.back(),
-            Some(RowMetadata::Message { unread: true, .. })
-        ) {
+    /// The last unread message stops being the band tail once more of
+    /// the band arrives below it.
+    fn demote_band_tail(&self) {
+        let Some(idx) = self.timeline.len().checked_sub(1) else {
             return;
-        }
-        let idx = u32::try_from(self.row_metadata.len() - 1).expect("row index fits u32");
-        if let Some(ChatRow::Message {
+        };
+
+        let Some(ChatRow::Message {
             last,
             first,
-            unread,
+            unread: true,
             message,
             last_of_segment: _,
             first_of_segment,
-        }) = self.get_row(idx)
-        {
-            let updated = ChatRow::Message {
-                last,
-                first,
-                unread,
-                message,
-                last_of_segment: false,
-                first_of_segment,
-            };
-            let object = glib::BoxedAnyObject::new(updated);
-            self.store().splice(idx, 1, &[object]);
-            if let Some(RowMetadata::Message {
-                last_of_segment, ..
-            }) = self.row_metadata.get_mut(idx as usize)
-            {
-                *last_of_segment = false;
-            }
-        }
+        }) = self.timeline.last_row()
+        else {
+            return;
+        };
+
+        let day = message_day(&message);
+        let updated = ChatRow::Message {
+            last,
+            first,
+            unread: true,
+            message,
+            last_of_segment: false,
+            first_of_segment,
+        };
+        self.timeline.replace(idx, updated, day);
     }
 }

@@ -23,22 +23,12 @@ use crate::{
 };
 
 const LOAD_MORE_COUNT: usize = 70;
-/// Maximum number of rows (messages + separators) to keep loaded.
-const MAX_LOADED_ROWS: u32 = 600;
 const INITIAL_LOAD_COUNT: usize = 120;
 /// Cooldown between on-demand history requests for one chat.
 const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
 /// How long to wait for a phone answer before asking again. Requests
 /// made while the phone app is asleep are dropped rather than queued.
 const HISTORY_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How long to wait for the list view to finish laying out a prepended
-/// batch before trusting the scroll position.
-/// How long to wait for the row allocation of a prepend to settle
-/// before giving up on restoring the viewport. Server answers land
-/// while the main loop is busy, and their rows allocate in slow
-/// bursts; 500ms proved too short.
-const HOLD_LAYOUT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Read-message rows kept visible above the unread divider at open.
 const UNREAD_BAND_CONTEXT_ROWS: u32 = 4;
 
@@ -52,12 +42,10 @@ pub struct ChatView {
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
     message_entry: gtk::Entry,
-    hold_generation: Rc<Cell<u64>>,
     typing_avatars: gtk::Box,
     /// In-flight marker for an on-demand history request; doubles as the
     /// retry clock, since a response or the retry window clears it.
     history_fetch_at: Option<Instant>,
-    scroll_adjustment: gtk::Adjustment,
     history_exhausted: bool,
     history_fetch_anchored: bool,
 }
@@ -192,11 +180,6 @@ pub enum ChatViewCommand {
     ScrollSettled {
         generation: u64,
     },
-    /// The viewport hold after a prepend finished: the position is now
-    /// safe to trim excess rows.
-    PositionHeld {
-        generation: u64,
-    },
     ScrollPositionChanged {
         at_top: bool,
         at_bottom: bool,
@@ -234,12 +217,21 @@ impl AsyncComponent for ChatView {
                         set_orientation: gtk::Orientation::Vertical,
 
                         gtk::Label {
+                            set_wrap: false,
                             #[watch]
                             set_label?: model.chat.as_ref().map(Chat::get_name_or_number).as_ref(),
                             #[watch]
                             set_visible: model.chat.is_some(),
+                            set_ellipsize: pango::EllipsizeMode::End,
                             set_selectable: false,
+                            set_width_chars: 5,
                             set_css_classes: &["title"],
+                            #[watch]
+                            set_tooltip_text?: model
+                                .chat
+                                .as_ref()
+                                .map(|chat| Some(chat.name.as_str())),
+                            set_single_line_mode: true,
                         },
 
                         gtk::Label {
@@ -460,15 +452,13 @@ impl AsyncComponent for ChatView {
             history,
             generation: 0,
             message_entry: gtk::Entry::new(),
-            hold_generation: Rc::new(Cell::new(0)),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             history_fetch_at: None,
-            scroll_adjustment: scroll_window.vadjustment(),
             history_exhausted: false,
             history_fetch_anchored: false,
         };
 
-        let list_view = model.history.view().view.clone();
+        let list_view = model.history.view().clone();
         let message_entry = &model.message_entry;
         let typing_avatars = &model.typing_avatars;
         let widgets = view_output!();
@@ -597,8 +587,6 @@ impl AsyncComponent for ChatView {
                 self.history_fetch_at = None;
                 self.history_exhausted = false;
                 self.history_fetch_anchored = false;
-
-                self.hold_generation.set(self.hold_generation.get() + 1);
 
                 self.chat = Some(chat.clone());
                 self.state.typing.clear();
@@ -968,10 +956,7 @@ impl AsyncComponent for ChatView {
 
                 self.history
                     .set_has_older(messages.len() == LOAD_MORE_COUNT);
-
-                let (baseline, _) = self.history.scroll_position();
                 self.history.prepend_messages(&messages);
-                self.hold_viewport_after_prepend(&sender, baseline);
 
                 let command_sender = sender.command_sender().clone();
                 glib::idle_add_local_once(move || {
@@ -992,9 +977,6 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history.append_newer(&messages);
-
-                // Trim excess rows from the top to stay within MAX_LOADED_ROWS.
-                self.history.trim_top(MAX_LOADED_ROWS);
 
                 if self.state.is_at_bottom {
                     self.scroll_to_bottom(|| {});
@@ -1067,18 +1049,12 @@ impl AsyncComponent for ChatView {
 
                 if !older.is_empty() {
                     self.history.set_has_older(older.len() == LOAD_MORE_COUNT);
-
-                    let (baseline, _) = self.history.scroll_position();
                     self.history.prepend_messages(&older);
-                    self.hold_viewport_after_prepend(&sender, baseline);
                 }
 
                 if !newer.is_empty() {
                     self.history.set_has_newer(newer.len() == LOAD_MORE_COUNT);
                     self.history.append_newer(&newer);
-
-                    // Trim excess rows from the top to stay within MAX_LOADED_ROWS.
-                    self.history.trim_top(MAX_LOADED_ROWS);
 
                     if self.state.is_at_bottom {
                         self.scroll_to_bottom(|| {});
@@ -1096,18 +1072,6 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::ScrollSettled { generation } => {
                 if generation == self.generation {
                     self.state.is_loading = false;
-                }
-            }
-            ChatViewCommand::PositionHeld { generation } => {
-                if generation == self.generation {
-                    // Drop the day separator the prepend duplicated; its
-                    // removal is harmless now that the layout settled.
-                    self.history.remove_pending_separator();
-
-                    // Trim excess rows from the bottom to stay within
-                    // MAX_LOADED_ROWS; safe now that the viewport hold
-                    // placed the view where it belongs.
-                    self.history.trim_bottom(MAX_LOADED_ROWS);
                 }
             }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
@@ -1236,61 +1200,6 @@ impl ChatView {
         let command_sender = sender.command_sender().clone();
         glib::timeout_add_local_once(HISTORY_FETCH_TIMEOUT, move || {
             command_sender.emit(ChatViewCommand::FetchRetryTimeout { generation });
-        });
-    }
-
-    /// Holds the viewport on the reading row after a prepend.
-    ///
-    /// The list view's own anchoring is unreliable: sometimes it keeps the
-    /// visible row stable without help, sometimes it lets the value stay
-    /// put and the view jumps to the top of the new page. This watches the
-    /// upper bound until the freshly prepended batch has finished laying
-    /// out and no row was trimmed into the measurement; when GTK did not
-    /// compensate on its own, the insertion height is added back to the
-    /// baseline.
-    fn hold_viewport_after_prepend(&self, sender: &AsyncComponentSender<Self>, baseline: f64) {
-        let generation = self.generation;
-        let token = self.hold_generation.get() + 1;
-        self.hold_generation.set(token);
-        let hold_generation = self.hold_generation.clone();
-
-        let adj = self.scroll_adjustment.clone();
-        let upper_before = adj.upper();
-        let started = Instant::now();
-        let command_sender = sender.command_sender().clone();
-
-        let mut last_upper = upper_before;
-        let mut stable_polls = 0u32;
-        glib::timeout_add_local(Duration::from_millis(16), move || {
-            // The chat changed or a newer hold took over: stand down.
-            if hold_generation.get() != token {
-                return glib::ControlFlow::Break;
-            }
-
-            let upper = adj.upper();
-            if (upper - last_upper).abs() > 0.5 {
-                // Still growing as row heights get allocated.
-                last_upper = upper;
-                stable_polls = 0;
-            } else {
-                stable_polls += 1;
-            }
-
-            let landed = stable_polls >= 3 && (last_upper - upper_before).abs() > 0.5;
-            if landed
-                && let delta = last_upper - upper_before
-                && (adj.value() - baseline).abs() <= 5.0
-                && delta > 0.5
-            {
-                adj.set_value(baseline + delta);
-            }
-
-            if landed || started.elapsed() > HOLD_LAYOUT_TIMEOUT {
-                command_sender.emit(ChatViewCommand::PositionHeld { generation });
-                return glib::ControlFlow::Break;
-            }
-
-            glib::ControlFlow::Continue
         });
     }
 
