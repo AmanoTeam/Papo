@@ -212,6 +212,7 @@ impl RelmListItem for ChatRow {
         let sender_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
             .css_classes(["sender-name", "heading"])
+            .ellipsize(pango::EllipsizeMode::End)
             .visible(false)
             .build();
         bubble_box.append(&sender_label);
@@ -228,8 +229,10 @@ impl RelmListItem for ChatRow {
             .hexpand(true)
             .selectable(true)
             .css_classes(["body"])
+            .width_chars(1)
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
+            .natural_wrap_mode(gtk::NaturalWrapMode::Word)
             .build();
         content_box.append(&content_label);
 
