@@ -294,7 +294,6 @@ fn extract_synced_messages(
     on_demand: bool,
 ) -> Vec<SyncedMessage> {
     let mut synced_messages = Vec::new();
-    let mut explicit_statuses = Vec::new();
     for hist_msg in &conv.messages {
         if let Some(web_msg) = hist_msg.message.as_option()
             && let Some(msg) = web_msg.message.as_option()
@@ -307,16 +306,6 @@ fn extract_synced_messages(
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
 
-            let explicit_status = matches!(
-                web_msg.status,
-                Some(
-                    Status::SERVER_ACK
-                        | Status::DELIVERY_ACK
-                        | Status::READ
-                        | Status::PLAYED
-                        | Status::ERROR
-                )
-            );
             let status = match web_msg.status {
                 Some(Status::SERVER_ACK) => MessageStatus::Sent,
                 Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
@@ -355,7 +344,6 @@ fn extract_synced_messages(
                 sender_jid,
                 sender_name: web_msg.push_name.clone().filter(|n| !n.is_empty()),
             });
-            explicit_statuses.push(explicit_status);
         }
     }
 
@@ -373,26 +361,41 @@ fn extract_synced_messages(
         0
     };
 
-    // The newest `unread_count` incoming messages stay unread; every
-    // other statusless incoming one was read on the phone.
+    // The phone's unread count covers only the newest messages;
+    // anything older was read there. Delivery acks persist on the
+    // wire long after the matching read receipt is gone, so an
+    // explicit `DELIVERY_ACK` must not keep a ranked-read message
+    // unread.
     let mut incoming = (0..synced_messages.len())
         .filter(|&index| !synced_messages[index].outgoing)
         .collect::<Vec<usize>>();
     incoming.sort_by_key(|&index| Reverse(synced_messages[index].timestamp));
     for (rank, &index) in incoming.iter().enumerate() {
-        if rank >= unread_count && !explicit_statuses[index] {
+        if rank >= unread_count
+            && matches!(
+                synced_messages[index].status,
+                MessageStatus::Sent | MessageStatus::Delivered
+            )
+        {
             synced_messages[index].status = MessageStatus::Read;
         }
     }
 
-    // Outgoing messages followed by a newer incoming reply were read by
-    // the peer; only the trailing ones keep their delivery progress.
+    // Outgoing messages followed by a newer incoming reply were read
+    // by the peer; only the trailing ones keep their delivery
+    // progress. Stale delivery acks count for as little as they do
+    // above.
     if let Some(newest_incoming) = incoming
         .first()
         .map(|&index| synced_messages[index].timestamp)
     {
-        for (index, message) in synced_messages.iter_mut().enumerate() {
-            if message.outgoing && !explicit_statuses[index] && message.timestamp < newest_incoming
+        for message in &mut synced_messages {
+            if message.outgoing
+                && message.timestamp < newest_incoming
+                && matches!(
+                    message.status,
+                    MessageStatus::Sent | MessageStatus::Delivered
+                )
             {
                 message.status = MessageStatus::Read;
             }
