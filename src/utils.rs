@@ -131,6 +131,19 @@ fn avatar_cache() -> &'static Mutex<AvatarCache> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Returns the cached avatar texture for a path if it has been decoded
+/// before and the file has not changed since.
+pub fn cached_avatar<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
+    let path = path.as_ref().to_path_buf();
+    let mtime = fs::metadata(&path).ok()?.modified().ok()?;
+    let cache = avatar_cache().lock().expect("avatar cache poisoned");
+
+    cache
+        .get(&path)
+        .filter(|(cached_mtime, _)| *cached_mtime == mtime)
+        .map(|(_, texture)| texture.clone())
+}
+
 /// Load an avatar into a texture from a local path, downscaled to keep
 /// texture memory small. Textures are cached by path until the file
 /// changes, so repeated chat list updates only bump the reference count.

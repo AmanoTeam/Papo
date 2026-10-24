@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, VecDeque},
+    mem,
+};
 
 use adw::prelude::*;
 use gtk::{gdk::Texture, gio, glib, pango};
@@ -12,7 +15,7 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
-    utils::{format_lid_as_number, get_first_name, load_avatar},
+    utils::{cached_avatar, format_lid_as_number, get_first_name, load_avatar},
     widgets::TypingDots,
 };
 
@@ -20,6 +23,9 @@ use crate::{
 pub struct ChatList {
     db: SessionStore,
     typing: HashMap<String, Vec<TypingSender>>,
+    pending_rows: VecDeque<ChatRowData>,
+    pending_avatars: HashMap<String, String>,
+
     chat_jid: Option<String>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
@@ -52,19 +58,27 @@ pub enum ChatListInput {
         chat: Chat,
         move_to_top: bool,
     },
+    RemoveChat {
+        jid: String,
+    },
+    PopulateAll(Vec<Chat>),
     UpdateTyping {
         chat_jid: String,
         senders: Vec<TypingSender>,
     },
 
+    ApplyRows(Vec<ChatRowData>),
     ApplyFilter(ChatListFilter),
+    UpdateAvatar {
+        jid: String,
+        avatar_path: String,
+    },
 
     Select(String),
     SelectPosition(u32),
-    RemoveChat {
-        jid: String,
-    },
     ClearSelection,
+
+    PumpPending,
 }
 
 #[derive(Debug)]
@@ -159,6 +173,9 @@ impl SimpleAsyncComponent for ChatList {
         let mut model = Self {
             db,
             typing: HashMap::new(),
+            pending_rows: VecDeque::new(),
+            pending_avatars: HashMap::new(),
+
             chat_jid: None,
             list_view_wrapper: TypedListView::new(),
         };
@@ -167,7 +184,7 @@ impl SimpleAsyncComponent for ChatList {
         // appear as soon as their first message arrives.
         model
             .list_view_wrapper
-            .add_filter(|row| row.last_message.is_some());
+            .add_filter(|row| row.data.last_message.is_some());
         let selection_model = &model.list_view_wrapper.selection_model;
 
         // Disabe chat row autoselecet and enable unselect.
@@ -208,22 +225,13 @@ impl SimpleAsyncComponent for ChatList {
                         .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
-                    let avatar_texture = if let Some(ref path) = chat.avatar_path {
-                        load_avatar(path).await
-                    } else {
-                        None
-                    };
 
                     // Build chat row.
-                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
-                    let row = ChatRow {
+                    let row = self.build_row(ChatRowData {
                         chat,
-                        is_typing,
-                        typing_senders,
                         last_message,
                         unread_count,
-                        avatar_texture,
-                    };
+                    });
 
                     if at_top {
                         self.list_view_wrapper.insert(0, row);
@@ -233,74 +241,117 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
             ChatListInput::UpdateChat { chat, move_to_top } => {
-                if let Some(index) = self.get_index_by_jid(&chat.jid) {
-                    let last_message = match chat.get_last_message(&self.db).await {
-                        Ok(message) => message,
-                        Err(e) => {
-                            tracing::error!("Failed to get chat last message: {}", e);
-                            None
-                        }
-                    };
-                    let unread_count = chat
-                        .get_unread_count(&self.db)
-                        .await
-                        .map_or(0, |c| u32::try_from(c).unwrap());
-                    let avatar_texture = if let Some(ref path) = chat.avatar_path {
-                        load_avatar(path).await
-                    } else {
+                let Some(index) = self.get_index_by_jid(&chat.jid) else {
+                    // A populate batch may still be in flight; insert the
+                    // chat directly instead of dropping the update.
+                    sender.input(ChatListInput::AddChat {
+                        chat,
+                        at_top: move_to_top,
+                    });
+                    return;
+                };
+
+                let chat_jid = chat.jid.clone();
+                let last_message = match chat.get_last_message(&self.db).await {
+                    Ok(message) => message,
+                    Err(e) => {
+                        tracing::error!("Failed to get chat last message: {e}");
                         None
-                    };
+                    }
+                };
+                let unread_count = chat
+                    .get_unread_count(&self.db)
+                    .await
+                    .map_or(0, |c| u32::try_from(c).unwrap());
 
-                    // Build updated chat row.
-                    let (is_typing, typing_senders) = self.typing_row_data(&chat.jid);
-                    let updated_row = ChatRow {
-                        chat: chat.clone(),
-                        is_typing,
-                        typing_senders,
-                        last_message,
-                        unread_count,
-                        avatar_texture,
-                    };
+                // Build updated chat row.
+                let updated_row = self.build_row(ChatRowData {
+                    chat,
+                    last_message,
+                    unread_count,
+                });
 
-                    let store = self.store();
-                    let object = glib::BoxedAnyObject::new(updated_row);
+                let store = self.store();
+                let object = glib::BoxedAnyObject::new(updated_row);
 
-                    if move_to_top && index > 0 {
-                        // Move the updated row to the top with a single splice.
-                        let mut objects = vec![object.upcast::<glib::Object>()];
-                        for position in 0..index {
-                            objects.push(store.item(position).expect("position below index"));
-                        }
-                        store.splice(0, index + 1, &objects);
+                if move_to_top && index > 0 {
+                    // Move the updated row to the top with a single splice.
+                    let mut objects = vec![object.upcast::<glib::Object>()];
+                    for position in 0..index {
+                        objects.push(store.item(position).expect("position below index"));
+                    }
+                    store.splice(0, index + 1, &objects);
 
-                        // Re-select the row and scroll to the top if it's the selected chat.
-                        if self.chat_jid.as_deref() == Some(&chat.jid) {
-                            if let Some(position) = self.get_visible_index_by_jid(&chat.jid) {
-                                self.list_view_wrapper
-                                    .selection_model
-                                    .select_item(position, true);
-                            }
-
-                            if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
-                                glib::idle_add_local_once(move || adj.set_value(adj.lower()));
-                            }
-                        }
-                    } else {
-                        // Replace the row in place, covering a chat already on top.
-                        store.splice(index, 1, &[object]);
-
-                        // Re-select the row.
-                        if self.chat_jid.as_deref() == Some(&chat.jid)
-                            && let Some(position) = self.get_visible_index_by_jid(&chat.jid)
-                        {
+                    // Re-select the row and scroll to the top if it's the selected chat.
+                    if self.chat_jid.as_deref() == Some(&chat_jid) {
+                        if let Some(position) = self.get_visible_index_by_jid(&chat_jid) {
                             self.list_view_wrapper
                                 .selection_model
                                 .select_item(position, true);
                         }
+
+                        if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
+                            glib::idle_add_local_once(move || adj.set_value(adj.lower()));
+                        }
+                    }
+                } else {
+                    // Replace the row in place, covering a chat already on top.
+                    store.splice(index, 1, &[object]);
+
+                    // Re-select the row.
+                    if self.chat_jid.as_deref() == Some(&chat_jid)
+                        && let Some(position) = self.get_visible_index_by_jid(&chat_jid)
+                    {
+                        self.list_view_wrapper
+                            .selection_model
+                            .select_item(position, true);
                     }
                 }
             }
+            ChatListInput::RemoveChat { jid } => {
+                if let Some(index) = self.get_index_by_jid(&jid) {
+                    self.list_view_wrapper.remove(index);
+                    if self.chat_jid.as_deref() == Some(&jid) {
+                        self.chat_jid = None;
+                    }
+                }
+            }
+            ChatListInput::PopulateAll(chats) => {
+                let db = self.db.clone();
+                let sender = sender.clone();
+                relm4::spawn(async move {
+                    const BATCH: usize = 100;
+                    let mut batch = Vec::with_capacity(BATCH);
 
+                    for chat in chats {
+                        let last_message = match chat.get_last_message(&db).await {
+                            Ok(message) => message,
+                            Err(e) => {
+                                tracing::error!("Failed to get chat last message: {e}");
+                                None
+                            }
+                        };
+                        let unread_count = chat
+                            .get_unread_count(&db)
+                            .await
+                            .map_or(0, |c| u32::try_from(c).unwrap());
+
+                        batch.push(ChatRowData {
+                            chat,
+                            last_message,
+                            unread_count,
+                        });
+
+                        if batch.len() >= BATCH {
+                            sender.input(ChatListInput::ApplyRows(mem::take(&mut batch)));
+                        }
+                    }
+
+                    if !batch.is_empty() {
+                        sender.input(ChatListInput::ApplyRows(batch));
+                    }
+                });
+            }
             ChatListInput::UpdateTyping { chat_jid, senders } => {
                 if senders.is_empty() {
                     self.typing.remove(&chat_jid);
@@ -309,7 +360,6 @@ impl SimpleAsyncComponent for ChatList {
                 }
 
                 let index = self.get_index_by_jid(&chat_jid);
-
                 let row_data = index.and_then(|index| {
                     self.list_view_wrapper
                         .iter()
@@ -317,9 +367,9 @@ impl SimpleAsyncComponent for ChatList {
                         .map(|item| {
                             let row = item.borrow();
                             (
-                                row.chat.clone(),
-                                row.last_message.clone(),
-                                row.unread_count,
+                                row.data.chat.clone(),
+                                row.data.last_message.clone(),
+                                row.data.unread_count,
                                 row.avatar_texture.clone(),
                             )
                         })
@@ -334,11 +384,13 @@ impl SimpleAsyncComponent for ChatList {
 
                     let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
                     let updated_row = ChatRow {
-                        chat,
+                        data: ChatRowData {
+                            chat,
+                            last_message,
+                            unread_count,
+                        },
                         is_typing,
                         typing_senders,
-                        last_message,
-                        unread_count,
                         avatar_texture,
                     };
 
@@ -356,12 +408,16 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
 
+            ChatListInput::ApplyRows(rows) => {
+                self.pending_rows.extend(rows);
+                sender.input(ChatListInput::PumpPending);
+            }
             ChatListInput::ApplyFilter(filter) => {
                 // Remove any existing filter to avoid stacking one filter on top of other.
                 self.list_view_wrapper.clear_filters();
                 // Base filter: chats without messages stay hidden.
                 self.list_view_wrapper
-                    .add_filter(|row| row.last_message.is_some());
+                    .add_filter(|row| row.data.last_message.is_some());
 
                 match filter {
                     ChatListFilter::All => {
@@ -375,16 +431,46 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     }
                     ChatListFilter::Groups => {
-                        self.list_view_wrapper.add_filter(|row| row.chat.is_group());
+                        self.list_view_wrapper
+                            .add_filter(|row| row.data.chat.is_group());
                     }
                     ChatListFilter::Unreads => self
                         .list_view_wrapper
-                        .add_filter(|row| row.unread_count > 0),
+                        .add_filter(|row| row.data.unread_count > 0),
+                }
+            }
+            ChatListInput::UpdateAvatar { jid, avatar_path } => {
+                let Some(index) = self.get_index_by_jid(&jid) else {
+                    // The populate batches may still be in flight; park
+                    // the avatar until the row is built.
+                    self.pending_avatars.insert(jid, avatar_path);
+                    return;
+                };
+
+                if let Some(item) = self.list_view_wrapper.iter().nth(index as usize) {
+                    let data = {
+                        let row = item.borrow();
+                        let mut data = row.data.clone();
+                        data.chat.avatar_path = Some(avatar_path);
+                        data
+                    };
+
+                    let updated_row = self.build_row(data);
+                    let object = glib::BoxedAnyObject::new(updated_row);
+                    self.store().splice(index, 1, &[object]);
+
+                    // Re-select the row.
+                    if self.chat_jid.as_deref() == Some(&jid)
+                        && let Some(position) = self.get_visible_index_by_jid(&jid)
+                    {
+                        self.list_view_wrapper
+                            .selection_model
+                            .select_item(position, true);
+                    }
                 }
             }
 
             ChatListInput::Select(jid) => {
-                // Check if the selected chat isn't already selected.
                 if self.chat_jid.as_deref() != Some(&jid) {
                     self.chat_jid = Some(jid.clone());
                     let _ = sender.output(ChatListOutput::ChatSelected(jid));
@@ -394,16 +480,8 @@ impl SimpleAsyncComponent for ChatList {
                 if let Some(item) = self.list_view_wrapper.get_visible(position) {
                     let row = item.borrow();
 
-                    let jid = row.chat.jid.clone();
+                    let jid = row.data.chat.jid.clone();
                     sender.input(ChatListInput::Select(jid));
-                }
-            }
-            ChatListInput::RemoveChat { jid } => {
-                if let Some(index) = self.get_index_by_jid(&jid) {
-                    self.list_view_wrapper.remove(index);
-                    if self.chat_jid.as_deref() == Some(&jid) {
-                        self.chat_jid = None;
-                    }
                 }
             }
             ChatListInput::ClearSelection => {
@@ -416,6 +494,37 @@ impl SimpleAsyncComponent for ChatList {
                 {
                     self.chat_jid = None;
                     self.list_view_wrapper.selection_model.unselect_all();
+                }
+            }
+
+            ChatListInput::PumpPending => {
+                // Draining a bounded slice per message keeps every other
+                // input ahead of the remainder: the self-queued pump goes
+                // to the back of the channel, behind the user's clicks.
+                const ROWS_PER_SLICE: usize = 40;
+
+                let mut built = 0;
+                while built < ROWS_PER_SLICE
+                    && let Some(mut data) = self.pending_rows.pop_front()
+                {
+                    // A live update may have inserted the chat while the
+                    // populate batches were still in flight.
+                    if self.get_index_by_jid(&data.chat.jid).is_some() {
+                        continue;
+                    }
+
+                    // Likewise, an avatar may have arrived while the row
+                    // was still being built in the background.
+                    if let Some(path) = self.pending_avatars.remove(&data.chat.jid) {
+                        data.chat.avatar_path = Some(path);
+                    }
+
+                    self.list_view_wrapper.append(self.build_row(data));
+                    built += 1;
+                }
+
+                if !self.pending_rows.is_empty() {
+                    sender.input(ChatListInput::PumpPending);
                 }
             }
         }
@@ -444,7 +553,7 @@ impl ChatList {
 
     fn get_index_by_jid(&self, jid: &str) -> Option<u32> {
         for (i, row) in self.list_view_wrapper.iter().enumerate() {
-            if row.borrow().chat.jid == jid {
+            if row.borrow().data.chat.jid == jid {
                 return Some(u32::try_from(i).unwrap());
             }
         }
@@ -459,7 +568,7 @@ impl ChatList {
 
         for position in 0..model.n_items() {
             if let Some(item) = self.list_view_wrapper.get_visible(position)
-                && item.borrow().chat.jid == jid
+                && item.borrow().data.chat.jid == jid
             {
                 return Some(position);
             }
@@ -474,19 +583,57 @@ impl ChatList {
             _ => (false, Vec::new()),
         }
     }
+
+    /// Builds a row from precomputed data; no database access, so it is
+    /// safe to call while keeping the input queue short.
+    fn build_row(&self, data: ChatRowData) -> ChatRow {
+        let avatar_texture = data.chat.avatar_path.as_ref().and_then(cached_avatar);
+        let (is_typing, typing_senders) = self.typing_row_data(&data.chat.jid);
+
+        ChatRow {
+            data,
+            is_typing,
+            typing_senders,
+            avatar_texture,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ChatRow {
-    chat: Chat,
+    data: ChatRowData,
     is_typing: bool,
     typing_senders: Vec<TypingSender>,
-    last_message: Option<ChatMessage>,
-    unread_count: u32,
     avatar_texture: Option<Texture>,
 }
 
 impl ChatRow {
+    fn bind_avatar(&self, widgets: &ChatRowWidgets, root: &gtk::Box) {
+        let texture = self
+            .avatar_texture
+            .clone()
+            .or_else(|| self.data.chat.avatar_path.as_ref().and_then(cached_avatar));
+        if let texture @ Some(_) = texture.as_ref() {
+            widgets.avatar.set_custom_image(texture);
+        } else {
+            widgets.avatar.set_custom_image(None::<&Texture>);
+
+            if let Some(path) = self.data.chat.avatar_path.clone() {
+                let jid = self.data.chat.jid.clone();
+                let root = root.clone();
+                let avatar = widgets.avatar.clone();
+
+                glib::spawn_future_local(async move {
+                    if let Some(texture) = load_avatar(&path).await
+                        && root.widget_name() == jid
+                    {
+                        avatar.set_custom_image(Some(&texture));
+                    }
+                });
+            }
+        }
+    }
+
     fn typing_text(&self) -> String {
         let recording = self.typing_senders.iter().any(|s| s.recording);
         if self.typing_senders.len() == 1 && recording {
@@ -505,6 +652,13 @@ impl ChatRow {
             i18n_f!("{0} people are typing...", self.typing_senders.len())
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ChatRowData {
+    chat: Chat,
+    last_message: Option<ChatMessage>,
+    unread_count: u32,
 }
 
 pub struct ChatRowWidgets {
@@ -645,29 +799,25 @@ impl RelmListItem for ChatRow {
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
-        let name = if self.chat.name.trim().is_empty() {
-            format_lid_as_number(&self.chat.jid)
+        let name = if self.data.chat.name.trim().is_empty() {
+            format_lid_as_number(&self.data.chat.jid)
         } else {
-            self.chat.name.trim().to_string()
+            self.data.chat.name.trim().to_string()
         };
         widgets.title_label.set_label(&name);
-        root.set_widget_name(&self.chat.jid);
+        root.set_widget_name(&self.data.chat.jid);
 
-        widgets.avatar.set_text(Some(&self.chat.name));
-        widgets.muted_icon.set_visible(self.chat.muted);
-        widgets.pinned_icon.set_visible(self.chat.pinned);
+        widgets.avatar.set_text(Some(&self.data.chat.name));
+        widgets.muted_icon.set_visible(self.data.chat.muted);
+        widgets.pinned_icon.set_visible(self.data.chat.pinned);
 
-        // Load avatar image if available.
-        if let texture @ Some(_) = self.avatar_texture.as_ref() {
-            widgets.avatar.set_custom_image(texture);
-        } else {
-            widgets.avatar.set_custom_image(None::<&Texture>);
-        }
+        // Avatar textures decode lazily: only visible rows pay.
+        self.bind_avatar(widgets, root);
 
-        if self.unread_count > 0 {
+        if self.data.unread_count > 0 {
             widgets
                 .unread_count_badge
-                .set_label(self.unread_count.to_string().as_str());
+                .set_label(self.data.unread_count.to_string().as_str());
             widgets.unread_count_badge.set_visible(true);
         } else {
             widgets.unread_count_badge.set_visible(false);
@@ -676,7 +826,7 @@ impl RelmListItem for ChatRow {
         root.remove_css_class("dimmed");
         widgets.unread_count_badge.remove_css_class("dimmed");
 
-        if self.chat.muted {
+        if self.data.chat.muted {
             root.add_css_class("dimmed");
             widgets.unread_count_badge.add_css_class("dimmed");
         }
@@ -685,7 +835,7 @@ impl RelmListItem for ChatRow {
         widgets.status_icon.remove_css_class("white");
         widgets.status_icon.remove_css_class("warning");
 
-        let is_group = self.chat.is_group();
+        let is_group = self.data.chat.is_group();
         let show_typing_row = self.is_typing && is_group;
         widgets.typing_box.set_visible(show_typing_row);
         widgets.subtitle_label.set_visible(!show_typing_row);
@@ -695,7 +845,7 @@ impl RelmListItem for ChatRow {
             widgets.typing_label.set_label(&self.typing_text());
         }
 
-        if let Some(msg) = &self.last_message {
+        if let Some(msg) = &self.data.last_message {
             let mut content = last_message_content(msg);
             let mut first_line = if content.contains('\n') {
                 content
@@ -712,7 +862,7 @@ impl RelmListItem for ChatRow {
                 content.clone()
             };
             if let Some(ref name) = msg.sender_name
-                && self.chat.is_group()
+                && self.data.chat.is_group()
             {
                 if msg.outgoing {
                     content = format!("{}: {content}", i18n!("You"));

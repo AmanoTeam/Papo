@@ -569,6 +569,12 @@ impl AsyncComponent for ChatView {
     ) {
         match input {
             ChatViewInput::Open(chat) => {
+                if let Some(ref open) = self.chat
+                    && open.jid == chat.jid
+                {
+                    return;
+                }
+
                 self.generation += 1;
                 self.history.clear();
 
@@ -597,6 +603,7 @@ impl AsyncComponent for ChatView {
                 self.chat = Some(chat.clone());
                 self.state.typing.clear();
                 self.rebuild_typing_avatars();
+                tracing::info!("Opening chat: {}", chat.jid);
 
                 // Update the user presence label.
                 self.update_presence();

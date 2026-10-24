@@ -15,7 +15,7 @@ use relm4::{
     prelude::*,
 };
 use strum::{AsRefStr, EnumString};
-use tokio::time;
+use tokio::{task, time};
 use uuid::Uuid;
 use whatsapp_rust::{
     types::{message::MessageInfo, presence::ReceiptType},
@@ -1431,13 +1431,14 @@ impl AsyncComponent for Application {
 
             AppMsg::AvatarUpdate { jid, path } => {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
-                    chat.avatar_path = Some(path);
-                    self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat: chat.clone(),
-                        move_to_top: false,
+                    chat.avatar_path = Some(path.clone());
+
+                    self.chat_list.emit(ChatListInput::UpdateAvatar {
+                        jid,
+                        avatar_path: path,
                     });
 
-                    tracing::trace!("Updated avatar for chat: {}", jid);
+                    tracing::trace!("Updated avatar for chat: {}", chat.jid);
                 }
             }
             AppMsg::ContactUpdate {
@@ -2079,15 +2080,8 @@ impl AsyncComponent for Application {
                             }
                         }
 
-                        self.chats.extend(chats);
-
-                        for chat in &self.chats {
-                            self.chat_list.emit(ChatListInput::AddChat {
-                                chat: chat.clone(),
-                                at_top: false,
-                            });
-                        }
-
+                        self.chats.extend(chats.clone());
+                        self.chat_list.emit(ChatListInput::PopulateAll(chats));
                         self.flush_pending_receipts().await;
 
                         // Read marks buffered while chats were not loaded.
@@ -2266,6 +2260,8 @@ impl AsyncComponent for Application {
                             )
                             .await,
                         );
+
+                        task::yield_now().await;
                     }
 
                     // Spawn database operations in background task.
@@ -2279,6 +2275,8 @@ impl AsyncComponent for Application {
                         let has_messages = total > 0;
 
                         for (synced_msg, sender_name) in messages.into_iter().zip(resolved_names) {
+                            task::yield_now().await;
+
                             let media = synced_msg.media_type.map(|t| Media {
                                 r#type: MediaType::from(t),
                                 ..Media::default()
