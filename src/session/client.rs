@@ -145,6 +145,9 @@ pub enum ClientOutput {
     Connecting,
     Disconnected,
 
+    PushNameLearned {
+        entries: Vec<(String, String)>,
+    },
     SelfPushNameUpdated {
         push_name: String,
     },
@@ -1278,6 +1281,21 @@ impl AsyncComponent for Client {
                         tracing::error!("Failed to decode history sync payload");
                         return;
                     };
+
+                    let push_names = sync
+                        .pushnames
+                        .iter()
+                        .filter_map(|entry| {
+                            let id = entry.id.as_deref()?;
+                            let name = entry.pushname.as_deref().filter(|n| !n.is_empty())?;
+                            Some((id.to_string(), name.to_string()))
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    if !push_names.is_empty() {
+                        let _ = sender_clone.output(ClientOutput::PushNameLearned {
+                            entries: push_names,
+                        });
+                    }
 
                     let mut lid_pairs = Vec::new();
                     for mapping in &sync.phone_number_to_lid_mappings {

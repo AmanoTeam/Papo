@@ -144,8 +144,11 @@
 
   font-size: 0.95em;
 
-  &.activatable {
+  &.push-name {
+    font-style: italic;
+  }
 
+  &.activatable {
     &:hover,
     &:focus {
       label {

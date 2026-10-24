@@ -61,14 +61,22 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
     widgets.avatar.set_visible(last);
 
     if last {
+        // Wire push names carry the `~` marker; initials ignore it.
         let name = msg
             .sender_name
             .clone()
+            .map(|name| name.trim_start_matches('~').to_string())
             .or_else(|| msg.sender_jid.split('@').next().map(str::to_string));
         widgets.avatar.set_text(name.as_deref());
     }
 
     if first && let Some(name) = &msg.sender_name {
+        if name.starts_with('~') {
+            widgets.sender_label.add_css_class("push-name");
+        } else {
+            widgets.sender_label.remove_css_class("push-name");
+        }
+
         widgets.sender_label.set_label(name);
         widgets.sender_label.set_visible(true);
     }

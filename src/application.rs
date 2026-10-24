@@ -55,18 +55,24 @@ pub struct Application {
     sender: AsyncComponentSender<Self>,
     typing: HashMap<String, ChatTypingState>,
     session: Session,
-    /// Resolved contact list (JID -> name).
+    /// Resolved contact list (JID -> name), real names only: entries
+    /// seeded by the address book or the contacts store, never by
+    /// wire push names.
     contacts: HashMap<String, String>,
+    /// Wire push names (JID -> name), keyed bare. The freshest name
+    /// seen on the wire wins; rendered `~name` italic in rows, never
+    /// as a chat title.
+    push_names: HashMap<String, String>,
     /// Whether chats have already been loaded from the database.
     cache_loaded: bool,
     /// Whether the client is connected to `WhatsApp`.
     client_connected: bool,
     /// Receipts that arrived before their message; applied when it lands.
     pending_receipts: HashMap<String, VecDeque<(String, MessageStatus, bool)>>,
-    /// Avatar fetches queued while the client was not connected yet.
-    pending_avatar_fetches: Vec<String>,
     /// Read marks that arrived while the chats were not loaded yet.
     pending_read_chats: HashSet<String>,
+    /// Avatar fetches queued while the client was not connected yet.
+    pending_avatar_fetches: Vec<String>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -186,6 +192,9 @@ pub enum AppMsg {
         lid: String,
         phone: Option<String>,
     },
+    PushNameLearned {
+        entries: Vec<(String, String)>,
+    },
     LidMappingsLearned {
         pairs: Vec<(String, String)>,
     },
@@ -288,6 +297,11 @@ impl Application {
     fn add_chat(&mut self, mut chat: Chat) {
         if let Some(name) = self.contacts.get(&chat.jid).filter(|n| !n.is_empty()) {
             chat.name.clone_from(name);
+        } else if is_phone_jid(&chat.jid)
+            && chat.jid != self.user_jid.clone().unwrap_or_default()
+            && format_lid_as_number(&chat.jid) != chat.name
+        {
+            chat.name = format_lid_as_number(&chat.jid);
         }
 
         self.chats.push(chat.clone());
@@ -347,13 +361,22 @@ impl Application {
     /// then the contact seen under the jid's other identity (a LID
     /// mapped to its phone number or the other way around).
     async fn resolve_name(&self, jid: &str) -> Option<String> {
+        self.lookup_name_in(&self.contacts, jid).await
+    }
+
+    /// Same sibling-aware lookup over the learned wire push names.
+    async fn resolve_push_name(&self, jid: &str) -> Option<String> {
+        self.lookup_name_in(&self.push_names, jid).await
+    }
+
+    async fn lookup_name_in(&self, map: &HashMap<String, String>, jid: &str) -> Option<String> {
         let bare = bare_jid(jid);
 
-        if let Some(name) = self.contacts.get(&bare).filter(|n| !n.is_empty()) {
+        if let Some(name) = map.get(&bare).filter(|n| !n.is_empty()) {
             return Some(name.clone());
         } else if is_lid_jid(&bare)
             && let Some(phone) = self.db.lid_to_pn_jid(&bare).await
-            && let Some(name) = self.contacts.get(&phone).filter(|n| !n.is_empty())
+            && let Some(name) = map.get(&phone).filter(|n| !n.is_empty())
         {
             return Some(name.clone());
         }
@@ -362,7 +385,7 @@ impl Application {
             for lid in self.db.pn_to_lid_jids(&bare).await {
                 let bare_lid = bare_jid(&lid);
 
-                if let Some(name) = self.contacts.get(&bare_lid).filter(|n| !n.is_empty()) {
+                if let Some(name) = map.get(&bare_lid).filter(|n| !n.is_empty()) {
                     return Some(name.clone());
                 }
             }
@@ -386,10 +409,68 @@ impl Application {
             return Some(name);
         }
 
-        chat.and_then(|c| c.participants.get(jid))
-            .filter(|n| **n != i18n!("Unknown"))
-            .cloned()
-            .or_else(|| stored.filter(|n| !n.is_empty()).map(ToString::to_string))
+        // Everything past the real-name chain is wire-sourced: the
+        // learned push name, a participants entry or the name this
+        // message carries. Mark those the WhatsApp way.
+        let push_name = self
+            .resolve_push_name(jid)
+            .await
+            .or_else(|| {
+                chat.and_then(|c| c.participants.get(jid))
+                    .filter(|n| **n != i18n!("Unknown"))
+                    .cloned()
+            })
+            .or_else(|| {
+                stored
+                    .filter(|n| !n.is_empty())
+                    .map(|n| n.trim_start_matches('~').to_string())
+            })?;
+
+        Some(format!("~{push_name}"))
+    }
+
+    /// Learns a contact's push name from a sync chunk or live message.
+    async fn learn_push_name(&mut self, sender_jid: &str, push_name: &str) {
+        if sender_jid.is_empty() {
+            return;
+        }
+
+        let bare = bare_jid(sender_jid);
+        if self
+            .push_names
+            .get(&bare)
+            .is_some_and(|known| known == push_name)
+        {
+            return;
+        }
+
+        let contact = match self.db.get_contact(&bare).await {
+            Ok(Some(contact)) => {
+                let mut contact = contact;
+                contact.push_name = Some(push_name.to_string());
+                contact
+            }
+            Ok(None) => Contact {
+                jid: bare.clone(),
+                name: None,
+                push_name: Some(push_name.to_string()),
+                last_updated: 0,
+                phone_number: None,
+                is_registered: false,
+                profile_picture_url: None,
+            },
+            Err(e) => {
+                tracing::error!("Failed to load contact {bare}: {e}");
+                return;
+            }
+        };
+
+        if let Err(e) = self.db.save_contact(&contact).await {
+            tracing::error!("Failed to save push name for {bare}: {e}");
+            return;
+        }
+
+        self.push_names.insert(bare, push_name.to_string());
     }
 
     async fn resolve_jid(&self, jid: &str) -> String {
@@ -570,18 +651,10 @@ impl Application {
 
         // Create a new chat if it doesn't exists.
         if !self.chats.iter().any(|c| c.jid == chat_jid) {
-            let sender_name = if message.outgoing {
-                None
-            } else {
-                message.sender_name.clone().filter(|n| !n.is_empty())
-            };
-
             let name = if is_group {
                 format!("{} {}", i18n!("Group"), &chat_jid[..8])
             } else if self.user_jid.as_ref().is_some_and(|u_j| chat_jid == u_j) {
                 i18n!("You")
-            } else if let Some(name) = sender_name {
-                name
             } else if let Some(name) = self.resolve_name(chat_jid).await {
                 name
             } else {
@@ -965,6 +1038,7 @@ impl AsyncComponent for Application {
                 });
 
         let mut contacts = HashMap::new();
+        let mut push_names = HashMap::new();
         if let Ok(stored) = db.get_all_contacts().await {
             for contact in stored {
                 let Contact {
@@ -973,12 +1047,10 @@ impl AsyncComponent for Application {
                     push_name,
                     ..
                 } = contact;
-                let display = name
-                    .filter(|n| !n.is_empty())
-                    .or_else(|| push_name.filter(|n| !n.is_empty()));
-
-                if let Some(display) = display {
-                    contacts.insert(jid, display);
+                if let Some(name) = name.filter(|n| !n.is_empty()) {
+                    contacts.insert(jid, name);
+                } else if let Some(push_name) = push_name.filter(|n| !n.is_empty()) {
+                    push_names.insert(jid, push_name);
                 }
             }
         }
@@ -1102,6 +1174,9 @@ impl AsyncComponent for Application {
                         lid,
                         phone,
                     },
+                    ClientOutput::PushNameLearned { entries } => {
+                        AppMsg::PushNameLearned { entries }
+                    }
                     ClientOutput::LidMappingsLearned { pairs } => {
                         AppMsg::LidMappingsLearned { pairs }
                     }
@@ -1162,6 +1237,7 @@ impl AsyncComponent for Application {
             typing: HashMap::new(),
             session,
             contacts,
+            push_names,
             cache_loaded: false,
             client_connected: false,
             pending_receipts: HashMap::new(),
@@ -1448,12 +1524,12 @@ impl AsyncComponent for Application {
                 phone_number,
             } => {
                 jid = bare_jid(&jid);
-                let display = name
-                    .clone()
-                    .filter(|n| !n.is_empty())
-                    .or_else(|| push_name.clone().filter(|n| !n.is_empty()));
-                if let Some(display) = display {
-                    self.contacts.insert(jid.clone(), display);
+                if let Some(name) = name.clone().filter(|n| !n.is_empty()) {
+                    self.contacts.insert(jid.clone(), name);
+                    self.push_names.remove(&jid);
+                }
+                if let Some(push_name) = push_name.clone().filter(|n| !n.is_empty()) {
+                    self.push_names.insert(jid.clone(), push_name);
                 }
 
                 // Save contact to database in background.
@@ -1739,8 +1815,15 @@ impl AsyncComponent for Application {
                     self.register_participant(&chat_jid, &lid, name.as_deref());
                     self.register_participant(&chat_jid, &pn_jid, name.as_deref());
 
-                    let resolved = name.unwrap_or_else(|| format_lid_as_number(&pn_jid));
-                    self.contacts.insert(lid.clone(), resolved.clone());
+                    let resolved = name
+                        .clone()
+                        .unwrap_or_else(|| format_lid_as_number(&pn_jid));
+                    if let Some(name) = &name {
+                        // Alias the real name under the LID form so later
+                        // lookups resolve; a phone number never poses as
+                        // a contact name.
+                        self.contacts.insert(lid.clone(), name.clone());
+                    }
 
                     if let Some(state) = self.typing.get(&chat_jid)
                         && let Some(recording) = state.senders.get(&lid).map(|s| s.recording)
@@ -1762,6 +1845,19 @@ impl AsyncComponent for Application {
 
                         self.emit_typing(&chat_jid);
                     }
+                }
+            }
+            AppMsg::PushNameLearned { entries } => {
+                for (jid, push_name) in entries {
+                    if self
+                        .user_jid
+                        .as_ref()
+                        .is_some_and(|user| *user == bare_jid(&jid))
+                    {
+                        continue;
+                    }
+
+                    self.learn_push_name(&jid, &push_name).await;
                 }
             }
             AppMsg::LidMappingsLearned { pairs } => {
@@ -1835,6 +1931,13 @@ impl AsyncComponent for Application {
                         } else {
                             self.resolve_jid(&info.source.sender.to_string()).await
                         };
+
+                        // Learn the wire push name before resolving.
+                        if !outgoing && !info.push_name.is_empty() {
+                            self.learn_push_name(&sender_jid, info.push_name.as_str())
+                                .await;
+                        }
+
                         let sender_name = self
                             .resolve_sender_name(
                                 &sender_jid,
@@ -2065,6 +2168,11 @@ impl AsyncComponent for Application {
                                 self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
                             {
                                 chat.name.clone_from(name);
+                            } else if is_phone_jid(&chat.jid)
+                                && chat.jid != self.user_jid.clone().unwrap_or_default()
+                                && format_lid_as_number(&chat.jid) != chat.name
+                            {
+                                chat.name = format_lid_as_number(&chat.jid);
                             }
 
                             match avatar_cache.as_ref() {
@@ -2147,7 +2255,18 @@ impl AsyncComponent for Application {
                             jid: chat_jid.clone(),
                         });
 
-                        let mut chat_name = name.or_else(|| self.contacts.get(&jid).cloned());
+                        // A 1:1 sync name is the peer's wire push name:
+                        // learn it, never title the chat from it.
+                        let own_chat = self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j);
+                        if !jid.ends_with("@g.us")
+                            && !own_chat
+                            && let Some(wire_name) = name.clone().filter(|n| !n.is_empty())
+                        {
+                            self.learn_push_name(&jid, &wire_name).await;
+                        }
+
+                        let mut chat_name = if jid.ends_with("@g.us") { name } else { None }
+                            .or_else(|| self.contacts.get(&jid).cloned());
                         if chat_name.is_none() && !jid.ends_with("@g.us") {
                             chat_name = self.resolve_name(&jid).await;
                         }
@@ -2155,7 +2274,7 @@ impl AsyncComponent for Application {
                         let chat_name = chat_name.unwrap_or_else(|| {
                             if jid.ends_with("@g.us") {
                                 format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
-                            } else if self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j) {
+                            } else if own_chat {
                                 i18n!("You")
                             } else {
                                 format_lid_as_number(&jid)
@@ -2219,6 +2338,23 @@ impl AsyncComponent for Application {
 
                     let db = self.db.clone();
                     let is_group = chat_jid.ends_with("@g.us");
+
+                    // Learn push names carried by the chunk.
+                    let mut learned = IndexMap::new();
+                    for message in &messages {
+                        if let Some(name) = message
+                            .sender_name
+                            .as_deref()
+                            .filter(|name| !name.is_empty())
+                            .filter(|_| !message.outgoing)
+                        {
+                            learned.insert(bare_jid(&message.sender_jid), name.to_string());
+                        }
+                    }
+                    for (bare, push_name) in learned {
+                        self.learn_push_name(&bare, &push_name).await;
+                        task::yield_now().await;
+                    }
 
                     // Collect sender info for participant updates.
                     let sender_info: Vec<(String, Option<String>)> = if is_group {
