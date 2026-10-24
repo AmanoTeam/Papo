@@ -139,14 +139,13 @@ impl TimelineModel {
 
     fn clear(&self) {
         let removed = {
-            let mut rows = self.imp().rows.borrow_mut();
-            let removed = rows.len();
-            rows.clear();
-            removed
+            let rows = self.imp().rows.borrow();
+            u32::try_from(rows.len()).expect("row count fits u32")
         };
 
         if removed > 0 {
-            let removed = u32::try_from(removed).expect("row count fits u32");
+            self.sections_changed(0, removed);
+            self.imp().rows.borrow_mut().clear();
             self.upcast_ref::<gio::ListModel>()
                 .items_changed(0, removed, 0);
         }
@@ -170,6 +169,7 @@ impl TimelineModel {
             let added = u32::try_from(added).expect("row count fits u32");
             self.upcast_ref::<gio::ListModel>()
                 .items_changed(position, 0, added);
+            self.sections_changed(0, position + added);
         }
     }
 
@@ -193,6 +193,10 @@ impl TimelineModel {
             let added = u32::try_from(added).expect("row count fits u32");
             self.upcast_ref::<gio::ListModel>()
                 .items_changed(0, 0, added);
+
+            let n_items =
+                u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
+            self.sections_changed(0, n_items);
         }
     }
 
@@ -944,5 +948,194 @@ impl ChatHistory {
             first_of_segment,
         };
         self.timeline.replace(idx, updated, day);
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use indexmap::IndexMap;
+    use jiff::Timestamp;
+    use relm4::{gtk, gtk::prelude::*};
+    use uuid::Uuid;
+
+    use super::{ChatHistory, ChatRow};
+    use crate::state::{ChatMessage, MessageStatus};
+
+    /// A newest-first page of synthetic messages, `count` long, each
+    /// spaced `spacing` seconds apart. The default callers use four
+    /// hours so several calendar days are covered; the same-day caller
+    /// uses one minute so the whole page shares a single day section.
+    /// With `unread` set, the newest messages are unread, so the
+    /// divider lands a handful of rows above the bottom — the shape
+    /// real chats open in.
+    fn page(count: usize, unread: bool, spacing: i64) -> Vec<ChatMessage> {
+        let now = Timestamp::now().as_second();
+        (0..count)
+            .map(|i| ChatMessage {
+                media: None,
+                status: if unread && i < 6 && i % 4 == 1 {
+                    MessageStatus::Delivered
+                } else {
+                    MessageStatus::Read
+                },
+                content: format!("message {i}"),
+                chat_jid: "test@g.us".to_string(),
+                local_id: Uuid::new_v4(),
+                outgoing: i % 4 != 1,
+                reactions: IndexMap::new(),
+                sender_jid: "1000000000@s.whatsapp.net".to_string(),
+                server_id: format!("srv-{i}"),
+                timestamp: Timestamp::from_second(now - (i as i64) * spacing)
+                    .expect("timestamp fits"),
+                sender_name: None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    /// Pumps the default main context for `ms`, giving GTK time to run
+    /// frames — and the list item manager time to walk the model.
+    fn pump(ms: u64) {
+        let context = gtk::glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < deadline {
+            while context.iteration(false) {}
+            thread::sleep(Duration::from_millis(16));
+        }
+
+        while context.iteration(false) {}
+    }
+
+    /// Replays the crash choreography from the field logs against the real
+    /// widget machinery: a chat filled short then open-clear-refill with a
+    /// rendered empty gap; then, from a fresh clear, the streamed fill with
+    /// its bottom-scroll loop running while the older tail lands on top.
+    /// The abort under investigation fires inside `ensure_items` on such
+    /// refills in the real app.
+    #[test]
+    #[ignore = "needs a running display; drives GTK's list item manager"]
+    fn clear_refill_and_streamed_fill_survive_frames() {
+        gtk::init().expect("gtk needs a display");
+
+        let mut history = ChatHistory::new();
+        let window = gtk::Window::new();
+        let scrolled = gtk::ScrolledWindow::new();
+        scrolled.set_child(Some(history.view()));
+        window.set_child(Some(&scrolled));
+        window.set_default_size(400, 600);
+        window.present();
+        pump(300);
+
+        // Chat A fills a short page and renders.
+        history.fill(&page(18, false, 14_400));
+        assert_eq!(history.len(), 18);
+        pump(750);
+
+        // Opening the next chat clears the timeline back to zero.
+        history.clear();
+        assert_eq!(history.len(), 0);
+        pump(500);
+
+        // Chat B opens with unread: fill, divider scroll, and status ticks
+        // reshaping rows while that scroll loop is still running.
+        history.fill(&page(40, true, 14_400));
+        assert_eq!(history.len(), 41);
+        if let Some(divider) = history.unread_divider_index() {
+            assert!(divider > 4, "divider must sit past the unread band");
+            history.scroll_to_unread_boundary(divider - 4);
+        }
+        pump(100);
+
+        // Receipts tick statuses on the just-opened page while the two
+        // phase unread scroll is still settling.
+        for _ in 0..6 {
+            if let Some(row) = history.get_row(0)
+                && let ChatRow::Message { message, .. } = &row
+                && message.status != MessageStatus::Read
+            {
+                let local_id = message.local_id;
+                let index = history
+                    .find_message_index(|message| message.local_id == local_id)
+                    .expect("row must be findable");
+
+                let mut row = history.get_row(index).expect("row must exist");
+                if let ChatRow::Message { message, .. } = &mut row {
+                    message.status = MessageStatus::Read;
+                }
+
+                history.replace_row(index, row, false);
+            }
+            pump(50);
+        }
+        pump(900);
+
+        // Back out, then stream chat C: prefix first, scroll loop still
+        // spinning while the older tail lands on top. Unread pages don't
+        // stream in production, so this page is all-read.
+        history.clear();
+        assert_eq!(history.len(), 0);
+        pump(400);
+
+        let page_c = page(40, false, 14_400);
+        let (prefix, tail) = page_c.split_at(20);
+        history.fill(prefix);
+        assert_eq!(history.len(), 20);
+        history.scroll_to_bottom(|| {});
+        pump(100);
+
+        history.prepend_messages(tail);
+        assert_eq!(history.len(), 40);
+        pump(900);
+
+        history.clear();
+        assert_eq!(history.len(), 0);
+        pump(300);
+
+        // Chat D replays the machine-gun open the field crash came from:
+        // open, fill, and the streamed tail all land inside one main
+        // context dispatch, with no frame in between for the list item
+        // manager to settle its tile bookkeeping.
+        history.fill(prefix);
+        assert_eq!(history.len(), 20);
+        history.scroll_to_bottom(|| {});
+        history.prepend_messages(tail);
+        assert_eq!(history.len(), 40);
+        history.scroll_to_bottom(|| {});
+        history.fill(&page(40, true, 14_400));
+        pump(900);
+
+        // Chat E isolates the same-day merge: a page dense enough that
+        // every message shares one calendar day, so the streamed tail
+        // prepends into the existing day section instead of pushing a
+        // fresh header through it. If the old top header's stale range
+        // never gets repaired, this is where the field abort fires.
+        history.clear();
+        assert_eq!(history.len(), 0);
+        pump(300);
+
+        let page_e = page(40, false, 60);
+        let (prefix_e, tail_e) = page_e.split_at(20);
+        history.fill(prefix_e);
+        assert_eq!(history.len(), 20);
+        history.scroll_to_bottom(|| {});
+        pump(100);
+
+        history.prepend_messages(tail_e);
+        assert_eq!(history.len(), 40);
+        history.scroll_to_bottom(|| {});
+
+        pump(100);
+        // Walk the whole list: tracking the seam positions is what makes
+        // the item manager hit a stale tile and abort in the field.
+        scrolled.vadjustment().set_value(0.0);
+        pump(900);
+
+        history.clear();
+        assert_eq!(history.len(), 0);
+        pump(300);
     }
 }
