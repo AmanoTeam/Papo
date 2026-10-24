@@ -27,14 +27,14 @@ relm4-icons = "0.11"
 relm4-components = { version = "0.11", features = ["libadwaita"] }
 
 # Database
-oo7 = "0.7.0-alpha"
+oo7 = "0.7.0-beta"
 toasty = { version = "0.10", default-features = false, features = ["jiff", "migration"] }
 toasty-core = "0.10"
 toasty-driver-sqlite = { version = "0.10", features = ["sqlcipher"] }
 
 # Utilities
 rand = "0.10"
-uuid = { version = "1.26", features = ["v4"] }
+uuid = { version = "1.29", features = ["v4"] }
 strum = { version = "0.28", features = ["derive"] }
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
 os_info = "3.15"
@@ -49,12 +49,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 gettext-rs = { version = "0.7", features = ["gettext-system"] }
 
 # Image handling
-# image = { version = "0.25", default-features = false, features = [
-#   "png",
-#   "jpeg",
-#   "webp",
-#   "rayon",
-# ] }
 glycin = { version = "4.0", default-features = false, features = ["gdk4", "tokio"] }
 fast_qr = { version = "0.13", features = ["image"] }
 
@@ -70,5 +64,7 @@ relm4-icons-build = "0.11"
 
 # Vendored copy of toasty-driver-sqlite with a `sqlcipher` feature and
 # `Sqlite::open_encrypted` added; see vendor/toasty-driver-sqlite.
+#
+# Drop on upstream v0.12 release.
 [patch.crates-io]
 toasty-driver-sqlite = { path = "vendor/toasty-driver-sqlite" }
