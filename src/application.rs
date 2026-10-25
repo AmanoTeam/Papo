@@ -214,6 +214,7 @@ pub enum AppMsg {
     },
     GroupParticipantsLearned {
         chat_jid: String,
+        total: usize,
         entries: Vec<(String, String)>,
     },
 
@@ -788,6 +789,7 @@ impl Application {
                 last_seen: None,
                 avatar_path: None,
                 participants: HashMap::new(),
+                member_count: None,
                 last_message_time: message.timestamp,
             });
 
@@ -1297,9 +1299,15 @@ impl AsyncComponent for Application {
                     ClientOutput::LidMappingsLearned { pairs } => {
                         AppMsg::LidMappingsLearned { pairs }
                     }
-                    ClientOutput::GroupParticipantsLearned { chat_jid, entries } => {
-                        AppMsg::GroupParticipantsLearned { chat_jid, entries }
-                    }
+                    ClientOutput::GroupParticipantsLearned {
+                        chat_jid,
+                        total,
+                        entries,
+                    } => AppMsg::GroupParticipantsLearned {
+                        chat_jid,
+                        total,
+                        entries,
+                    },
 
                     ClientOutput::Error { message } => AppMsg::Error { message },
                     _ => AppMsg::Unknown,
@@ -2078,7 +2086,21 @@ impl AsyncComponent for Application {
                     }
                 }
             }
-            AppMsg::GroupParticipantsLearned { chat_jid, entries } => {
+            AppMsg::GroupParticipantsLearned {
+                chat_jid,
+                total,
+                entries,
+            } => {
+                let open = self.open_chat_jid.as_ref();
+                let updated_open_chat = self
+                    .chats
+                    .iter_mut()
+                    .find(|c| c.jid == chat_jid.as_str())
+                    .and_then(|chat| {
+                        chat.member_count = (total > 0).then_some(total);
+                        (open == Some(&chat.jid)).then(|| chat.clone())
+                    });
+
                 let fresh = entries
                     .iter()
                     .filter(|(jid, name)| {
@@ -2133,6 +2155,10 @@ impl AsyncComponent for Application {
                         entries,
                     });
                 });
+
+                if let Some(chat) = updated_open_chat {
+                    self.chat_view.emit(ChatViewInput::ChatUpdated { chat });
+                }
             }
 
             AppMsg::TypingExpired {
@@ -2637,6 +2663,7 @@ impl AsyncComponent for Application {
                             last_seen: None,
                             avatar_path: None,
                             participants: participants_map,
+                            member_count: None,
                             last_message_time,
                         };
 

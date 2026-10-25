@@ -24,6 +24,8 @@ pub struct Chat {
     pub avatar_path: Option<String>,
     /// Participants names in groups (JID -> name).
     pub participants: HashMap<String, String>,
+    /// Group membership per the latest metadata answer.
+    pub member_count: Option<usize>,
     pub last_message_time: Timestamp,
 }
 

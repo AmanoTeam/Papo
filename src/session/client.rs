@@ -155,6 +155,8 @@ pub enum ClientOutput {
     },
     GroupParticipantsLearned {
         chat_jid: String,
+        /// Total membership per the metadata answer.
+        total: usize,
         entries: Vec<(String, String)>,
     },
 
@@ -1526,12 +1528,13 @@ impl AsyncComponent for Client {
                     if !pairs.is_empty() {
                         let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
                     }
-                    if !entries.is_empty() {
-                        let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
-                            chat_jid: chat_jid.clone(),
-                            entries,
-                        });
-                    }
+
+                    // Always tell the app how big the group is.
+                    let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
+                        chat_jid: chat_jid.clone(),
+                        total: participants,
+                        entries,
+                    });
                 });
             }
             ClientCommand::HistoryFetchTimeout { seq } => {

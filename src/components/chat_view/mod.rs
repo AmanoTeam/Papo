@@ -1487,7 +1487,10 @@ impl ChatView {
                 .collect::<Vec<String>>();
             names.sort_by_key(|name| name.to_lowercase());
             if names.is_empty() {
-                return None;
+                return chat
+                    .member_count
+                    .filter(|count| *count > 0)
+                    .map(|count| i18n_f!("{0} members", count));
             }
 
             let shown = names.iter().take(4).cloned().collect::<Vec<String>>();

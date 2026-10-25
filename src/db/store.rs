@@ -69,17 +69,18 @@ impl SessionStore {
 
     fn chat_from_entity(entity: ChatEntity) -> Chat {
         Chat {
-            archived: entity.archived,
-            available: None,
-            avatar_path: None,
             jid: entity.jid,
-            last_message_time: entity.last_message_time.unwrap_or(Timestamp::MIN),
-            last_seen: None,
-            muted: entity.muted,
             name: entity.name,
-            participants: HashMap::new(),
+            muted: entity.muted,
             pinned: entity.pinned,
             pinned_at: entity.pinned_at,
+            archived: entity.archived,
+            available: None,
+            last_seen: None,
+            avatar_path: None,
+            participants: HashMap::new(),
+            member_count: None,
+            last_message_time: entity.last_message_time.unwrap_or(Timestamp::MIN),
         }
     }
 
