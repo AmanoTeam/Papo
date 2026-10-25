@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, fmt, fs, sync::Arc};
+use std::{collections::HashMap, fmt, fs, sync::Arc};
 
 use indexmap::IndexMap;
 
@@ -14,6 +14,7 @@ use crate::{
         protocol::LidMapping,
     },
     state::{Chat, ChatMessage, Media, MediaType, MessageStatus},
+    utils::cmp_chat_order,
 };
 
 /// Store for chat, message, and contact data backed by a per-session
@@ -72,12 +73,13 @@ impl SessionStore {
             available: None,
             avatar_path: None,
             jid: entity.jid,
-            last_message_time: entity.last_message_time.unwrap_or_else(Timestamp::now),
+            last_message_time: entity.last_message_time.unwrap_or(Timestamp::MIN),
             last_seen: None,
             muted: entity.muted,
             name: entity.name,
             participants: HashMap::new(),
             pinned: entity.pinned,
+            pinned_at: entity.pinned_at,
         }
     }
 
@@ -135,6 +137,7 @@ impl SessionStore {
             .name(chat.name.clone())
             .muted(chat.muted)
             .pinned(chat.pinned)
+            .pinned_at(chat.pinned_at)
             .archived(chat.archived)
             .last_message_time(Some(chat.last_message_time))
             .exec(&mut db)
@@ -165,6 +168,7 @@ impl SessionStore {
                 .name(jid.to_string())
                 .muted(false)
                 .pinned(false)
+                .pinned_at(None)
                 .archived(false)
                 .last_message_time(None)
                 .exec(&mut db)
@@ -185,14 +189,23 @@ impl SessionStore {
             .map(Self::chat_from_entity))
     }
 
-    /// Loads all non-archived chats, ordered by pinned then `last_message_time`.
+    /// Loads all non-archived chats, ordered by pinned, then pin time,
+    /// then `last_message_time` — newest pin on top, reference order.
     pub async fn load_chats(&self) -> Result<Vec<Chat>, toasty::Error> {
         let mut db = self.db.clone();
         let mut chats = ChatEntity::filter_by_archived(false).exec(&mut db).await?;
-        chats.sort_by_key(|c| {
-            (
-                cmp::Reverse(c.pinned),
-                cmp::Reverse(c.last_message_time.unwrap_or(Timestamp::MIN)),
+        chats.sort_by(|a, b| {
+            cmp_chat_order(
+                &(
+                    a.pinned,
+                    a.pinned_at,
+                    a.last_message_time.unwrap_or(Timestamp::MIN),
+                ),
+                &(
+                    b.pinned,
+                    b.pinned_at,
+                    b.last_message_time.unwrap_or(Timestamp::MIN),
+                ),
             )
         });
 

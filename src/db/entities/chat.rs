@@ -11,6 +11,8 @@ pub struct Chat {
     pub name: String,
     pub muted: bool,
     pub pinned: bool,
+    /// When the chat was pinned, in milliseconds since the epoch.
+    pub pinned_at: Option<i64>,
     #[index]
     pub archived: bool,
     #[has_many]

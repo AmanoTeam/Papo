@@ -1,11 +1,16 @@
 use std::{
+    cell::RefCell,
+    cmp::Ordering,
     collections::{HashMap, VecDeque},
-    mem, slice,
+    mem,
+    rc::Rc,
+    slice,
+    time::Instant,
 };
 
 use adw::prelude::*;
 use gtk::{gdk::Texture, gio, glib, pango};
-use jiff::{Zoned, tz::TimeZone};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use relm4::{
     prelude::*,
     typed_view::list::{RelmListItem, TypedListView},
@@ -16,7 +21,7 @@ use crate::{
     i18n, i18n_f,
     session::avatar,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
-    utils::{SenderResolution, format_lid_as_number, get_first_name},
+    utils::{SenderResolution, cmp_chat_order, format_lid_as_number, get_first_name},
     widgets::TypingDots,
 };
 
@@ -28,6 +33,7 @@ pub struct ChatList {
     pending_avatars: HashMap<String, String>,
 
     chat_jid: Option<String>,
+    filter_state: Rc<RefCell<ChatListFilter>>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
@@ -53,11 +59,9 @@ impl From<&str> for ChatListFilter {
 pub enum ChatListInput {
     AddChat {
         chat: Chat,
-        at_top: bool,
     },
     UpdateChat {
         chat: Chat,
-        move_to_top: bool,
     },
     RemoveChat {
         jid: String,
@@ -178,17 +182,11 @@ impl SimpleAsyncComponent for ChatList {
             pending_avatars: HashMap::new(),
 
             chat_jid: None,
+            filter_state: Rc::new(RefCell::new(ChatListFilter::All)),
             list_view_wrapper: TypedListView::new(),
         };
 
-        // Chats without messages stay in the store but hidden, so they
-        // appear as soon as their first message arrives.
-        model
-            .list_view_wrapper
-            .add_filter(|row| row.data.last_message.is_some());
         let selection_model = &model.list_view_wrapper.selection_model;
-
-        // Disabe chat row autoselecet and enable unselect.
         selection_model.set_autoselect(false);
         selection_model.set_can_unselect(true);
 
@@ -201,18 +199,26 @@ impl SimpleAsyncComponent for ChatList {
             input_sender.emit(ChatListInput::SelectPosition(model.selected()));
         });
 
+        let filter_state = model.filter_state.clone();
+        model.list_view_wrapper.add_filter(move |row| {
+            let has_message = row.data.last_message.is_some();
+
+            match *filter_state.borrow() {
+                ChatListFilter::All => has_message,
+                ChatListFilter::Groups => has_message && row.data.chat.is_group(),
+                ChatListFilter::Unreads => has_message && row.data.unread_count > 0,
+            }
+        });
+
         AsyncComponentParts { model, widgets }
     }
 
     #[allow(clippy::too_many_lines)]
     async fn update(&mut self, input: Self::Input, sender: AsyncComponentSender<Self>) {
         match input {
-            ChatListInput::AddChat { chat, at_top } => {
+            ChatListInput::AddChat { chat } => {
                 if self.get_index_by_jid(&chat.jid).is_some() {
-                    sender.input(ChatListInput::UpdateChat {
-                        chat,
-                        move_to_top: at_top,
-                    });
+                    sender.input(ChatListInput::UpdateChat { chat });
                 } else {
                     let mut last_message = match chat.get_last_message(&self.db).await {
                         Ok(message) => message,
@@ -232,36 +238,49 @@ impl SimpleAsyncComponent for ChatList {
                         resolution.resolve_message(&chat, message);
                     }
 
-                    // Build chat row.
                     let unread_count = chat
                         .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
+
+                    // Build chat row.
+                    let key = (chat.pinned, chat.pinned_at, chat.last_message_time);
                     let row = self.build_row(ChatRowData {
                         chat,
                         last_message,
                         unread_count,
                     });
 
-                    if at_top {
-                        self.list_view_wrapper.insert(0, row);
-                    } else {
-                        self.list_view_wrapper.append(row);
-                    }
+                    let index = self.sorted_index(key);
+                    self.list_view_wrapper.insert(index, row);
                 }
             }
-            ChatListInput::UpdateChat { chat, move_to_top } => {
+            ChatListInput::UpdateChat { chat } => {
                 let Some(index) = self.get_index_by_jid(&chat.jid) else {
                     // A populate batch may still be in flight; insert the
                     // chat directly instead of dropping the update.
-                    sender.input(ChatListInput::AddChat {
-                        chat,
-                        at_top: move_to_top,
-                    });
+                    sender.input(ChatListInput::AddChat { chat });
                     return;
                 };
 
+                let pinned = chat.pinned;
+                let pinned_at = chat.pinned_at;
                 let chat_jid = chat.jid.clone();
+                let key = (pinned, pinned_at, chat.last_message_time);
+
+                let old_pins = self.list_view_wrapper.iter().nth(index as usize).map_or(
+                    (pinned, pinned_at),
+                    |item| {
+                        let row = item.borrow();
+                        (row.data.chat.pinned, row.data.chat.pinned_at)
+                    },
+                );
+                let was_at_top = self
+                    .list_view_wrapper
+                    .view
+                    .vadjustment()
+                    .is_some_and(|adj| adj.value() <= adj.lower() + 0.5);
+
                 let last_message = match chat.get_last_message(&self.db).await {
                     Ok(message) => message,
                     Err(e) => {
@@ -284,38 +303,26 @@ impl SimpleAsyncComponent for ChatList {
                 let store = self.store();
                 let object = glib::BoxedAnyObject::new(updated_row);
 
-                if move_to_top && index > 0 {
-                    // Move the updated row to the top with a single splice.
-                    let mut objects = vec![object.upcast::<glib::Object>()];
-                    for position in 0..index {
-                        objects.push(store.item(position).expect("position below index"));
-                    }
-                    store.splice(0, index + 1, &objects);
+                store.splice(index, 1, &[] as &[glib::Object]);
+                let target = self.sorted_index(key);
+                store.splice(target, 0, &[object]);
 
-                    // Re-select the row and scroll to the top if it's the selected chat.
-                    if self.chat_jid.as_deref() == Some(&chat_jid) {
-                        if let Some(position) = self.get_visible_index_by_jid(&chat_jid) {
-                            self.list_view_wrapper
-                                .selection_model
-                                .select_item(position, true);
-                        }
+                // Re-select the row if it is the selected chat.
+                if self.chat_jid.as_deref() == Some(&chat_jid)
+                    && let Some(position) = self.get_visible_index_by_jid(&chat_jid)
+                {
+                    self.list_view_wrapper
+                        .selection_model
+                        .select_item(position, true);
+                }
 
-                        if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
-                            glib::idle_add_local_once(move || adj.set_value(adj.lower()));
-                        }
-                    }
-                } else {
-                    // Replace the row in place, covering a chat already on top.
-                    store.splice(index, 1, &[object]);
-
-                    // Re-select the row.
-                    if self.chat_jid.as_deref() == Some(&chat_jid)
-                        && let Some(position) = self.get_visible_index_by_jid(&chat_jid)
-                    {
-                        self.list_view_wrapper
-                            .selection_model
-                            .select_item(position, true);
-                    }
+                // A deliberate pin change deserves to be seen; a reader
+                // parked at the top stays anchored there through the
+                // splice churn.
+                if (old_pins != (pinned, pinned_at) || was_at_top)
+                    && let Some(adj) = self.list_view_wrapper.view.vadjustment()
+                {
+                    glib::idle_add_local_once(move || adj.set_value(adj.lower()));
                 }
             }
             ChatListInput::RemoveChat { jid } => {
@@ -541,7 +548,17 @@ impl SimpleAsyncComponent for ChatList {
                         data.chat.avatar_path = Some(path);
                     }
 
-                    self.list_view_wrapper.append(self.build_row(data));
+                    // Populated rows arrive in sort order, but live
+                    // arrivals may interleave: every insert walks to its
+                    // own sorted position.
+                    let key = (
+                        data.chat.pinned,
+                        data.chat.pinned_at,
+                        data.chat.last_message_time,
+                    );
+                    let index = self.sorted_index(key);
+                    self.list_view_wrapper.insert(index, self.build_row(data));
+
                     built += 1;
                 }
 
@@ -571,6 +588,39 @@ impl ChatList {
         }
 
         unreachable!("selection model chain wraps the raw store")
+    }
+
+    /// The position a top-of-list insertion lands at: pinned chats hold
+    /// their prefix, unpinned arrivals slot in below them.
+    fn top_index(&self, pinned: bool) -> u32 {
+        if pinned {
+            return 0;
+        }
+
+        for (position, row) in self.list_view_wrapper.iter().enumerate() {
+            if !row.borrow().data.chat.pinned {
+                return u32::try_from(position).expect("row count fits u32");
+            }
+        }
+
+        self.store().n_items()
+    }
+
+    /// The position a row with this order key belongs at: before the
+    /// first existing row it outranks, or the end of the list — the
+    /// shared comparator made positional, so any arrival order lands
+    /// sorted.
+    fn sorted_index(&self, key: (bool, Option<i64>, Timestamp)) -> u32 {
+        for (position, row) in self.list_view_wrapper.iter().enumerate() {
+            let chat = &row.borrow().data.chat;
+            if cmp_chat_order(&key, &(chat.pinned, chat.pinned_at, chat.last_message_time))
+                == Ordering::Less
+            {
+                return u32::try_from(position).expect("row count fits u32");
+            }
+        }
+
+        self.store().n_items()
     }
 
     fn get_index_by_jid(&self, jid: &str) -> Option<u32> {
@@ -788,10 +838,10 @@ impl RelmListItem for ChatRow {
             .build();
         suffix_box.append(&suffix_bottom_box);
 
-        let muted_icon = build_suffix_icon("speaker-0-symbolic");
+        let muted_icon = build_suffix_icon("speaker-cross-symbolic");
         suffix_bottom_box.append(&muted_icon);
 
-        let pinned_icon = build_suffix_icon("pin-symbolic");
+        let pinned_icon = build_suffix_icon("view-pin-symbolic");
         suffix_bottom_box.append(&pinned_icon);
 
         let unread_count_badge = gtk::Label::builder()

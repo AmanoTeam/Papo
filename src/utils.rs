@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     error::Error,
 };
@@ -121,6 +122,18 @@ pub fn is_group_jid(jid: &str) -> bool {
 /// broadcast lists share the domain.
 pub fn is_broadcast_jid(jid: &str) -> bool {
     jid.ends_with("@broadcast")
+}
+
+/// Orders chats for display: the pinned block first, pins sorted by pin
+/// time with the NEWEST pin on top and unpinned chats by newest activity.
+/// Every list sort and insert shares this one rule.
+pub fn cmp_chat_order<T: Ord>(a: &(bool, Option<i64>, T), b: &(bool, Option<i64>, T)) -> Ordering {
+    match (a.0, b.0) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (true, true) => b.1.unwrap_or(i64::MIN).cmp(&a.1.unwrap_or(i64::MIN)),
+        (false, false) => b.2.cmp(&a.2),
+    }
 }
 
 /// Whether the jid addresses the shared status conversation, which

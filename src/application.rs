@@ -73,6 +73,10 @@ pub struct Application {
     open_chat_jid: Option<String>,
     /// Whether the client is connected to `WhatsApp`.
     client_connected: bool,
+
+    /// Pin mutations that arrived before the chat's row existed,
+    /// replayed at populate and sync-chunk completion.
+    pending_pins: Vec<(String, Option<i64>)>,
     /// Receipts that arrived before their message; applied when it lands.
     pending_receipts: HashMap<String, VecDeque<(String, MessageStatus, bool)>>,
     /// Read marks that arrived while the chats were not loaded yet.
@@ -233,13 +237,20 @@ pub enum AppMsg {
         recipient: String,
     },
 
+    ChatPinned {
+        jid: String,
+        at: Option<i64>,
+    },
+    ChatSubject {
+        jid: String,
+        subject: String,
+    },
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
     ChatReadOnDevice(String),
     ChatPropertyUpdate {
         jid: String,
-        pinned: Option<bool>,
         muted: Option<bool>,
         archived: Option<bool>,
     },
@@ -284,7 +295,6 @@ pub enum AppCmd {
 
     UpdateChat {
         chat: Chat,
-        move_to_top: bool,
     },
     AddChatToList {
         chat: Chat,
@@ -324,9 +334,10 @@ impl Application {
 
         self.chats.push(chat.clone());
         self.chats.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then_with(|| b.last_message_time.cmp(&a.last_message_time))
+            cmp_chat_order(
+                &(a.pinned, a.pinned_at, a.last_message_time),
+                &(b.pinned, b.pinned_at, b.last_message_time),
+            )
         });
 
         let db = self.db.clone();
@@ -337,8 +348,7 @@ impl Application {
             }
         });
 
-        self.chat_list
-            .emit(ChatListInput::AddChat { chat, at_top: true });
+        self.chat_list.emit(ChatListInput::AddChat { chat });
     }
 
     fn emit_typing(&self, chat_jid: &str) {
@@ -447,6 +457,45 @@ impl Application {
             Some(name) if !looks_like_jid(&name, &bare) => Some(format!("~{name}")),
             _ => self.resolve_sender_display(jid).await,
         }
+    }
+
+    /// Applies a pin mutation, matching the chat through either jid
+    /// form so LID-keyed rows accept phone-keyed updates — the server
+    /// redistributes pin events on every resync. Updates arriving
+    /// before the chat's row exists buffer until the next chunk.
+    async fn apply_pin(&mut self, jid: &str, at: Option<i64>) {
+        let bare = bare_jid(jid);
+        let mut forms = vec![bare.clone()];
+        if let Some(pn) = self.db.lid_to_pn_jid(&bare).await {
+            forms.push(bare_jid(&pn));
+        }
+        for lid in self.db.pn_to_lid_jids(&bare).await {
+            forms.push(bare_jid(&lid));
+        }
+
+        let Some(chat) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) else {
+            self.pending_pins.push((bare, at));
+            return;
+        };
+
+        // The server replays pin state on every resync; skip the
+        // save and the chat-list churn when nothing changed.
+        if chat.pinned_at == at {
+            return;
+        }
+        chat.pinned = at.is_some();
+        chat.pinned_at = at;
+
+        let db = self.db.clone();
+        let to_save = chat.clone();
+        relm4::spawn(async move {
+            if let Err(e) = to_save.upsert(&db).await {
+                tracing::error!("Failed to save pin state for {}: {e}", to_save.jid);
+            }
+        });
+
+        self.chat_list
+            .emit(ChatListInput::UpdateChat { chat: chat.clone() });
     }
 
     /// Nameless LID senders fall back to their phone number instead
@@ -630,10 +679,7 @@ impl Application {
                         .await;
                 }
 
-                self.chat_list.emit(ChatListInput::UpdateChat {
-                    chat,
-                    move_to_top: false,
-                });
+                self.chat_list.emit(ChatListInput::UpdateChat { chat });
             } else {
                 self.pending_receipts.insert(chat_jid, receipts);
             }
@@ -731,6 +777,7 @@ impl Application {
                 name,
                 muted: false,
                 pinned: false,
+                pinned_at: None,
                 archived: false,
                 available: None,
                 last_seen: None,
@@ -776,12 +823,7 @@ impl Application {
 
         let sender = self.sender.clone();
         let chat_clone = chat.clone();
-        sender.oneshot_command(async move {
-            AppCmd::UpdateChat {
-                chat: chat_clone,
-                move_to_top: true,
-            }
-        });
+        sender.oneshot_command(async move { AppCmd::UpdateChat { chat: chat_clone } });
 
         if typing_cleared {
             self.emit_typing(chat_jid);
@@ -1192,16 +1234,19 @@ impl AsyncComponent for Application {
                         }
                     }
 
+                    ClientOutput::ChatPinned { jid, at } => AppMsg::ChatPinned { jid, at },
+                    ClientOutput::ChatSubject { chat_jid, subject } => AppMsg::ChatSubject {
+                        jid: chat_jid,
+                        subject,
+                    },
                     ClientOutput::ChatsSynced { entries } => AppMsg::ChatsSynced { entries },
                     ClientOutput::ChatReadOnDevice { jid } => AppMsg::ChatReadOnDevice(jid),
                     ClientOutput::ChatPropertyUpdate {
                         jid,
-                        pinned,
                         muted,
                         archived,
                     } => AppMsg::ChatPropertyUpdate {
                         jid,
-                        pinned,
                         muted,
                         archived,
                     },
@@ -1315,7 +1360,10 @@ impl AsyncComponent for Application {
             cache_loaded: false,
             open_chat_jid: None,
             client_connected: false,
+
+            pending_pins: Vec::new(),
             pending_receipts: HashMap::new(),
+            pending_read_chats: HashSet::new(),
             pending_avatar_fetches: Vec::new(),
 
             toaster: Toaster::default(),
@@ -1680,10 +1728,8 @@ impl AsyncComponent for Application {
                             }
                         });
 
-                        self.chat_list.emit(ChatListInput::UpdateChat {
-                            chat: chat.clone(),
-                            move_to_top: false,
-                        });
+                        self.chat_list
+                            .emit(ChatListInput::UpdateChat { chat: chat.clone() });
 
                         // The open chat's header renders from its own
                         // clone; hand it the fresh metadata.
@@ -1705,10 +1751,8 @@ impl AsyncComponent for Application {
                         }
 
                         if touched {
-                            self.chat_list.emit(ChatListInput::UpdateChat {
-                                chat: chat.clone(),
-                                move_to_top: false,
-                            });
+                            self.chat_list
+                                .emit(ChatListInput::UpdateChat { chat: chat.clone() });
                         }
                     }
                 }
@@ -1750,10 +1794,8 @@ impl AsyncComponent for Application {
                             }
                         });
 
-                        self.chat_list.emit(ChatListInput::UpdateChat {
-                            chat: chat.clone(),
-                            move_to_top: false,
-                        });
+                        self.chat_list
+                            .emit(ChatListInput::UpdateChat { chat: chat.clone() });
 
                         if self.open_chat_jid.as_ref() == Some(&chat.jid) {
                             self.chat_view
@@ -1790,10 +1832,7 @@ impl AsyncComponent for Application {
                             .await;
                     }
 
-                    self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat,
-                        move_to_top: false,
-                    });
+                    self.chat_list.emit(ChatListInput::UpdateChat { chat });
                 } else if let Some(status) = status {
                     // Chats are not loaded yet (offline replay at connect);
                     // the flush after loading applies these.
@@ -1943,10 +1982,8 @@ impl AsyncComponent for Application {
                         tracing::error!("Failed to update message status: {}", e);
                     }
 
-                    self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat: chat.clone(),
-                        move_to_top: false,
-                    });
+                    self.chat_list
+                        .emit(ChatListInput::UpdateChat { chat: chat.clone() });
                 }
             }
 
@@ -2259,13 +2296,50 @@ impl AsyncComponent for Application {
                     });
                     self.chat_view
                         .emit(ChatViewInput::MessageReceived(Box::new(message)));
-                    self.chat_list.emit(ChatListInput::UpdateChat {
-                        chat,
-                        move_to_top: true,
-                    });
+                    self.chat_list.emit(ChatListInput::UpdateChat { chat });
                 }
             }
 
+            AppMsg::ChatPinned { jid, at } => {
+                self.apply_pin(&jid, at).await;
+            }
+            AppMsg::ChatSubject { jid, subject } => {
+                let bare = bare_jid(&jid);
+                let mut forms = vec![bare.clone()];
+                if let Some(pn) = self.db.lid_to_pn_jid(&bare).await {
+                    forms.push(bare_jid(&pn));
+                }
+                for lid in self.db.pn_to_lid_jids(&bare).await {
+                    forms.push(bare_jid(&lid));
+                }
+
+                if let Some(existing) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
+                    if existing.name != subject {
+                        existing.name.clone_from(&subject);
+
+                        let db = self.db.clone();
+                        let to_save = existing.clone();
+                        relm4::spawn(async move {
+                            if let Err(e) = to_save.upsert(&db).await {
+                                tracing::error!(
+                                    "Failed to save group subject for {}: {e}",
+                                    to_save.jid
+                                );
+                            }
+                        });
+
+                        self.chat_list.emit(ChatListInput::UpdateChat {
+                            chat: existing.clone(),
+                        });
+
+                        if self.open_chat_jid.as_ref() == Some(&existing.jid) {
+                            self.chat_view.emit(ChatViewInput::ChatUpdated {
+                                chat: existing.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             AppMsg::ChatsSynced { entries } => {
                 sender.oneshot_command(async move { AppCmd::SyncChats { entries } });
             }
@@ -2304,16 +2378,12 @@ impl AsyncComponent for Application {
                             self.chat_list
                                 .emit(ChatListInput::RemoveChat { jid: jid.clone() });
                         } else {
-                            self.chat_list.emit(ChatListInput::AddChat {
-                                chat: chat.clone(),
-                                at_top: false,
-                            });
+                            self.chat_list
+                                .emit(ChatListInput::AddChat { chat: chat.clone() });
                         }
                     } else {
-                        self.chat_list.emit(ChatListInput::UpdateChat {
-                            chat: chat.clone(),
-                            move_to_top: false,
-                        });
+                        self.chat_list
+                            .emit(ChatListInput::UpdateChat { chat: chat.clone() });
                     }
                 }
             }
@@ -2430,6 +2500,12 @@ impl AsyncComponent for Application {
                             self.mark_read_on_device(chat_jid);
                         }
 
+                        // Pin mutations buffered before the rows existed.
+                        let pins = mem::take(&mut self.pending_pins);
+                        for (jid, at) in pins {
+                            self.apply_pin(&jid, at).await;
+                        }
+
                         self.cache_loaded = true;
                         self.sweep_own_chat();
                     }
@@ -2454,11 +2530,17 @@ impl AsyncComponent for Application {
             }
 
             AppCmd::SyncChats { entries } => {
+                // New spine chats ride one batch to the list per chunk;
+                // one-per-entry inputs would flood its queue with DB
+                // reads and starve clicks during the storm.
+                let mut spine_new = Vec::new();
+
                 for entry in entries {
                     let ChatsSyncedEntry {
                         jid,
                         name,
                         pinned,
+                        pinned_at,
                         archived,
                         messages,
                         on_demand,
@@ -2530,7 +2612,7 @@ impl AsyncComponent for Application {
                         // Create last message time from timestamp (already in seconds).
                         let last_message_time = last_message_time
                             .and_then(|ts| Timestamp::from_second(ts.cast_signed()).ok())
-                            .unwrap_or_else(Timestamp::now);
+                            .unwrap_or(Timestamp::MIN);
 
                         // Create participants map for groups.
                         let mut participants_map = HashMap::new();
@@ -2544,6 +2626,7 @@ impl AsyncComponent for Application {
                             name: chat_name,
                             muted: false, // TODO: handle mute_end_time
                             pinned,
+                            pinned_at,
                             archived,
                             available: None,
                             last_seen: None,
@@ -2554,10 +2637,12 @@ impl AsyncComponent for Application {
 
                         self.chats.push(chat.clone());
                         self.chats.sort_by(|a, b| {
-                            b.pinned
-                                .cmp(&a.pinned)
-                                .then_with(|| b.last_message_time.cmp(&a.last_message_time))
+                            cmp_chat_order(
+                                &(a.pinned, a.pinned_at, a.last_message_time),
+                                &(b.pinned, b.pinned_at, b.last_message_time),
+                            )
                         });
+                        spine_new.push(chat.clone());
 
                         // Save the chat to database.
                         let db = self.db.clone();
@@ -2572,13 +2657,6 @@ impl AsyncComponent for Application {
                                     pinned
                                 );
                             }
-                        });
-                    }
-
-                    if let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned() {
-                        self.chat_list.emit(ChatListInput::UpdateChat {
-                            chat,
-                            move_to_top: false,
                         });
                     }
 
@@ -2656,6 +2734,14 @@ impl AsyncComponent for Application {
                         let total = messages.len();
                         let has_messages = total > 0;
 
+                        // Newest wire timestamp of the chunk: the chat's
+                        // fresh sort key once the saves complete.
+                        let newest = messages
+                            .iter()
+                            .map(|m| m.timestamp)
+                            .max()
+                            .and_then(|s| Timestamp::from_second(s.cast_signed()).ok());
+
                         for (synced_msg, sender_name) in messages.into_iter().zip(resolved_names) {
                             task::yield_now().await;
 
@@ -2674,7 +2760,7 @@ impl AsyncComponent for Application {
                             // Timestamp is already in seconds (Unix timestamp).
                             let timestamp =
                                 Timestamp::from_second(synced_msg.timestamp.cast_signed())
-                                    .unwrap_or_else(|_| Timestamp::now());
+                                    .unwrap_or(Timestamp::MIN);
 
                             let message = ChatMessage {
                                 local_id: Uuid::new_v4(),
@@ -2708,17 +2794,16 @@ impl AsyncComponent for Application {
                             skip_count
                         );
 
-                        if let Some(chat) = chat_clone {
+                        if let Some(mut chat) = chat_clone {
+                            if let Some(ts) = newest {
+                                chat.last_message_time = chat.last_message_time.max(ts);
+                            }
+
                             if is_new_chat && !archived {
                                 sender
                                     .oneshot_command(async move { AppCmd::AddChatToList { chat } });
                             } else {
-                                sender.oneshot_command(async move {
-                                    AppCmd::UpdateChat {
-                                        chat,
-                                        move_to_top: false,
-                                    }
-                                });
+                                sender.oneshot_command(async move { AppCmd::UpdateChat { chat } });
                             }
                         }
 
@@ -2735,6 +2820,26 @@ impl AsyncComponent for Application {
                     });
                 }
 
+                // The chunk's new chats, in display order, become rows in
+                // one background read; the pump inserts each at its
+                // sorted position.
+                if !spine_new.is_empty() {
+                    spine_new.sort_by(|a, b| {
+                        cmp_chat_order(
+                            &(a.pinned, a.pinned_at, a.last_message_time),
+                            &(b.pinned, b.pinned_at, b.last_message_time),
+                        )
+                    });
+                    self.chat_list.emit(ChatListInput::PopulateAll(spine_new));
+                }
+
+                // Pin mutations buffered before the chunk's rows existed
+                // replay now; still-missing ones re-buffer.
+                let pins = mem::take(&mut self.pending_pins);
+                for (jid, at) in pins {
+                    self.apply_pin(&jid, at).await;
+                }
+
                 if self.history_sync.active {
                     self.forward_sync_status();
                 }
@@ -2748,13 +2853,15 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppCmd::UpdateChat { chat, move_to_top } => {
-                self.chat_list
-                    .emit(ChatListInput::UpdateChat { chat, move_to_top });
+            AppCmd::UpdateChat { chat } => {
+                if let Some(existing) = self.chats.iter_mut().find(|c| c.jid == chat.jid) {
+                    *existing = chat.clone();
+                }
+
+                self.chat_list.emit(ChatListInput::UpdateChat { chat });
             }
             AppCmd::AddChatToList { chat } => {
-                self.chat_list
-                    .emit(ChatListInput::AddChat { chat, at_top: true });
+                self.chat_list.emit(ChatListInput::AddChat { chat });
             }
             AppCmd::MarkedChatRead { chat, flipped } => {
                 for local_id in flipped {
@@ -2764,10 +2871,7 @@ impl AsyncComponent for Application {
                     });
                 }
 
-                self.chat_list.emit(ChatListInput::UpdateChat {
-                    chat,
-                    move_to_top: false,
-                });
+                self.chat_list.emit(ChatListInput::UpdateChat { chat });
             }
             AppCmd::HistoryBackfilled {
                 chat_jid,

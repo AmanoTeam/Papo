@@ -211,6 +211,14 @@ pub enum ClientOutput {
         message: Box<Message>,
     },
 
+    ChatPinned {
+        jid: String,
+        at: Option<i64>,
+    },
+    ChatSubject {
+        chat_jid: String,
+        subject: String,
+    },
     ChatsSynced {
         entries: Vec<ChatsSyncedEntry>,
     },
@@ -219,7 +227,6 @@ pub enum ClientOutput {
     },
     ChatPropertyUpdate {
         jid: String,
-        pinned: Option<bool>,
         muted: Option<bool>,
         archived: Option<bool>,
     },
@@ -291,6 +298,8 @@ pub struct ChatsSyncedEntry {
     pub jid: String,
     pub name: Option<String>,
     pub pinned: bool,
+    /// When the chat was pinned, in milliseconds since the epoch.
+    pub pinned_at: Option<i64>,
     pub archived: bool,
     pub messages: Vec<SyncedMessage>,
     pub on_demand: bool,
@@ -924,17 +933,18 @@ impl AsyncComponent for Client {
                                     }
 
                                     Event::PinUpdate(update) => {
-                                        let _ = sender.output(ClientOutput::ChatPropertyUpdate {
+                                        let _ = sender.output(ClientOutput::ChatPinned {
                                             jid: update.jid.to_string(),
-                                            pinned: update.action.pinned,
-                                            muted: None,
-                                            archived: None,
+                                            at: update
+                                                .action
+                                                .pinned
+                                                .is_some_and(|p| p)
+                                                .then(|| update.timestamp.timestamp_millis()),
                                         });
                                     }
                                     Event::MuteUpdate(update) => {
                                         let _ = sender.output(ClientOutput::ChatPropertyUpdate {
                                             jid: update.jid.to_string(),
-                                            pinned: None,
                                             muted: update.action.muted,
                                             archived: None,
                                         });
@@ -942,7 +952,6 @@ impl AsyncComponent for Client {
                                     Event::ArchiveUpdate(update) => {
                                         let _ = sender.output(ClientOutput::ChatPropertyUpdate {
                                             jid: update.jid.to_string(),
-                                            pinned: None,
                                             muted: None,
                                             archived: update.action.archived,
                                         });
@@ -1372,6 +1381,7 @@ impl AsyncComponent for Client {
                             jid: chat_jid,
                             name: conv.name.clone(),
                             pinned: conv.pinned.is_some_and(|p| p > 0),
+                            pinned_at: conv.pinned.filter(|p| *p > 0).map(|p| i64::from(p) * 1000),
                             archived: conv.archived.unwrap_or(false),
                             messages,
                             on_demand,
@@ -1499,6 +1509,19 @@ impl AsyncComponent for Client {
                         entries.len(),
                         pairs.len()
                     );
+
+                    // The subject is the group's true title; conversations
+                    // arrive without names on some pairs.
+                    if let Some(subject) = metadata
+                        .subject
+                        .as_deref()
+                        .filter(|subject| !subject.is_empty())
+                    {
+                        let _ = sender_clone.output(ClientOutput::ChatSubject {
+                            chat_jid: chat_jid.clone(),
+                            subject: subject.to_string(),
+                        });
+                    }
 
                     if !pairs.is_empty() {
                         let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
