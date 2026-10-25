@@ -3,7 +3,7 @@ mod rows;
 
 use std::{
     cell::Cell,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -20,7 +20,7 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
-    utils::{is_status_broadcast, re_resolve_senders},
+    utils::{bare_jid, is_status_broadcast, re_resolve_senders},
     widgets::TypingDots,
 };
 
@@ -53,6 +53,9 @@ pub struct ChatView {
     history_fetch_at: Option<Instant>,
     history_exhausted: bool,
     history_fetch_anchored: bool,
+    /// Sender avatars already requested this session; group rows ask
+    /// per bind, so the set keeps repeat binds off the wire.
+    sender_avatar_requests: HashSet<String>,
 }
 
 /// Feedback for an ongoing history sync, shown in the banner.
@@ -112,6 +115,9 @@ pub enum ChatViewInput {
         available: bool,
         last_seen: Option<Timestamp>,
     },
+    SenderAvatarUpdated {
+        jid: String,
+    },
     MessageStatusUpdate {
         status: MessageStatus,
         local_id: Uuid,
@@ -123,6 +129,13 @@ pub enum ChatViewInput {
     SenderNameChanged {
         forms: Vec<String>,
         name: Option<String>,
+    },
+
+    SenderAvatarRetry {
+        jid: String,
+    },
+    RequestSenderAvatar {
+        jid: String,
     },
 
     SyncProgress {
@@ -158,6 +171,10 @@ pub enum ChatViewOutput {
     FetchHistory {
         chat_jid: String,
         anchor: Option<HistoryAnchor>,
+    },
+
+    RequestSenderAvatar {
+        jid: String,
     },
 }
 
@@ -464,7 +481,7 @@ impl AsyncComponent for ChatView {
         root: Self::Root,
         sender: AsyncComponentSender<Self>,
     ) -> AsyncComponentParts<Self> {
-        let history = ChatHistory::new();
+        let history = ChatHistory::new(Some(sender.input_sender().clone()));
         let scroll_window = gtk::ScrolledWindow::new();
 
         let model = Self {
@@ -478,6 +495,7 @@ impl AsyncComponent for ChatView {
             history_fetch_at: None,
             history_exhausted: false,
             history_fetch_anchored: false,
+            sender_avatar_requests: HashSet::new(),
         };
 
         let list_view = model.history.view().clone();
@@ -620,7 +638,7 @@ impl AsyncComponent for ChatView {
                 self.chat = Some(chat.clone());
                 self.state.typing.clear();
                 self.rebuild_typing_avatars();
-                tracing::info!("Opening chat: {}", chat.jid);
+                tracing::debug!("Opening chat: {}", chat.jid);
 
                 // Update the user presence label.
                 self.update_presence();
@@ -786,6 +804,9 @@ impl AsyncComponent for ChatView {
                     self.update_presence();
                 }
             }
+            ChatViewInput::SenderAvatarUpdated { jid } => {
+                self.history.update_sender_avatars(&jid);
+            }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
                 if let Some(index) = self
                     .history
@@ -810,6 +831,16 @@ impl AsyncComponent for ChatView {
             }
             ChatViewInput::SenderNameChanged { forms, name } => {
                 self.history.update_sender_names(&forms, name.as_deref());
+            }
+
+            ChatViewInput::SenderAvatarRetry { jid } => {
+                self.sender_avatar_requests.remove(&bare_jid(&jid));
+            }
+            ChatViewInput::RequestSenderAvatar { jid } => {
+                let bare = bare_jid(&jid);
+                if self.sender_avatar_requests.insert(bare.clone()) {
+                    let _ = sender.output(ChatViewOutput::RequestSenderAvatar { jid: bare });
+                }
             }
 
             ChatViewInput::SyncProgress {

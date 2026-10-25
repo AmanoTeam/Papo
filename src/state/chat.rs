@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use uuid::Uuid;
 
-use crate::{db::store::SessionStore, state::ChatMessage, utils::format_lid_as_number};
+use crate::{
+    db::store::SessionStore,
+    state::ChatMessage,
+    utils::{format_lid_as_number, is_group_jid},
+};
 
 #[derive(Clone, Debug)]
 pub struct Chat {
@@ -36,7 +40,7 @@ impl Chat {
     }
 
     pub fn is_group(&self) -> bool {
-        self.jid.ends_with("@g.us")
+        is_group_jid(&self.jid)
     }
 
     pub async fn mark_read(

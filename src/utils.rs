@@ -1,35 +1,24 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    fs,
-    path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
-    time::SystemTime,
 };
 
-use adw::prelude::*;
 use fast_qr::{
     ECL, QRBuilder,
     convert::{Builder, Shape, image::ImageBuilder},
 };
 use glib::Bytes;
-use glycin::{Loader, MemoryFormatSelection};
-use gtk::{gdk, gio::File, glib};
+use glycin::Loader;
+use gtk::{gdk, glib};
 use jiff::{Zoned, civil::Date};
-use relm4::prelude::*;
+use relm4::gtk;
 use rlibphonenumber::{PhoneNumber, PhoneNumberFormat};
 
 use crate::{
-    db::entities::Contact, db::store::SessionStore, i18n, state::Chat, state::ChatMessage,
+    db::{entities::Contact, store::SessionStore},
+    i18n,
+    state::{Chat, ChatMessage},
 };
-
-/// Edge length in pixels that avatar textures are downscaled to fit.
-/// Full-resolution profile pictures would otherwise live in texture
-/// memory at megabytes each, and the chat list reloads them on every
-/// update.
-const AVATAR_MAX_EDGE: usize = 96;
-
-type AvatarCache = HashMap<PathBuf, (SystemTime, gdk::Texture)>;
 
 pub fn get_first_name(name: &str) -> String {
     if name.is_empty() {
@@ -121,6 +110,17 @@ pub fn is_lid_jid(jid: &str) -> bool {
 /// Whether the jid addresses a contact by their phone number.
 pub fn is_phone_jid(jid: &str) -> bool {
     jid.ends_with("@s.whatsapp.net") || jid.ends_with("@c.us")
+}
+
+/// Whether the jid addresses a group chat.
+pub fn is_group_jid(jid: &str) -> bool {
+    jid.ends_with("@g.us")
+}
+
+/// Whether the jid belongs to a broadcast conversation: statuses and
+/// broadcast lists share the domain.
+pub fn is_broadcast_jid(jid: &str) -> bool {
+    jid.ends_with("@broadcast")
 }
 
 /// Whether the jid addresses the shared status conversation, which
@@ -454,7 +454,7 @@ pub(crate) async fn re_resolve_senders(
             Some(None) | None => {}
         }
     }
-    tracing::debug!(
+    tracing::trace!(
         "Re-resolved senders for {}: {total} seen, {named} named, {push_sourced} push-sourced, \
          {} unresolved ({unresolved_sample:?})",
         chat.jid,
@@ -462,134 +462,4 @@ pub(crate) async fn re_resolve_senders(
     );
 
     identities
-}
-
-fn avatar_cache() -> &'static Mutex<AvatarCache> {
-    static CACHE: OnceLock<Mutex<AvatarCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Returns the cached avatar texture for a path if it has been decoded
-/// before and the file has not changed since.
-pub fn cached_avatar<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
-    let path = path.as_ref().to_path_buf();
-    let mtime = fs::metadata(&path).ok()?.modified().ok()?;
-    let cache = avatar_cache().lock().expect("avatar cache poisoned");
-
-    cache
-        .get(&path)
-        .filter(|(cached_mtime, _)| *cached_mtime == mtime)
-        .map(|(_, texture)| texture.clone())
-}
-
-/// Load an avatar into a texture from a local path, downscaled to keep
-/// texture memory small. Textures are cached by path until the file
-/// changes, so repeated chat list updates only bump the reference count.
-pub async fn load_avatar<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
-    let path = path.as_ref().to_path_buf();
-    let mtime = fs::metadata(&path).ok()?.modified().ok()?;
-
-    {
-        let cache = avatar_cache().lock().expect("avatar cache poisoned");
-        if let Some((cached_mtime, texture)) = cache.get(&path)
-            && *cached_mtime == mtime
-        {
-            return Some(texture.clone());
-        }
-    }
-
-    let file = File::for_path(&path);
-    let (bytes, _) = match file.load_bytes_future().await {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("Failed to load avatar from {}: {e}", path.display());
-
-            return None;
-        }
-    };
-
-    let texture = downscale_avatar(bytes).await;
-    if let Some(texture) = texture.clone() {
-        avatar_cache()
-            .lock()
-            .expect("avatar cache poisoned")
-            .insert(path, (mtime, texture));
-    }
-
-    texture
-}
-
-/// Decodes an image and box-filter downscales it so the longest edge
-/// fits within [`AVATAR_MAX_EDGE`], producing a small texture instead of
-/// a full-resolution one.
-async fn downscale_avatar(bytes: Bytes) -> Option<gdk::Texture> {
-    let mut loader = Loader::new_bytes(bytes);
-    loader.accepted_memory_formats(MemoryFormatSelection::R8g8b8a8Premultiplied);
-    let mut image = loader.load().await.ok()?;
-    let frame = image.next_frame().await.ok()?;
-
-    let width = usize::try_from(frame.width()).ok()?;
-    let height = usize::try_from(frame.height()).ok()?;
-    let stride = usize::try_from(frame.stride()).ok()?;
-    if width == 0 || height == 0 || stride < width * 4 {
-        return None;
-    }
-
-    if width.max(height) <= AVATAR_MAX_EDGE {
-        return Some(frame.texture());
-    }
-
-    let long_edge = width.max(height);
-    let new_width = (width * AVATAR_MAX_EDGE / long_edge).max(1);
-    let new_height = (height * AVATAR_MAX_EDGE / long_edge).max(1);
-
-    let src = frame.buf_bytes();
-    let src = src.as_ref();
-    if src.len() < height * stride {
-        return None;
-    }
-
-    // Box filter: every destination pixel averages the source box that
-    // maps onto it. The frame is 8-bit RGBA premultiplied, so averaging
-    // bytes per channel position is valid.
-    let mut out = vec![0u8; new_width * new_height * 4];
-    for ty in 0..new_height {
-        let y0 = ty * height / new_height;
-        let y1 = ((ty + 1) * height / new_height).clamp(y0 + 1, height);
-
-        for tx in 0..new_width {
-            let x0 = tx * width / new_width;
-            let x1 = ((tx + 1) * width / new_width).clamp(x0 + 1, width);
-
-            let (mut r, mut g, mut b, mut a, mut count) = (0u64, 0u64, 0u64, 0u64, 0u64);
-            for y in y0..y1 {
-                let row = y * stride;
-
-                for x in x0..x1 {
-                    let px = row + x * 4;
-                    r += u64::from(src[px]);
-                    g += u64::from(src[px + 1]);
-                    b += u64::from(src[px + 2]);
-                    a += u64::from(src[px + 3]);
-                    count += 1;
-                }
-            }
-
-            let px = (ty * new_width + tx) * 4;
-            out[px] = u8::try_from(r / count).ok()?;
-            out[px + 1] = u8::try_from(g / count).ok()?;
-            out[px + 2] = u8::try_from(b / count).ok()?;
-            out[px + 3] = u8::try_from(a / count).ok()?;
-        }
-    }
-
-    let texture = gdk::MemoryTexture::new(
-        i32::try_from(new_width).ok()?,
-        i32::try_from(new_height).ok()?,
-        gdk::MemoryFormat::R8g8b8a8Premultiplied,
-        &Bytes::from_owned(out),
-        new_width * 4,
-    );
-
-    Some(texture.upcast())
 }

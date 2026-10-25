@@ -1,11 +1,14 @@
 use adw::prelude::*;
+use gtk::{gdk, glib, pango};
 use jiff::{civil::Date, tz::TimeZone};
-use relm4::{RelmWidgetExt, gtk, gtk::pango, typed_view::list::RelmListItem};
+use relm4::{RelmWidgetExt, gtk, typed_view::list::RelmListItem};
 
 use crate::{
+    components::ChatViewInput,
     i18n,
+    session::avatar,
     state::{ChatMessage, MessageStatus},
-    utils::format_date_label,
+    utils::{bare_jid, format_date_label, is_group_jid},
     widgets::{MessageTail, TailDirection},
 };
 
@@ -28,6 +31,7 @@ pub enum ChatRow {
 }
 
 pub struct ChatRowWidgets {
+    input: Option<relm4::Sender<ChatViewInput>>,
     avatar: adw::Avatar,
     tail_left: MessageTail,
     bubble_box: gtk::Box,
@@ -42,6 +46,12 @@ pub struct ChatRowWidgets {
     separator_label: gtk::Label,
     timestamp_label: gtk::Label,
     divider_separator: gtk::Separator,
+}
+
+impl ChatRowWidgets {
+    pub(crate) fn set_input(&mut self, input: relm4::Sender<super::ChatViewInput>) {
+        self.input = Some(input);
+    }
 }
 
 fn new_tail(direction: TailDirection, css_class: &str) -> MessageTail {
@@ -67,6 +77,41 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
             .clone()
             .map(|name| name.trim_start_matches('~').to_string());
         widgets.avatar.set_text(name.as_deref());
+        widgets.avatar.set_custom_image(None::<&gdk::Texture>);
+
+        // Lazy per-sender pictures: attach from the decode cache, decode
+        // in the background, or ask the component to fetch the file.
+        let sender = bare_jid(&msg.sender_jid);
+        if !sender.is_empty() && !is_group_jid(&sender) {
+            widgets.avatar.set_widget_name(&sender);
+
+            match avatar::sender_cached_path(&sender) {
+                Some(path) => {
+                    if let Some(texture) = avatar::texture(&path) {
+                        widgets.avatar.set_custom_image(Some(&texture));
+                    } else {
+                        let key = sender.clone();
+                        let avatar = widgets.avatar.clone();
+
+                        glib::spawn_future_local(async move {
+                            if let Some(texture) = avatar::load(&path).await
+                                && avatar.widget_name() == key
+                            {
+                                avatar.set_custom_image(Some(&texture));
+                            }
+                        });
+                    }
+                }
+                None => {
+                    if let Some(input) = &widgets.input {
+                        let _ =
+                            input.send(super::ChatViewInput::RequestSenderAvatar { jid: sender });
+                    }
+                }
+            }
+        } else {
+            widgets.avatar.set_widget_name("");
+        }
     }
 
     if first && let Some(name) = &msg.sender_name {
@@ -131,7 +176,7 @@ fn bind_message_side(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
         widgets.bubble_box.set_margin_start(0);
         widgets.bubble_box.set_margin_end(0);
 
-        if msg.chat_jid.ends_with("@g.us") {
+        if is_group_jid(&msg.chat_jid) {
             bind_group_avatar(widgets, msg, first, last);
         }
 
@@ -271,6 +316,7 @@ impl RelmListItem for ChatRow {
         root.append(&message_box);
 
         let widgets = ChatRowWidgets {
+            input: None,
             avatar,
             tail_left,
             bubble_box,

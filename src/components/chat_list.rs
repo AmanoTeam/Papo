@@ -14,8 +14,9 @@ use relm4::{
 use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
+    session::avatar,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
-    utils::{SenderResolution, cached_avatar, format_lid_as_number, get_first_name, load_avatar},
+    utils::{SenderResolution, format_lid_as_number, get_first_name},
     widgets::TypingDots,
 };
 
@@ -608,7 +609,7 @@ impl ChatList {
     /// Builds a row from precomputed data; no database access, so it is
     /// safe to call while keeping the input queue short.
     fn build_row(&self, data: ChatRowData) -> ChatRow {
-        let avatar_texture = data.chat.avatar_path.as_ref().and_then(cached_avatar);
+        let avatar_texture = data.chat.avatar_path.as_ref().and_then(avatar::texture);
         let (is_typing, typing_senders) = self.typing_row_data(&data.chat.jid);
 
         ChatRow {
@@ -630,10 +631,13 @@ pub struct ChatRow {
 
 impl ChatRow {
     fn bind_avatar(&self, widgets: &ChatRowWidgets, root: &gtk::Box) {
-        let texture = self
-            .avatar_texture
-            .clone()
-            .or_else(|| self.data.chat.avatar_path.as_ref().and_then(cached_avatar));
+        let texture = self.avatar_texture.clone().or_else(|| {
+            self.data
+                .chat
+                .avatar_path
+                .as_ref()
+                .and_then(avatar::texture)
+        });
         if let texture @ Some(_) = texture.as_ref() {
             widgets.avatar.set_custom_image(texture);
         } else {
@@ -645,7 +649,7 @@ impl ChatRow {
                 let avatar = widgets.avatar.clone();
 
                 glib::spawn_future_local(async move {
-                    if let Some(texture) = load_avatar(&path).await
+                    if let Some(texture) = avatar::load(&path).await
                         && root.widget_name() == jid
                     {
                         avatar.set_custom_image(Some(&texture));

@@ -37,10 +37,10 @@ use crate::{
     },
     i18n, i18n_f,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
-    session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
+    session::{ChatsSyncedEntry, Client, ClientInput, ClientOutput, avatar},
     state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
     utils::{
-        bare_jid, format_lid_as_number, get_first_name, is_lid_jid, is_phone_jid,
+        bare_jid, format_lid_as_number, get_first_name, is_group_jid, is_lid_jid, is_phone_jid,
         is_status_broadcast, looks_like_jid,
     },
 };
@@ -161,6 +161,9 @@ pub enum AppMsg {
         jid: String,
         path: String,
     },
+    AvatarFailed {
+        jid: String,
+    },
     ContactUpdate {
         jid: String,
         name: Option<String>,
@@ -251,6 +254,10 @@ pub enum AppMsg {
     },
     HistorySyncCompleted,
     OfflineSyncCompleted,
+
+    RequestSenderAvatar {
+        jid: String,
+    },
 
     Unknown,
     Error {
@@ -533,7 +540,7 @@ impl Application {
 
     async fn resolve_jid(&self, jid: &str) -> String {
         let bare = bare_jid(jid);
-        if bare.ends_with("@lid")
+        if is_lid_jid(&bare)
             && let Some(pn_jid) = self.db.lid_to_pn_jid(&bare).await
         {
             pn_jid
@@ -705,7 +712,7 @@ impl Application {
             message.status = status;
         }
 
-        let is_group = chat_jid.ends_with("@g.us");
+        let is_group = is_group_jid(chat_jid);
 
         // Create a new chat if it doesn't exists.
         if !self.chats.iter().any(|c| c.jid == chat_jid) {
@@ -1210,6 +1217,7 @@ impl AsyncComponent for Application {
                     ClientOutput::OfflineSyncCompleted => AppMsg::OfflineSyncCompleted,
 
                     ClientOutput::AvatarUpdate { jid, path } => AppMsg::AvatarUpdate { jid, path },
+                    ClientOutput::AvatarFailed { jid } => AppMsg::AvatarFailed { jid },
                     ClientOutput::ContactUpdate {
                         jid,
                         name,
@@ -1267,6 +1275,14 @@ impl AsyncComponent for Application {
                     ChatViewOutput::ChatClosed => AppMsg::ChatClosed,
                     ChatViewOutput::MarkChatRead(jid) => AppMsg::MarkChatRead(jid),
 
+                    ChatViewOutput::TypingStateChanged {
+                        chat_jid,
+                        composing,
+                    } => AppMsg::TypingStateChanged {
+                        chat_jid,
+                        composing,
+                    },
+
                     ChatViewOutput::SendTextMessage { text, recipient } => {
                         AppMsg::SendTextMessage { text, recipient }
                     }
@@ -1275,13 +1291,9 @@ impl AsyncComponent for Application {
                         AppMsg::FetchHistory { chat_jid, anchor }
                     }
 
-                    ChatViewOutput::TypingStateChanged {
-                        chat_jid,
-                        composing,
-                    } => AppMsg::TypingStateChanged {
-                        chat_jid,
-                        composing,
-                    },
+                    ChatViewOutput::RequestSenderAvatar { jid } => {
+                        AppMsg::RequestSenderAvatar { jid }
+                    }
                 });
 
         let model = Self {
@@ -1576,6 +1588,7 @@ impl AsyncComponent for Application {
             }
 
             AppMsg::AvatarUpdate { jid, path } => {
+                let bare = bare_jid(&jid);
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
                     chat.avatar_path = Some(path.clone());
 
@@ -1586,6 +1599,13 @@ impl AsyncComponent for Application {
 
                     tracing::trace!("Updated avatar for chat: {}", chat.jid);
                 }
+
+                self.chat_view
+                    .emit(ChatViewInput::SenderAvatarUpdated { jid: bare });
+            }
+            AppMsg::AvatarFailed { jid } => {
+                self.chat_view
+                    .emit(ChatViewInput::SenderAvatarRetry { jid });
             }
             AppMsg::ContactUpdate {
                 mut jid,
@@ -1634,11 +1654,11 @@ impl AsyncComponent for Application {
                 });
 
                 let mut forms = vec![jid.clone()];
-                if jid.ends_with("@lid")
+                if is_lid_jid(&jid)
                     && let Some(pn_jid) = self.db.lid_to_pn_jid(&jid).await
                 {
                     forms.push(pn_jid);
-                } else if jid.ends_with("@s.whatsapp.net") {
+                } else if is_phone_jid(&jid) {
                     forms.extend(self.db.pn_to_lid_jids(&jid).await);
                 }
 
@@ -1703,11 +1723,11 @@ impl AsyncComponent for Application {
                 if let Some(removed_name) = removed_name {
                     let bare = bare_jid(&jid);
                     let mut forms = vec![bare.clone()];
-                    if bare.ends_with("@lid")
+                    if is_lid_jid(&bare)
                         && let Some(pn_jid) = self.db.lid_to_pn_jid(&bare).await
                     {
                         forms.push(pn_jid);
-                    } else if bare.ends_with("@s.whatsapp.net") {
+                    } else if is_phone_jid(&bare) {
                         forms.extend(self.db.pn_to_lid_jids(&bare).await);
                     }
 
@@ -1840,8 +1860,8 @@ impl AsyncComponent for Application {
                                         return contact.clone();
                                     }
 
-                                    let phone = if sender_jid.ends_with("@lid") {
-                                        sender_alt.as_deref().filter(|alt| !alt.ends_with("@lid"))
+                                    let phone = if is_lid_jid(sender_jid) {
+                                        sender_alt.as_deref().filter(|alt| !is_lid_jid(alt))
                                     } else {
                                         Some(sender_jid)
                                     };
@@ -1931,7 +1951,7 @@ impl AsyncComponent for Application {
                 phone,
             } => {
                 if let Some(phone) = phone
-                    && chat_jid.ends_with("@g.us")
+                    && is_group_jid(&chat_jid)
                 {
                     let pn_jid = format!("{phone}@s.whatsapp.net");
                     let name = self
@@ -2120,7 +2140,7 @@ impl AsyncComponent for Application {
                             .source
                             .sender_alt
                             .as_ref()
-                            .filter(|alt| !alt.to_string().ends_with("@lid"))
+                            .filter(|alt| !is_lid_jid(&alt.to_string()))
                         {
                             alt.to_string()
                         } else {
@@ -2323,6 +2343,16 @@ impl AsyncComponent for Application {
                 }
             }
 
+            AppMsg::RequestSenderAvatar { jid } => {
+                if self
+                    .user_jid
+                    .as_ref()
+                    .is_some_and(|user| *user != bare_jid(&jid))
+                {
+                    self.client.emit(ClientInput::FetchAvatar { jid });
+                }
+            }
+
             AppMsg::Unknown => {}
             AppMsg::Error { message } => {
                 self.state = AppState::Error(message.clone());
@@ -2357,7 +2387,7 @@ impl AsyncComponent for Application {
                         tracing::info!("Loaded {} chats from own database", chats.len());
 
                         // Check for existing cached avatars.
-                        let avatar_cache = AvatarCache::new().ok();
+                        let avatar_cache = avatar::global();
                         for chat in &mut chats {
                             if let Some(name) =
                                 self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
@@ -2370,13 +2400,10 @@ impl AsyncComponent for Application {
                                 chat.name = format_lid_as_number(&chat.jid);
                             }
 
-                            match avatar_cache.as_ref() {
+                            match avatar_cache {
                                 Some(cache) if !cache.is_stale(&chat.jid) => {
                                     chat.avatar_path = Some(
-                                        cache
-                                            .get_avatar_path(&chat.jid)
-                                            .to_string_lossy()
-                                            .into_owned(),
+                                        cache.avatar_path(&chat.jid).to_string_lossy().into_owned(),
                                     );
                                 }
                                 _ => chats_needing_avatars.push(chat.jid.clone()),
@@ -2471,21 +2498,21 @@ impl AsyncComponent for Application {
                         // A 1:1 sync name is the peer's wire push name:
                         // learn it, never title the chat from it.
                         let own_chat = self.user_jid.as_ref().is_some_and(|u_j| jid == *u_j);
-                        if !jid.ends_with("@g.us")
+                        if !is_group_jid(&jid)
                             && !own_chat
                             && let Some(wire_name) = name.clone().filter(|n| !n.is_empty())
                         {
                             self.learn_push_name(&jid, &wire_name).await;
                         }
 
-                        let mut chat_name = if jid.ends_with("@g.us") { name } else { None }
+                        let mut chat_name = if is_group_jid(&jid) { name } else { None }
                             .or_else(|| self.contacts.get(&jid).cloned());
-                        if chat_name.is_none() && !jid.ends_with("@g.us") {
+                        if chat_name.is_none() && !is_group_jid(&jid) {
                             chat_name = self.resolve_name(&jid).await;
                         }
 
                         let chat_name = chat_name.unwrap_or_else(|| {
-                            if jid.ends_with("@g.us") {
+                            if is_group_jid(&jid) {
                                 format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
                             } else if own_chat {
                                 i18n!("You")
@@ -2550,7 +2577,7 @@ impl AsyncComponent for Application {
                     }
 
                     let db = self.db.clone();
-                    let is_group = chat_jid.ends_with("@g.us");
+                    let is_group = is_group_jid(&chat_jid);
 
                     // Learn push names carried by the chunk.
                     let mut learned = IndexMap::new();

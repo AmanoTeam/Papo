@@ -32,9 +32,9 @@ use whatsapp_rust::{
 use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
-    session::AvatarCache,
+    session::avatar,
     state::{ChatMessage, HistoryAnchor, Media, MessageStatus},
-    utils::bare_jid,
+    utils::{bare_jid, is_broadcast_jid, is_group_jid, is_lid_jid, is_phone_jid},
 };
 
 pub type ClientHandle = Arc<Mutex<Option<Arc<whatsapp_rust::Client>>>>;
@@ -54,7 +54,6 @@ pub struct Client {
     handle: ClientHandle,
     os_type: String,
 
-    avatar_cache: Option<AvatarCache>,
     history_queue: HistoryQueue,
     inflight_avatars: Arc<Mutex<HashSet<String>>>,
 }
@@ -231,6 +230,9 @@ pub enum ClientOutput {
     AvatarUpdate {
         jid: String,
         path: String,
+    },
+    AvatarFailed {
+        jid: String,
     },
     ContactUpdate {
         jid: String,
@@ -560,23 +562,11 @@ impl AsyncComponent for Client {
     ) -> AsyncComponentParts<Self> {
         let os_type = os_info::get().os_type().to_string();
 
-        let avatar_cache = match AvatarCache::new() {
-            Ok(cache) => {
-                tracing::info!("Avatar cache initialized");
-                Some(cache)
-            }
-            Err(e) => {
-                tracing::error!("Failed to initialize avatar cache: {e}");
-                None
-            }
-        };
-
         let model = Self {
             state: ClientState::Loading,
             store: init,
             handle: Arc::new(Mutex::new(None)),
             os_type,
-            avatar_cache,
             history_queue: HistoryQueue::default(),
             inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
         };
@@ -1121,7 +1111,7 @@ impl AsyncComponent for Client {
             }
 
             ClientCommand::FetchAvatar { jid: jid_str } => {
-                if jid_str.ends_with("@broadcast") || jid_str == "0@s.whatsapp.net" {
+                if is_broadcast_jid(&jid_str) || jid_str == "0@s.whatsapp.net" {
                     return;
                 }
 
@@ -1132,18 +1122,17 @@ impl AsyncComponent for Client {
 
                 let store = self.store.clone();
                 let inflight = Arc::clone(&self.inflight_avatars);
-                let avatar_cache = self.avatar_cache.clone();
                 let sender_clone = sender.clone();
                 let client_handle = Arc::clone(&self.handle);
 
                 relm4::spawn(async move {
                     let result = async {
-                        let Some(cache) = avatar_cache.as_ref() else {
+                        let Some(cache) = avatar::global() else {
                             tracing::warn!("Avatar cache not available");
                             return None;
                         };
 
-                        let cached_path = cache.get_cached_path(&jid_str);
+                        let cached_path = cache.cached_path(&jid_str);
                         if let Some(path) = cached_path {
                             tracing::trace!("Avatar already cached for {jid_str}");
                             return Some(path);
@@ -1165,6 +1154,20 @@ impl AsyncComponent for Client {
                             return None;
                         };
 
+                        // One person may be keyed under either identity
+                        // (LID or phone number); remember the sibling so a
+                        // hidden-picture lookup can retry and a save can
+                        // serve both forms without a second fetch.
+                        let sibling = if is_lid_jid(&jid_str) {
+                            let bare = bare_jid(&jid_str);
+                            store.lid_to_pn_jid(&bare).await
+                        } else if is_phone_jid(&jid_str) {
+                            let bare = bare_jid(&jid_str);
+                            store.pn_to_lid_jids(&bare).await.into_iter().next()
+                        } else {
+                            None
+                        };
+
                         let lookup = match client
                             .contacts()
                             .lookup_profile_picture(&jid, false, None)
@@ -1182,38 +1185,27 @@ impl AsyncComponent for Client {
                         // A hidden picture can depend on the jid form the
                         // server knows this peer by, so retry once with the
                         // lid or phone-number sibling of the same contact.
-                        if picture.is_none() {
-                            let sibling = if jid_str.ends_with("@lid") {
-                                let bare = bare_jid(&jid_str);
-                                store.lid_to_pn_jid(&bare).await
-                            } else if jid_str.ends_with("@s.whatsapp.net") {
-                                let bare = bare_jid(&jid_str);
-                                store.pn_to_lid_jids(&bare).await.into_iter().next()
-                            } else {
-                                None
-                            };
-
-                            if let Some(sibling_str) = sibling
-                                && let Ok(sibling_jid) = sibling_str.parse::<Jid>()
+                        if picture.is_none()
+                            && let Some(sibling_str) = sibling.clone()
+                            && let Ok(sibling_jid) = sibling_str.parse::<Jid>()
+                        {
+                            match client
+                                .contacts()
+                                .lookup_profile_picture(&sibling_jid, false, None)
+                                .await
                             {
-                                match client
-                                    .contacts()
-                                    .lookup_profile_picture(&sibling_jid, false, None)
-                                    .await
-                                {
-                                    Ok(lookup) => {
-                                        tracing::debug!(
-                                            "Profile picture lookup for {jid_str} \
+                                Ok(lookup) => {
+                                    tracing::trace!(
+                                        "Profile picture lookup for {jid_str} \
                                              via {sibling_str}: {lookup:?}"
-                                        );
-                                        picture = lookup.into_found();
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            "Sibling profile picture lookup for \
+                                    );
+                                    picture = lookup.into_found();
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
+                                        "Sibling profile picture lookup for \
                                              {jid_str} via {sibling_str} failed: {e}"
-                                        );
-                                    }
+                                    );
                                 }
                             }
                         }
@@ -1242,13 +1234,22 @@ impl AsyncComponent for Client {
                             return None;
                         }
 
-                        let path = match cache.save_avatar(&jid_str, &response.body) {
+                        let path = match cache.save(&jid_str, &response.body) {
                             Ok(p) => p,
                             Err(e) => {
                                 tracing::error!("Failed to save avatar for {jid_str}: {e}");
                                 return None;
                             }
                         };
+
+                        // Alias the same bytes under the sibling key so
+                        // either identity form finds the picture without
+                        // spending its own fetch on it.
+                        if let Some(sibling_str) = sibling
+                            && let Err(e) = cache.save(&sibling_str, &response.body)
+                        {
+                            tracing::trace!("Failed to alias avatar for {sibling_str}: {e}");
+                        }
 
                         tracing::trace!("Avatar downloaded and cached for {jid_str}");
                         Some(path)
@@ -1258,9 +1259,15 @@ impl AsyncComponent for Client {
                     let mut guard = inflight.lock().await;
                     guard.remove(&jid_str);
 
-                    if let Some(path) = result {
-                        let _ =
-                            sender_clone.output(ClientOutput::AvatarUpdate { jid: jid_str, path });
+                    match result {
+                        Some(path) => {
+                            let _ = sender_clone
+                                .output(ClientOutput::AvatarUpdate { jid: jid_str, path });
+                        }
+                        None => {
+                            let _ =
+                                sender_clone.output(ClientOutput::AvatarFailed { jid: jid_str });
+                        }
                     }
                 });
             }
@@ -1314,17 +1321,11 @@ impl AsyncComponent for Client {
 
                     let mut lid_pairs = Vec::new();
                     for mapping in &sync.phone_number_to_lid_mappings {
-                        let Some(pn) = mapping
-                            .pn_jid
-                            .as_deref()
-                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
+                        let Some(pn) = mapping.pn_jid.as_deref().filter(|pn| is_phone_jid(pn))
                         else {
                             continue;
                         };
-                        let Some(lid) = mapping
-                            .lid_jid
-                            .as_deref()
-                            .filter(|lid| lid.ends_with("@lid"))
+                        let Some(lid) = mapping.lid_jid.as_deref().filter(|lid| is_lid_jid(lid))
                         else {
                             continue;
                         };
@@ -1341,17 +1342,14 @@ impl AsyncComponent for Client {
                         let chat_jid = conv
                             .pn_jid
                             .as_deref()
-                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
+                            .filter(|pn| is_phone_jid(pn))
                             .map(str::to_string)
                             .or_else(|| conv.new_jid.clone())
                             .unwrap_or_else(|| conv.id.clone());
-                        let is_group = chat_jid.ends_with("@g.us");
+                        let is_group = is_group_jid(&chat_jid);
 
-                        if let Some(pn) = conv
-                            .pn_jid
-                            .as_deref()
-                            .filter(|pn| pn.ends_with("@s.whatsapp.net"))
-                            && conv.id.ends_with("@lid")
+                        if let Some(pn) = conv.pn_jid.as_deref().filter(|pn| is_phone_jid(pn))
+                            && is_lid_jid(&conv.id)
                             && let Some(lid) = conv.id.strip_suffix("@lid")
                         {
                             lid_pairs.push((
@@ -1421,7 +1419,7 @@ impl AsyncComponent for Client {
                 self.drive_history_queue(&sender).await;
             }
             ClientCommand::FetchGroupMetadata { chat_jid } => {
-                if !chat_jid.ends_with("@g.us") {
+                if !is_group_jid(&chat_jid) {
                     return;
                 }
 
@@ -1483,7 +1481,7 @@ impl AsyncComponent for Client {
                         .iter()
                         .filter_map(|participant| {
                             let jid = bare_jid(&participant.jid.to_string());
-                            let (lid, phone) = if jid.ends_with("@lid") {
+                            let (lid, phone) = if is_lid_jid(&jid) {
                                 let phone = participant.phone_number.as_ref()?;
                                 (jid, bare_jid(&phone.to_string()))
                             } else {

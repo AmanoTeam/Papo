@@ -12,6 +12,7 @@ use relm4::{prelude::*, typed_view::list::RelmListItem};
 
 use super::rows::ChatRow;
 use crate::{
+    components::ChatViewInput,
     state::{ChatMessage, MessageStatus},
     utils::{bare_jid, format_date_label},
 };
@@ -236,16 +237,21 @@ impl TimelineModel {
 
 /// Builds the message row factory, reusing the row widgets and binding
 /// code behind [`RelmListItem`]. Mirrors the widget-stash pattern of
-/// `relm4`'s own typed list factory.
-fn build_row_factory() -> gtk::SignalListItemFactory {
+/// `relm4`'s own typed list factory. The input channel lets row binds
+/// ask the component for lazy work such as sender avatar fetches.
+fn build_row_factory(input: Option<relm4::Sender<ChatViewInput>>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
-    factory.connect_setup(|_, list_item| {
+    factory.connect_setup(move |_, list_item| {
         let list_item = list_item
             .downcast_ref::<gtk::ListItem>()
             .expect("Needs to be ListItem");
 
-        let (root, widgets) = <ChatRow as RelmListItem>::setup(list_item);
+        let (root, mut widgets) = <ChatRow as RelmListItem>::setup(list_item);
+        if let Some(input) = &input {
+            widgets.set_input(input.clone());
+        }
+
         // SAFETY: the widgets live as long as `root`, which the list
         // item owns; they are only touched through steals that hand
         // the value back before this object can be destroyed.
@@ -375,10 +381,10 @@ impl fmt::Debug for ChatHistory {
 }
 
 impl ChatHistory {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(input: Option<relm4::Sender<ChatViewInput>>) -> Self {
         let timeline = TimelineModel::new();
         let selection = gtk::NoSelection::new(Some(timeline.clone()));
-        let view = gtk::ListView::new(Some(selection), Some(build_row_factory()));
+        let view = gtk::ListView::new(Some(selection), Some(build_row_factory(input)));
         setup_day_headers(&view, &timeline);
 
         Self {
@@ -434,6 +440,27 @@ impl ChatHistory {
             }
 
             message.sender_name = name.map(ToString::to_string);
+            self.replace_row(index, row, false);
+        }
+    }
+
+    /// Live-updates the avatar of rows whose sender matches the jid.
+    /// Day-preserving replaces leave the section layout untouched; the
+    /// rebind re-reads the freshly cached avatar file.
+    pub(crate) fn update_sender_avatars(&self, jid: &str) {
+        let bare = bare_jid(jid);
+        for index in 0..self.len() {
+            let Some(mut row) = self.get_row(index) else {
+                continue;
+            };
+            let ChatRow::Message { message, .. } = &mut row else {
+                continue;
+            };
+
+            if message.outgoing || bare_jid(&message.sender_jid) != bare {
+                continue;
+            }
+
             self.replace_row(index, row, false);
         }
     }
@@ -1017,9 +1044,10 @@ mod timeline_tests {
         time::{Duration, Instant},
     };
 
+    use gtk::{glib, prelude::*};
     use indexmap::IndexMap;
     use jiff::Timestamp;
-    use relm4::{gtk, gtk::prelude::*};
+    use relm4::gtk;
     use uuid::Uuid;
 
     use super::{ChatHistory, ChatRow};
@@ -1059,7 +1087,7 @@ mod timeline_tests {
     /// Pumps the default main context for `ms`, giving GTK time to run
     /// frames — and the list item manager time to walk the model.
     fn pump(ms: u64) {
-        let context = gtk::glib::MainContext::default();
+        let context = glib::MainContext::default();
         let deadline = Instant::now() + Duration::from_millis(ms);
         while Instant::now() < deadline {
             while context.iteration(false) {}
@@ -1080,7 +1108,7 @@ mod timeline_tests {
     fn clear_refill_and_streamed_fill_survive_frames() {
         gtk::init().expect("gtk needs a display");
 
-        let mut history = ChatHistory::new();
+        let mut history = ChatHistory::new(None);
         let window = gtk::Window::new();
         let scrolled = gtk::ScrolledWindow::new();
         scrolled.set_child(Some(history.view()));
