@@ -174,6 +174,20 @@ impl TimelineModel {
 
     /// Appends a batch of rows to the bottom, in chronological order.
     fn append_batch(&self, batch: Vec<(ChatRow, Date)>) {
+        if batch.is_empty() {
+            return;
+        }
+
+        // Scrub any section tiles pending from earlier mutations BEFORE
+        // this one: the rescan's conversion walk settles them safely,
+        // while the walk inside the items_changed below steps across
+        // pendings and dies. The span covers the pre-mutation tree,
+        // matching what the announcement-driven tiles believe.
+        let stale_len = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
+        if stale_len > 0 {
+            self.sections_changed(0, stale_len);
+        }
+
         let (position, added) = {
             let mut rows = self.imp().rows.borrow_mut();
             let position = rows.len();
@@ -185,18 +199,28 @@ impl TimelineModel {
             (position, added)
         };
 
-        if added > 0 {
-            let position = u32::try_from(position).expect("row count fits u32");
-            let added = u32::try_from(added).expect("row count fits u32");
-            self.upcast_ref::<gio::ListModel>()
-                .items_changed(position, 0, added);
-            self.sections_changed(0, position + added);
-        }
+        let position = u32::try_from(position).expect("row count fits u32");
+        let added = u32::try_from(added).expect("row count fits u32");
+        self.upcast_ref::<gio::ListModel>()
+            .items_changed(position, 0, added);
+        self.sections_changed(0, position + added);
     }
 
     /// Prepends a batch of rows to the top, in chronological order
     /// (oldest first); a single pure insertion of the whole batch.
     fn prepend_batch(&self, batch: Vec<(ChatRow, Date)>) {
+        if batch.is_empty() {
+            return;
+        }
+
+        // Same pre-mutation scrub as append_batch: settle pending
+        // section tiles before the walk inside items_changed can
+        // cross them.
+        let stale_len = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
+        if stale_len > 0 {
+            self.sections_changed(0, stale_len);
+        }
+
         let added = {
             let mut rows = self.imp().rows.borrow_mut();
             let added = batch.len();
@@ -210,15 +234,12 @@ impl TimelineModel {
             added
         };
 
-        if added > 0 {
-            let added = u32::try_from(added).expect("row count fits u32");
-            self.upcast_ref::<gio::ListModel>()
-                .items_changed(0, 0, added);
+        let added = u32::try_from(added).expect("row count fits u32");
+        self.upcast_ref::<gio::ListModel>()
+            .items_changed(0, 0, added);
 
-            let n_items =
-                u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
-            self.sections_changed(0, n_items);
-        }
+        let n_items = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
+        self.sections_changed(0, n_items);
     }
 
     /// Replaces the row at `index`, keeping its position.
