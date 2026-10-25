@@ -132,6 +132,9 @@ pub enum ClientInput {
         chat_jid: String,
         lid: String,
     },
+    FetchGroupMetadata {
+        chat_jid: String,
+    },
 }
 
 #[derive(Debug)]
@@ -150,6 +153,10 @@ pub enum ClientOutput {
     },
     SelfPushNameUpdated {
         push_name: String,
+    },
+    GroupParticipantsLearned {
+        chat_jid: String,
+        entries: Vec<(String, String)>,
     },
 
     PairCode {
@@ -448,6 +455,9 @@ pub enum ClientCommand {
         lid: String,
     },
     DriveHistoryQueue,
+    FetchGroupMetadata {
+        chat_jid: String,
+    },
     HistoryFetchTimeout {
         seq: u64,
     },
@@ -746,6 +756,10 @@ impl AsyncComponent for Client {
             ClientInput::ResolveLidPn { chat_jid, lid } => {
                 sender
                     .oneshot_command(async move { ClientCommand::ResolveLidPn { chat_jid, lid } });
+            }
+            ClientInput::FetchGroupMetadata { chat_jid } => {
+                sender
+                    .oneshot_command(async move { ClientCommand::FetchGroupMetadata { chat_jid } });
             }
 
             _ => {}
@@ -1404,6 +1418,99 @@ impl AsyncComponent for Client {
             }
             ClientCommand::DriveHistoryQueue => {
                 self.drive_history_queue(&sender).await;
+            }
+            ClientCommand::FetchGroupMetadata { chat_jid } => {
+                if !chat_jid.ends_with("@g.us") {
+                    return;
+                }
+
+                let sender_clone = sender.clone();
+                let client_handle = Arc::clone(&self.handle);
+                relm4::spawn(async move {
+                    let client = {
+                        let handle = client_handle.lock().await;
+
+                        match handle.as_ref() {
+                            Some(client) => Arc::clone(client),
+                            None => return,
+                        }
+                    };
+
+                    let Ok(jid) = chat_jid.parse::<Jid>() else {
+                        tracing::debug!("Invalid group jid: {chat_jid}");
+                        return;
+                    };
+
+                    let mut metadata = match client.groups().fetch_metadata(&jid).await {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            // The phone may be asleep; the next open retries.
+                            tracing::debug!("Group metadata fetch failed for {chat_jid}: {error}");
+                            return;
+                        }
+                    };
+                    client
+                        .groups()
+                        .resolve_participant_addresses(&mut metadata)
+                        .await;
+
+                    let participants = metadata.participants.len();
+
+                    // Participant display names as the server renders
+                    // them, falling back to the `WhatsApp` username
+                    // when the rendered name is omitted.
+                    let entries = metadata
+                        .participants
+                        .iter()
+                        .filter_map(|participant| {
+                            let name = participant
+                                .details
+                                .as_ref()
+                                .and_then(|details| details.display_name.as_deref())
+                                .or(participant.username.as_deref())
+                                .filter(|name| !name.is_empty())?;
+
+                            Some((participant.jid.to_string(), name.to_string()))
+                        })
+                        .collect::<Vec<(String, String)>>();
+
+                    // Each participant row carries both identities;
+                    // learning the pairs lets contact and push-name
+                    // lookups cross between LID and phone jids.
+                    let pairs = metadata
+                        .participants
+                        .iter()
+                        .filter_map(|participant| {
+                            let jid = bare_jid(&participant.jid.to_string());
+                            let (lid, phone) = if jid.ends_with("@lid") {
+                                let phone = participant.phone_number.as_ref()?;
+                                (jid, bare_jid(&phone.to_string()))
+                            } else {
+                                let lid = participant.lid.as_ref()?;
+                                (bare_jid(&lid.to_string()), jid)
+                            };
+
+                            (lid != phone).then_some((lid, phone))
+                        })
+                        .collect::<Vec<(String, String)>>();
+
+                    tracing::debug!(
+                        "Group metadata for {chat_jid}: {participants} participants, \
+                         {} display names, {} lid-pn pairs",
+                        entries.len(),
+                        pairs.len()
+                    );
+
+                    if !pairs.is_empty() {
+                        let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
+                    }
+                    if !entries.is_empty() {
+                        let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
+                            chat_jid: chat_jid.clone(),
+                            entries,
+                        });
+                    }
+                });
             }
             ClientCommand::HistoryFetchTimeout { seq } => {
                 // An unanswered request held the slot long enough: pass it
