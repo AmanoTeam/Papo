@@ -2317,30 +2317,30 @@ impl AsyncComponent for Application {
                     forms.push(bare_jid(&lid));
                 }
 
-                if let Some(existing) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
-                    if existing.name != subject {
-                        existing.name.clone_from(&subject);
+                if let Some(existing) = self.chats.iter_mut().find(|c| forms.contains(&c.jid))
+                    && existing.name != subject
+                {
+                    existing.name.clone_from(&subject);
 
-                        let db = self.db.clone();
-                        let to_save = existing.clone();
-                        relm4::spawn(async move {
-                            if let Err(e) = to_save.upsert(&db).await {
-                                tracing::error!(
-                                    "Failed to save group subject for {}: {e}",
-                                    to_save.jid
-                                );
-                            }
-                        });
+                    let db = self.db.clone();
+                    let to_save = existing.clone();
+                    relm4::spawn(async move {
+                        if let Err(e) = to_save.upsert(&db).await {
+                            tracing::error!(
+                                "Failed to save group subject for {}: {e}",
+                                to_save.jid
+                            );
+                        }
+                    });
 
-                        self.chat_list.emit(ChatListInput::UpdateChat {
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: existing.clone(),
+                    });
+
+                    if self.open_chat_jid.as_ref() == Some(&existing.jid) {
+                        self.chat_view.emit(ChatViewInput::ChatUpdated {
                             chat: existing.clone(),
                         });
-
-                        if self.open_chat_jid.as_ref() == Some(&existing.jid) {
-                            self.chat_view.emit(ChatViewInput::ChatUpdated {
-                                chat: existing.clone(),
-                            });
-                        }
                     }
                 }
             }
