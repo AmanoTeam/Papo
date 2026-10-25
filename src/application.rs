@@ -303,6 +303,10 @@ pub enum AppCmd {
         chat: Chat,
         flipped: Vec<Uuid>,
     },
+    ChatKeyRefreshed {
+        jid: String,
+        last_message_time: Timestamp,
+    },
     HistoryBackfilled {
         chat_jid: String,
         has_messages: bool,
@@ -369,19 +373,20 @@ impl Application {
     }
 
     fn register_participant(&mut self, chat_jid: &str, jid: &str, name: Option<&str>) {
+        // Contacts always win as the display source; the wire name fills
+        // the rest.
+        let display = self
+            .contacts
+            .get(jid)
+            .map(String::as_str)
+            .or(name)
+            .filter(|n| !n.is_empty());
         if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
             && chat.is_group()
+            && let Some(display) = display
         {
-            let entry = chat
-                .participants
-                .entry(jid.to_string())
-                .or_insert_with(|| i18n!("Unknown"));
-            if let Some(name) = name.filter(|n| !n.is_empty())
-                && *entry != name
-                && !self.contacts.contains_key(jid)
-            {
-                *entry = name.to_string();
-            }
+            chat.participants
+                .insert(jid.to_string(), display.to_string());
         }
     }
 
@@ -2803,7 +2808,12 @@ impl AsyncComponent for Application {
                                 sender
                                     .oneshot_command(async move { AppCmd::AddChatToList { chat } });
                             } else {
-                                sender.oneshot_command(async move { AppCmd::UpdateChat { chat } });
+                                sender.oneshot_command(async move {
+                                    AppCmd::ChatKeyRefreshed {
+                                        jid: chat.jid,
+                                        last_message_time: chat.last_message_time,
+                                    }
+                                });
                             }
                         }
 
@@ -2872,6 +2882,18 @@ impl AsyncComponent for Application {
                 }
 
                 self.chat_list.emit(ChatListInput::UpdateChat { chat });
+            }
+            AppCmd::ChatKeyRefreshed {
+                jid,
+                last_message_time,
+            } => {
+                if let Some(existing) = self.chats.iter_mut().find(|c| c.jid == jid) {
+                    existing.last_message_time = last_message_time;
+
+                    self.chat_list.emit(ChatListInput::UpdateChat {
+                        chat: existing.clone(),
+                    });
+                }
             }
             AppCmd::HistoryBackfilled {
                 chat_jid,
