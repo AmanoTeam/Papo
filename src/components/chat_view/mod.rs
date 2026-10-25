@@ -19,6 +19,7 @@ use self::{history::ChatHistory, rows::ChatRow};
 use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
+    session::avatar,
     state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
     utils::{bare_jid, is_status_broadcast, re_resolve_senders},
     widgets::TypingDots,

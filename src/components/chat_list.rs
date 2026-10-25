@@ -5,7 +5,6 @@ use std::{
     mem,
     rc::Rc,
     slice,
-    time::Instant,
 };
 
 use adw::prelude::*;
@@ -442,30 +441,25 @@ impl SimpleAsyncComponent for ChatList {
                 sender.input(ChatListInput::PumpPending);
             }
             ChatListInput::ApplyFilter(filter) => {
-                // Remove any existing filter to avoid stacking one filter on top of other.
-                self.list_view_wrapper.clear_filters();
-                // Base filter: chats without messages stay hidden.
-                self.list_view_wrapper
-                    .add_filter(|row| row.data.last_message.is_some());
+                // Swap the shared state and invalidate the whole store so
+                // the persistent filter re-evaluates every row; no filter
+                // model is rebuilt.
+                *self.filter_state.borrow_mut() = filter;
+                let n_items = self.store().n_items();
+                self.store().items_changed(0, n_items, n_items);
 
-                match filter {
-                    ChatListFilter::All => {
-                        // Re-select the row.
-                        if let Some(jid) = self.chat_jid.as_deref()
-                            && let Some(position) = self.get_visible_index_by_jid(jid)
-                        {
-                            self.list_view_wrapper
-                                .selection_model
-                                .select_item(position, true);
-                        }
-                    }
-                    ChatListFilter::Groups => {
-                        self.list_view_wrapper
-                            .add_filter(|row| row.data.chat.is_group());
-                    }
-                    ChatListFilter::Unreads => self
-                        .list_view_wrapper
-                        .add_filter(|row| row.data.unread_count > 0),
+                // Re-select the row under the new filter.
+                if let Some(jid) = self.chat_jid.as_deref()
+                    && let Some(position) = self.get_visible_index_by_jid(jid)
+                {
+                    self.list_view_wrapper
+                        .selection_model
+                        .select_item(position, true);
+                }
+
+                // Filters take the reader back to the top.
+                if let Some(adj) = self.list_view_wrapper.view.vadjustment() {
+                    glib::idle_add_local_once(move || adj.set_value(adj.lower()));
                 }
             }
             ChatListInput::UpdateAvatar { jid, avatar_path } => {

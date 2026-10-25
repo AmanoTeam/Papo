@@ -1379,7 +1379,6 @@ impl AsyncComponent for Application {
             },
             session_page: AppSessionPage::Empty,
             user_push_name: None,
-            pending_read_chats: HashSet::new(),
             synced_history_chats: HashSet::new(),
         };
 
@@ -2354,14 +2353,10 @@ impl AsyncComponent for Application {
             }
             AppMsg::ChatPropertyUpdate {
                 jid,
-                pinned,
                 muted,
                 archived,
             } => {
                 if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == jid) {
-                    if let Some(pinned) = pinned {
-                        chat.pinned = pinned;
-                    }
                     if let Some(muted) = muted {
                         chat.muted = muted;
                     }
