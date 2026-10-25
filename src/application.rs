@@ -216,6 +216,7 @@ pub enum AppMsg {
         chat_jid: String,
         total: usize,
         entries: Vec<(String, String)>,
+        participants: Vec<String>,
     },
 
     TypingExpired {
@@ -1303,10 +1304,12 @@ impl AsyncComponent for Application {
                         chat_jid,
                         total,
                         entries,
+                        participants,
                     } => AppMsg::GroupParticipantsLearned {
                         chat_jid,
                         total,
                         entries,
+                        participants,
                     },
 
                     ClientOutput::Error { message } => AppMsg::Error { message },
@@ -2089,7 +2092,8 @@ impl AsyncComponent for Application {
             AppMsg::GroupParticipantsLearned {
                 chat_jid,
                 total,
-                entries,
+                mut entries,
+                participants,
             } => {
                 let open = self.open_chat_jid.as_ref();
                 let updated_open_chat = self
@@ -2100,6 +2104,21 @@ impl AsyncComponent for Application {
                         chat.member_count = (total > 0).then_some(total);
                         (open == Some(&chat.jid)).then(|| chat.clone())
                     });
+
+                // Participant jids the server left nameless still name
+                // people we know: resolve each against the contacts map.
+                if !self.contacts.is_empty() {
+                    for jid in &participants {
+                        let bare = bare_jid(jid);
+                        if bare == chat_jid || self.user_jid.as_ref().is_some_and(|u| *u == bare) {
+                            continue;
+                        }
+
+                        if let Some(name) = self.lookup_name_in(&self.contacts, &bare).await {
+                            entries.push((bare, name));
+                        }
+                    }
+                }
 
                 let fresh = entries
                     .iter()

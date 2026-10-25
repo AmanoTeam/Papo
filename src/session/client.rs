@@ -158,6 +158,8 @@ pub enum ClientOutput {
         /// Total membership per the metadata answer.
         total: usize,
         entries: Vec<(String, String)>,
+        /// Every participant jid, named or not.
+        participants: Vec<String>,
     },
 
     PairCode {
@@ -1465,7 +1467,7 @@ impl AsyncComponent for Client {
                         .resolve_participant_addresses(&mut metadata)
                         .await;
 
-                    let participants = metadata.participants.len();
+                    let participants_count = metadata.participants.len();
 
                     // Participant display names as the server renders
                     // them, falling back to the `WhatsApp` username
@@ -1506,7 +1508,7 @@ impl AsyncComponent for Client {
                         .collect::<Vec<(String, String)>>();
 
                     tracing::debug!(
-                        "Group metadata for {chat_jid}: {participants} participants, \
+                        "Group metadata for {chat_jid}: {participants_count} participants, \
                          {} display names, {} lid-pn pairs",
                         entries.len(),
                         pairs.len()
@@ -1529,11 +1531,19 @@ impl AsyncComponent for Client {
                         let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
                     }
 
-                    // Always tell the app how big the group is.
+                    // Always tell the app how big the group is, along
+                    // with every participant jid.
+                    let participants = metadata
+                        .participants
+                        .iter()
+                        .map(|participant| participant.jid.to_string())
+                        .collect::<Vec<String>>();
+
                     let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
                         chat_jid: chat_jid.clone(),
-                        total: participants,
+                        total: participants_count,
                         entries,
+                        participants,
                     });
                 });
             }
