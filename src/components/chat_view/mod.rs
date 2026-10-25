@@ -249,7 +249,7 @@ impl AsyncComponent for ChatView {
                     set_halign: gtk::Align::Center,
                     set_valign: gtk::Align::Center,
                     #[watch]
-                    set_css_classes: &["chat-title", "flat", if model.state.presence.is_some() { "with-subtitle" } else { "" }],
+                    set_css_classes: &["chat-title", "flat", if model.header_subtitle().is_some() { "with-subtitle" } else { "" }],
 
                     gtk::Box {
                         set_halign: gtk::Align::Center,
@@ -276,9 +276,9 @@ impl AsyncComponent for ChatView {
 
                         gtk::Label {
                             #[watch]
-                            set_label?: model.state.presence.as_ref(),
+                            set_label?: model.header_subtitle().as_ref(),
                             #[watch]
-                            set_visible: model.state.presence.is_some(),
+                            set_visible: model.header_subtitle().is_some(),
                             set_selectable: false,
                             set_ellipsize: pango::EllipsizeMode::End,
                             set_max_width_chars: 40,

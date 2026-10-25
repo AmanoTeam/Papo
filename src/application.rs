@@ -2056,6 +2056,16 @@ impl AsyncComponent for Application {
                         None => self.learn_push_name(&jid, &name).await,
                     }
                 }
+
+                // Registered participants fill the chat header
+                // subtitle.
+                if let Some(chat_jid) = chat_jid
+                    && is_group_jid(&chat_jid)
+                    && self.open_chat_jid.as_ref() == Some(&chat_jid)
+                    && let Some(chat) = self.chats.iter().find(|c| c.jid == chat_jid).cloned()
+                {
+                    self.chat_view.emit(ChatViewInput::ChatUpdated { chat });
+                }
             }
             AppMsg::LidMappingsLearned { pairs } => {
                 for (lid, phone) in pairs {
@@ -2065,22 +2075,19 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::GroupParticipantsLearned { chat_jid, entries } => {
-                let entries = entries
-                    .into_iter()
+                let fresh = entries
+                    .iter()
                     .filter(|(jid, name)| {
                         self.push_names.get(jid).map(String::as_str) != Some(name.as_str())
                     })
+                    .cloned()
                     .collect::<Vec<(String, String)>>();
-                if entries.is_empty() {
-                    return;
-                }
 
                 let db = self.db.clone();
                 let sender = sender.clone();
                 let user_jid = self.user_jid.clone();
                 relm4::spawn(async move {
-                    let mut learned: Vec<(String, String)> = Vec::new();
-                    for (jid, name) in entries {
+                    for (jid, name) in fresh {
                         let bare = bare_jid(&jid);
                         if user_jid.as_ref().is_some_and(|u| *u == bare) {
                             continue;
@@ -2093,8 +2100,8 @@ impl AsyncComponent for Application {
                                 }
 
                                 contact.push_name = Some(name.clone());
-                                if db.save_contact(&contact).await.is_ok() {
-                                    learned.push((bare, name));
+                                if let Err(e) = db.save_contact(&contact).await {
+                                    tracing::debug!("Failed to save contact {bare}: {e}");
                                 }
                             }
                             Ok(None) => {
@@ -2107,8 +2114,8 @@ impl AsyncComponent for Application {
                                     is_registered: false,
                                     profile_picture_url: None,
                                 };
-                                if db.save_contact(&contact).await.is_ok() {
-                                    learned.push((bare, name));
+                                if let Err(e) = db.save_contact(&contact).await {
+                                    tracing::debug!("Failed to save contact {bare}: {e}");
                                 }
                             }
                             Err(e) => {
@@ -2117,12 +2124,10 @@ impl AsyncComponent for Application {
                         }
                     }
 
-                    if !learned.is_empty() {
-                        sender.input(AppMsg::PushNamesLearned {
-                            chat_jid: Some(chat_jid),
-                            entries: learned,
-                        });
-                    }
+                    sender.input(AppMsg::PushNamesLearned {
+                        chat_jid: Some(chat_jid),
+                        entries,
+                    });
                 });
             }
 
