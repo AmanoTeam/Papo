@@ -366,3 +366,9 @@ msgstr ""
 #: src/session/client.rs:899
 msgid "You!"
 msgstr ""
+
+#: src/components/chat_view/mod.rs
+msgid "<b>{0}</b> member"
+msgid_plural "<b>{0}</b> members"
+msgstr[0] ""
+msgstr[1] ""

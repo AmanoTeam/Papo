@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-09-08 22:48-0300\n"
+"POT-Creation-Date: 2026-09-30 10:29-0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -32,7 +32,9 @@ msgid "A GTK WhatsApp client"
 msgstr ""
 
 #: data/com.amanoteam.Papo.desktop.in.in:10
-msgid "GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;whatsapp.com;"
+msgid ""
+"GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;"
+"whatsapp.com;"
 msgstr ""
 
 #: data/com.amanoteam.Papo.gschema.xml.in:10
@@ -129,6 +131,22 @@ msgstr ""
 msgid "Select a chat to start chatting"
 msgstr ""
 
+#: src/application.rs:756
+msgid "Syncing History"
+msgstr ""
+
+#: src/application.rs:762
+msgid "This may take a few minutes..."
+msgstr ""
+
+#: src/application.rs:769
+msgid "{0}%"
+msgstr ""
+
+#: src/application.rs:789
+msgid "Synced {0} of {1} chats"
+msgstr ""
+
 #: src/application.rs:1250 src/components/chat_view/mod.rs:983
 msgid "Someone"
 msgstr ""
@@ -158,22 +176,18 @@ msgid "Groups"
 msgstr ""
 
 #: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:956
-#, rust-format
 msgid "{0} is recording audio..."
 msgstr ""
 
 #: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:960
-#, rust-format
 msgid "{0} is typing..."
 msgstr ""
 
 #: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:962
-#, rust-format
 msgid "{0} people are recording audio..."
 msgstr ""
 
 #: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:964
-#, rust-format
 msgid "{0} people are typing..."
 msgstr ""
 
@@ -208,8 +222,19 @@ msgid "yesterday"
 msgstr ""
 
 #: src/components/chat_view/mod.rs:937
-#, rust-format
 msgid "+{0} more"
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1032 src/components/chat_view/mod.rs:1040
+msgid "Syncing messages..."
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1036
+msgid "Syncing messages... {0}%"
+msgstr ""
+
+#: src/components/chat_view/mod.rs:1038
+msgid "Syncing messages... {0} of {1} chats"
 msgstr ""
 
 #: src/components/chat_view/rows.rs:233
@@ -317,20 +342,22 @@ msgid "Yesterday"
 msgstr ""
 
 #: src/session/client.rs:487
-#, rust-format
 msgid "Failed to pair with phone number: {0}"
 msgstr ""
 
 #: src/session/client.rs:620
-#, rust-format
 msgid "Database error: {0}"
 msgstr ""
 
 #: src/session/client.rs:837
-#, rust-format
 msgid "Connection failed: {0}"
 msgstr ""
 
 #: src/session/client.rs:899
 msgid "You!"
 msgstr ""
+
+#: src/components/chat_view/mod.rs
+msgid "<b>{0}</b> member"
+msgid_plural "<b>{0}</b> members"
+msgstr[0] ""

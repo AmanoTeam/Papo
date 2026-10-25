@@ -18,7 +18,7 @@ use uuid::Uuid;
 use self::{history::ChatHistory, rows::ChatRow};
 use crate::{
     db::store::SessionStore,
-    i18n, i18n_f,
+    i18n, i18n_f, ni18n_f,
     session::avatar,
     state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
     utils::{bare_jid, is_status_broadcast, re_resolve_senders},
@@ -1489,12 +1489,19 @@ impl ChatView {
                 return chat
                     .member_count
                     .filter(|count| *count > 0)
-                    .map(|count| i18n_f!("<b>{0}</b> members", count));
+                    .map(|count| ni18n_f!("<b>{0}</b> member", "<b>{0}</b> members", count));
             }
 
             let shown = names.drain(..4.min(total)).collect::<Vec<String>>();
-            Some(if total > 4 {
-                format!("{}, <b>+{}</b>", shown.join(", "), total - 4)
+            let extra = chat
+                .member_count
+                .filter(|count| *count > 0)
+                .map_or(total - shown.len(), |count| {
+                    count.saturating_sub(shown.len() + 1)
+                });
+
+            Some(if extra > 0 {
+                format!("{}, <b>+{}</b>", shown.join(", "), extra)
             } else {
                 shown.join(", ")
             })

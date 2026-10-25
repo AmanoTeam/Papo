@@ -96,6 +96,17 @@ macro_rules! ni18n {
     };
 }
 
+#[macro_export]
+macro_rules! ni18n_f {
+    ($singular:expr, $plural:expr, $n:expr) => {
+        gettextrs::ngettext($singular, $plural, u32::try_from($n).unwrap_or(u32::MAX)).replacen(
+            "{0}",
+            &format!("{}", $n),
+            1,
+        )
+    };
+}
+
 fn main() {
     // Initialize logger.
     // Default to the INFO level for this crate and WARN for everything else.

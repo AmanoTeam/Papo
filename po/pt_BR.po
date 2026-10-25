@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: papo 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/AmanoTeam/Papo/issues\n"
-"POT-Creation-Date: 2026-09-08 22:48-0300\n"
+"POT-Creation-Date: 2026-09-30 10:29-0300\n"
 "PO-Revision-Date: 2026-07-05 04:12+0000\n"
 "Last-Translator: Alisson Lauffer <alissonvitortc@gmail.com>\n"
 "Language-Team: Portuguese (Brazil) <http://weblate.amanoteam.com/projects/"
@@ -34,10 +34,12 @@ msgid "A GTK WhatsApp client"
 msgstr "Cliente do WhatsApp em GTK"
 
 #: data/com.amanoteam.Papo.desktop.in.in:10
-msgid "GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;whatsapp.com;"
+msgid ""
+"GTK;Gnome;Chat;Communications;Talk;im;wp;zap;messaging;messenger;whatsapp;"
+"whatsapp.com;"
 msgstr ""
-"GTK;Gnome;Bate-"
-"papo;Comunicação;Conversa;wp;zap;mensagens;mensageiro;whatsapp;whatsapp.com;"
+"GTK;Gnome;Bate-papo;Comunicação;Conversa;wp;zap;mensagens;mensageiro;"
+"whatsapp;whatsapp.com;"
 
 #: data/com.amanoteam.Papo.gschema.xml.in:10
 msgid "Default window width"
@@ -135,9 +137,25 @@ msgstr "Nenhum Chat Selecionado"
 msgid "Select a chat to start chatting"
 msgstr "Selecione um chat para começar a conversar"
 
+#: src/application.rs:756
+msgid "Syncing History"
+msgstr "Sincronizando histórico"
+
+#: src/application.rs:762
+msgid "This may take a few minutes..."
+msgstr "Isso pode levar alguns minutos..."
+
+#: src/application.rs:769
+msgid "{0}%"
+msgstr "{0}%"
+
+#: src/application.rs:789
+msgid "Synced {0} of {1} chats"
+msgstr "Sincronizados {0} de {1} chats"
+
 #: src/application.rs:1250 src/components/chat_view/mod.rs:983
 msgid "Someone"
-msgstr ""
+msgstr "Alguém"
 
 #: src/modals/about.rs:36
 msgid "translator-credits"
@@ -166,24 +184,20 @@ msgid "Groups"
 msgstr "Grupos"
 
 #: src/components/chat_list.rs:468 src/components/chat_view/mod.rs:956
-#, rust-format
 msgid "{0} is recording audio..."
-msgstr ""
+msgstr "{0} está gravando áudio..."
 
 #: src/components/chat_list.rs:472 src/components/chat_view/mod.rs:960
-#, rust-format
 msgid "{0} is typing..."
-msgstr ""
+msgstr "{0} está digitando..."
 
 #: src/components/chat_list.rs:475 src/components/chat_view/mod.rs:962
-#, rust-format
 msgid "{0} people are recording audio..."
-msgstr ""
+msgstr "{0} pessoas estão gravando áudio..."
 
 #: src/components/chat_list.rs:479 src/components/chat_view/mod.rs:964
-#, rust-format
 msgid "{0} people are typing..."
-msgstr ""
+msgstr "{0} pessoas estão digitando..."
 
 #: src/components/chat_view/mod.rs:243
 msgid "Loading messages..."
@@ -216,13 +230,26 @@ msgid "yesterday"
 msgstr "ontem"
 
 #: src/components/chat_view/mod.rs:937
-#, rust-format
 msgid "+{0} more"
-msgstr ""
+msgstr "+{0} mais"
+
+#: src/components/chat_view/mod.rs:1032 src/components/chat_view/mod.rs:1040
+#, fuzzy
+msgid "Syncing messages..."
+msgstr "Carregando mensagens..."
+
+#: src/components/chat_view/mod.rs:1036
+#, fuzzy
+msgid "Syncing messages... {0}%"
+msgstr "Carregando mensagens..."
+
+#: src/components/chat_view/mod.rs:1038
+msgid "Syncing messages... {0} of {1} chats"
+msgstr "Sincronizando mensagens... {0} de {1} chats"
 
 #: src/components/chat_view/rows.rs:233
 msgid "Unread messages"
-msgstr ""
+msgstr "Mensagens não lidas"
 
 #: src/components/chat_view/rows.rs:297
 msgid "The message could not be sent."
@@ -250,7 +277,7 @@ msgstr "Abra o WhatsApp no seu celular."
 
 #: src/components/login.rs:267 src/components/login.rs:438
 msgid "Go to: <i>Menu &gt; Linked devices &gt; Link a device</i>"
-msgstr ""
+msgstr "Vá em: <i>Menu &gt; Aparelhos conectados &gt; Conectar um aparelho</i>"
 "Acesse: <i>Menu &gt; Dispositivos conectados &gt; Conectar dispositivo</i>"
 
 #: src/components/login.rs:268
@@ -287,7 +314,7 @@ msgstr "editar"
 
 #: src/components/login.rs:439
 msgid "Tap <i>Link with phone number</i> and enter this code on your phone."
-msgstr ""
+msgstr "Toque em <i>Conectar com número de telefone</i> e insira este código no seu telefone."
 "Toque em <i>Conectar com número de telefone</i> e digite este código no seu "
 "celular."
 
@@ -328,20 +355,23 @@ msgid "Yesterday"
 msgstr "Ontem"
 
 #: src/session/client.rs:487
-#, rust-format
 msgid "Failed to pair with phone number: {0}"
 msgstr "Falha ao parear com o número de telefone: {0}"
 
 #: src/session/client.rs:620
-#, rust-format
 msgid "Database error: {0}"
 msgstr "Erro no banco de dados: {0}"
 
 #: src/session/client.rs:837
-#, rust-format
 msgid "Connection failed: {0}"
 msgstr "Falha na conexão: {0}"
 
 #: src/session/client.rs:899
 msgid "You!"
 msgstr "Você!"
+
+#: src/components/chat_view/mod.rs
+msgid "<b>{0}</b> member"
+msgid_plural "<b>{0}</b> members"
+msgstr[0] "<b>{0}</b> membro"
+msgstr[1] "<b>{0}</b> membros"
