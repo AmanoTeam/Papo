@@ -3,7 +3,7 @@ mod rows;
 
 use std::{
     cell::Cell,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -20,6 +20,7 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
+    utils::{is_status_broadcast, re_resolve_senders},
     widgets::TypingDots,
 };
 
@@ -102,18 +103,26 @@ pub enum ChatViewInput {
     EntryChanged,
     MessageReceived(Box<ChatMessage>),
 
+    TypingUpdate {
+        chat_jid: String,
+        senders: Vec<TypingSender>,
+    },
     PresenceUpdate {
         jid: String,
         available: bool,
         last_seen: Option<Timestamp>,
     },
-    TypingUpdate {
-        chat_jid: String,
-        senders: Vec<TypingSender>,
-    },
     MessageStatusUpdate {
         status: MessageStatus,
         local_id: Uuid,
+    },
+
+    ChatUpdated {
+        chat: Chat,
+    },
+    SenderNameChanged {
+        forms: Vec<String>,
+        name: Option<String>,
     },
 
     SyncProgress {
@@ -157,24 +166,31 @@ pub enum ChatViewCommand {
     FillChunk {
         generation: u64,
         messages: Vec<ChatMessage>,
+        /// Digit-keyed LID identity map from the resolving pass, for
+        /// the timeline's author grouping.
+        identities: HashMap<String, String>,
     },
     InitialMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
+        identities: HashMap<String, String>,
         had_unread: bool,
     },
     OlderMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
+        identities: HashMap<String, String>,
     },
     NewerMessagesLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
+        identities: HashMap<String, String>,
     },
 
     JumpLoaded {
         generation: u64,
         messages: Vec<ChatMessage>,
+        identities: HashMap<String, String>,
     },
     FetchRetryTimeout {
         generation: u64,
@@ -183,6 +199,7 @@ pub enum ChatViewCommand {
         generation: u64,
         older: Vec<ChatMessage>,
         newer: Vec<ChatMessage>,
+        identities: HashMap<String, String>,
     },
 
     ScrollPositionChanged {
@@ -576,7 +593,7 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.generation += 1;
-                self.history.clear();
+                self.history.reset();
 
                 if self.state.is_typing
                     && let Some(ref old) = self.chat
@@ -615,10 +632,11 @@ impl AsyncComponent for ChatView {
                 let db = self.db.clone();
                 let generation = self.generation;
                 sender.oneshot_command(async move {
-                    let messages = chat
+                    let mut messages = chat
                         .load_messages(&db, INITIAL_LOAD_COUNT)
                         .await
                         .unwrap_or_default();
+                    let identities = re_resolve_senders(&db, &chat, &mut messages).await;
                     let had_unread = chat
                         .get_unread_count(&db)
                         .await
@@ -626,6 +644,7 @@ impl AsyncComponent for ChatView {
                     ChatViewCommand::InitialMessagesLoaded {
                         generation,
                         messages,
+                        identities,
                         had_unread,
                     }
                 });
@@ -634,7 +653,7 @@ impl AsyncComponent for ChatView {
             }
             ChatViewInput::Close => {
                 self.generation += 1;
-                self.history.clear();
+                self.history.reset();
 
                 if self.state.is_typing
                     && let Some(ref chat) = self.chat
@@ -742,6 +761,14 @@ impl AsyncComponent for ChatView {
                 }
             }
 
+            ChatViewInput::TypingUpdate { chat_jid, senders } => {
+                if self.chat.as_ref().is_none_or(|chat| chat.jid != chat_jid) {
+                    return;
+                }
+
+                self.state.typing = senders;
+                self.rebuild_typing_avatars();
+            }
             ChatViewInput::PresenceUpdate {
                 jid,
                 available,
@@ -759,14 +786,6 @@ impl AsyncComponent for ChatView {
                     self.update_presence();
                 }
             }
-            ChatViewInput::TypingUpdate { chat_jid, senders } => {
-                if self.chat.as_ref().is_none_or(|chat| chat.jid != chat_jid) {
-                    return;
-                }
-
-                self.state.typing = senders;
-                self.rebuild_typing_avatars();
-            }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
                 if let Some(index) = self
                     .history
@@ -780,6 +799,17 @@ impl AsyncComponent for ChatView {
                     self.history
                         .replace_row(index, row, self.state.is_at_bottom);
                 }
+            }
+
+            ChatViewInput::ChatUpdated { chat } => {
+                if let Some(current) = self.chat.as_mut()
+                    && current.jid == chat.jid
+                {
+                    *current = chat;
+                }
+            }
+            ChatViewInput::SenderNameChanged { forms, name } => {
+                self.history.update_sender_names(&forms, name.as_deref());
             }
 
             ChatViewInput::SyncProgress {
@@ -821,14 +851,16 @@ impl AsyncComponent for ChatView {
                     let db = self.db.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
-                        let messages = chat
+                        let mut messages = chat
                             .load_messages(&db, INITIAL_LOAD_COUNT)
                             .await
                             .unwrap_or_default();
+                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
 
                         ChatViewCommand::InitialMessagesLoaded {
                             generation,
                             messages,
+                            identities,
                             had_unread: false,
                         }
                     });
@@ -840,25 +872,28 @@ impl AsyncComponent for ChatView {
                     let db = self.db.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
-                        let older = match before_ts {
+                        let mut older = match before_ts {
                             Some(before_ts) => chat
                                 .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                                 .await
                                 .unwrap_or_default(),
                             None => Vec::new(),
                         };
-                        let newer = match after_ts {
+                        let mut newer = match after_ts {
                             Some(after_ts) => chat
                                 .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                                 .await
                                 .unwrap_or_default(),
                             None => Vec::new(),
                         };
+                        let identities = re_resolve_senders(&db, &chat, &mut older).await;
+                        re_resolve_senders(&db, &chat, &mut newer).await;
 
                         ChatViewCommand::BackfillLoaded {
                             generation,
                             older,
                             newer,
+                            identities,
                         }
                     });
                 }
@@ -869,7 +904,7 @@ impl AsyncComponent for ChatView {
                 // message history — reload from scratch to jump to the real latest.
                 if self.history.has_newer() || self.history.has_older() {
                     self.generation += 1;
-                    self.history.clear();
+                    self.history.reset();
                     self.state.is_loading = true;
 
                     if let Some(ref chat) = self.chat {
@@ -877,13 +912,16 @@ impl AsyncComponent for ChatView {
                         let chat = chat.clone();
                         let generation = self.generation;
                         sender.oneshot_command(async move {
-                            let messages = chat
+                            let mut messages = chat
                                 .load_messages(&db, INITIAL_LOAD_COUNT)
                                 .await
                                 .unwrap_or_default();
+                            let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+
                             ChatViewCommand::JumpLoaded {
                                 generation,
                                 messages,
+                                identities,
                             }
                         });
                     }
@@ -908,11 +946,14 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::InitialMessagesLoaded {
                 generation,
                 mut messages,
+                identities,
                 had_unread,
             } => {
                 if generation != self.generation {
                     return;
                 }
+
+                self.history.set_identities(identities.clone());
 
                 let full_len = messages.len();
                 let tail = if !had_unread && full_len > FILL_STREAM_CHUNK {
@@ -932,6 +973,7 @@ impl AsyncComponent for ChatView {
                 // stored message.
                 if full_len < INITIAL_LOAD_COUNT
                     && let Some(ref chat) = self.chat
+                    && !is_status_broadcast(&chat.jid)
                 {
                     let anchor = self.oldest_message_anchor();
                     self.history_fetch_at = Some(Instant::now());
@@ -972,6 +1014,7 @@ impl AsyncComponent for ChatView {
                         .collect::<VecDeque<Vec<ChatMessage>>>();
                     let chunk_sender = sender.command_sender().clone();
                     let stream_generation = generation;
+                    let stream_identities = identities;
 
                     glib::idle_add_local(move || {
                         let Some(chunk) = queue.pop_front() else {
@@ -981,6 +1024,7 @@ impl AsyncComponent for ChatView {
                         chunk_sender.emit(ChatViewCommand::FillChunk {
                             generation: stream_generation,
                             messages: chunk,
+                            identities: stream_identities.clone(),
                         });
 
                         if queue.is_empty() {
@@ -994,21 +1038,26 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::FillChunk {
                 generation,
                 messages,
+                identities: _,
             } => {
                 if generation != self.generation {
                     return;
                 }
 
+                // The identity map was installed by the initial fill;
+                // streaming chunks ride on it.
                 self.history.prepend_messages(&messages);
             }
             ChatViewCommand::OlderMessagesLoaded {
                 generation,
                 messages,
+                identities,
             } => {
                 if generation != self.generation {
                     return;
                 }
 
+                self.history.set_identities(identities);
                 self.history
                     .set_has_older(messages.len() == LOAD_MORE_COUNT);
                 self.history.prepend_messages(&messages);
@@ -1017,10 +1066,13 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::NewerMessagesLoaded {
                 generation,
                 messages,
+                identities,
             } => {
                 if generation != self.generation {
                     return;
                 }
+
+                self.history.set_identities(identities);
 
                 // If fewer messages returned than requested, we've reached the real bottom.
                 if messages.len() < LOAD_MORE_COUNT {
@@ -1038,11 +1090,13 @@ impl AsyncComponent for ChatView {
             ChatViewCommand::JumpLoaded {
                 generation,
                 messages,
+                identities,
             } => {
                 if generation != self.generation {
                     return;
                 }
 
+                self.history.set_identities(identities);
                 self.history.fill(&messages);
                 self.history
                     .set_has_older(messages.len() == INITIAL_LOAD_COUNT);
@@ -1074,10 +1128,13 @@ impl AsyncComponent for ChatView {
                 generation,
                 older,
                 newer,
+                identities,
             } => {
                 if generation != self.generation {
                     return;
                 }
+
+                self.history.set_identities(identities);
 
                 // An anchored request that surfaced nothing older means the
                 // phone has no history beyond the window: stop chaining.
@@ -1135,13 +1192,16 @@ impl AsyncComponent for ChatView {
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
-                        let messages = chat
+                        let mut messages = chat
                             .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
+                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+
                         ChatViewCommand::OlderMessagesLoaded {
                             generation,
                             messages,
+                            identities,
                         }
                     });
                 } else if at_bottom
@@ -1155,13 +1215,16 @@ impl AsyncComponent for ChatView {
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
-                        let messages = chat
+                        let mut messages = chat
                             .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
+                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+
                         ChatViewCommand::NewerMessagesLoaded {
                             generation,
                             messages,
+                            identities,
                         }
                     });
                 } else if at_top {
@@ -1207,7 +1270,9 @@ impl ChatView {
             return;
         }
 
-        if let Some(ref chat) = self.chat {
+        if let Some(ref chat) = self.chat
+            && !is_status_broadcast(&chat.jid)
+        {
             let anchor = self.oldest_message_anchor();
             self.history_fetch_at = Some(Instant::now());
             self.history_fetch_anchored = anchor.is_some();

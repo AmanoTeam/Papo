@@ -39,7 +39,10 @@ use crate::{
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{AvatarCache, ChatsSyncedEntry, Client, ClientInput, ClientOutput},
     state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
-    utils::{bare_jid, format_lid_as_number, get_first_name, is_lid_jid, is_phone_jid},
+    utils::{
+        bare_jid, format_lid_as_number, get_first_name, is_lid_jid, is_phone_jid,
+        is_status_broadcast, looks_like_jid,
+    },
 };
 
 /// Seconds without history sync chunks after which the sync feedback hides.
@@ -65,6 +68,9 @@ pub struct Application {
     push_names: HashMap<String, String>,
     /// Whether chats have already been loaded from the database.
     cache_loaded: bool,
+    /// Bare jid of the chat currently shown in the chat view, if any;
+    /// routes live name changes to the open rows.
+    open_chat_jid: Option<String>,
     /// Whether the client is connected to `WhatsApp`.
     client_connected: bool,
     /// Receipts that arrived before their message; applied when it lands.
@@ -192,11 +198,16 @@ pub enum AppMsg {
         lid: String,
         phone: Option<String>,
     },
-    PushNameLearned {
+    PushNamesLearned {
+        chat_jid: Option<String>,
         entries: Vec<(String, String)>,
     },
     LidMappingsLearned {
         pairs: Vec<(String, String)>,
+    },
+    GroupParticipantsLearned {
+        chat_jid: String,
+        entries: Vec<(String, String)>,
     },
 
     TypingExpired {
@@ -379,9 +390,7 @@ impl Application {
             && let Some(name) = map.get(&phone).filter(|n| !n.is_empty())
         {
             return Some(name.clone());
-        }
-
-        if is_phone_jid(&bare) {
+        } else if is_phone_jid(&bare) {
             for lid in self.db.pn_to_lid_jids(&bare).await {
                 let bare_lid = bare_jid(&lid);
 
@@ -412,6 +421,7 @@ impl Application {
         // Everything past the real-name chain is wire-sourced: the
         // learned push name, a participants entry or the name this
         // message carries. Mark those the WhatsApp way.
+        let bare = bare_jid(jid);
         let push_name = self
             .resolve_push_name(jid)
             .await
@@ -424,9 +434,56 @@ impl Application {
                 stored
                     .filter(|n| !n.is_empty())
                     .map(|n| n.trim_start_matches('~').to_string())
-            })?;
+            });
 
-        Some(format!("~{push_name}"))
+        match push_name {
+            Some(name) if !looks_like_jid(&name, &bare) => Some(format!("~{name}")),
+            _ => self.resolve_sender_display(jid).await,
+        }
+    }
+
+    /// Nameless LID senders fall back to their phone number instead
+    /// of opaque LID digits.
+    async fn resolve_sender_display(&self, jid: &str) -> Option<String> {
+        let bare = bare_jid(jid);
+        if is_lid_jid(&bare)
+            && let Some(pn) = self.db.lid_to_pn_jid(&bare).await
+        {
+            return Some(format_lid_as_number(&pn));
+        } else if is_phone_jid(&bare) {
+            return Some(format_lid_as_number(&bare));
+        }
+
+        None
+    }
+
+    /// Pushes a name change into the open chat so its rows update
+    /// live instead of on the next open: resolves the sender's final
+    /// display name and emits it with every jid identity the rows
+    /// may carry them under.
+    async fn refresh_open_chat_sender(&self, sender_jid: &str) {
+        let Some(open_jid) = self.open_chat_jid.clone() else {
+            return;
+        };
+        let Some(chat) = self.chats.iter().find(|c| c.jid == open_jid) else {
+            return;
+        };
+
+        let bare = bare_jid(sender_jid);
+        let name = self
+            .resolve_sender_name(&bare, None, Some(chat), None)
+            .await;
+
+        let mut forms = vec![bare.clone()];
+        if let Some(pn) = self.db.lid_to_pn_jid(&bare).await {
+            forms.push(bare_jid(&pn));
+        }
+        for lid in self.db.pn_to_lid_jids(&bare).await {
+            forms.push(bare_jid(&lid));
+        }
+
+        self.chat_view
+            .emit(ChatViewInput::SenderNameChanged { forms, name });
     }
 
     /// Learns a contact's push name from a sync chunk or live message.
@@ -470,7 +527,8 @@ impl Application {
             return;
         }
 
-        self.push_names.insert(bare, push_name.to_string());
+        self.push_names.insert(bare.clone(), push_name.to_string());
+        self.refresh_open_chat_sender(&bare).await;
     }
 
     async fn resolve_jid(&self, jid: &str) -> String {
@@ -1174,11 +1232,15 @@ impl AsyncComponent for Application {
                         lid,
                         phone,
                     },
-                    ClientOutput::PushNameLearned { entries } => {
-                        AppMsg::PushNameLearned { entries }
-                    }
+                    ClientOutput::PushNameLearned { entries } => AppMsg::PushNamesLearned {
+                        chat_jid: None,
+                        entries,
+                    },
                     ClientOutput::LidMappingsLearned { pairs } => {
                         AppMsg::LidMappingsLearned { pairs }
+                    }
+                    ClientOutput::GroupParticipantsLearned { chat_jid, entries } => {
+                        AppMsg::GroupParticipantsLearned { chat_jid, entries }
                     }
 
                     ClientOutput::Error { message } => AppMsg::Error { message },
@@ -1239,6 +1301,7 @@ impl AsyncComponent for Application {
             contacts,
             push_names,
             cache_loaded: false,
+            open_chat_jid: None,
             client_connected: false,
             pending_receipts: HashMap::new(),
             pending_avatar_fetches: Vec::new(),
@@ -1445,13 +1508,20 @@ impl AsyncComponent for Application {
                 self.session_page = AppSessionPage::ChatHistory;
             }
             AppMsg::ChatClosed => {
+                self.open_chat_jid = None;
                 self.chat_list.emit(ChatListInput::ClearSelection);
                 self.split_view.set_show_content(false);
                 self.session_page = AppSessionPage::Empty;
             }
             AppMsg::ChatSelected(jid) => {
+                self.open_chat_jid = Some(jid.clone());
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == jid).cloned() {
-                    self.chat_view.emit(ChatViewInput::Open(chat));
+                    self.chat_view.emit(ChatViewInput::Open(chat.clone()));
+
+                    if chat.is_group() {
+                        self.client
+                            .emit(ClientInput::FetchGroupMetadata { chat_jid: chat.jid });
+                    }
                 }
 
                 if let Some(state) = self.typing.get(&jid)
@@ -1532,6 +1602,10 @@ impl AsyncComponent for Application {
                     self.push_names.insert(jid.clone(), push_name);
                 }
 
+                // The open chat may show this contact; re-render its
+                // rows with the new name live.
+                self.refresh_open_chat_sender(&jid).await;
+
                 // Save contact to database in background.
                 let db = self.db.clone();
                 let jid_for_contact = jid.clone();
@@ -1590,6 +1664,14 @@ impl AsyncComponent for Application {
                             chat: chat.clone(),
                             move_to_top: false,
                         });
+
+                        // The open chat's header renders from its own
+                        // clone; hand it the fresh metadata.
+                        if self.open_chat_jid.as_ref() == Some(&chat.jid) {
+                            self.chat_view
+                                .emit(ChatViewInput::ChatUpdated { chat: chat.clone() });
+                        }
+
                         tracing::info!("Updated chat name for {} to: {}", jid, contact_name);
                     }
 
@@ -1612,7 +1694,53 @@ impl AsyncComponent for Application {
                 }
             }
             AppMsg::ContactRemoved { jid } => {
-                self.contacts.remove(&jid);
+                let removed_name = self.contacts.remove(&jid);
+                self.refresh_open_chat_sender(&jid).await;
+
+                // If the removed contact titled a chat, fall that title
+                // back to the phone number everywhere, including the
+                // open chat's header.
+                if let Some(removed_name) = removed_name {
+                    let bare = bare_jid(&jid);
+                    let mut forms = vec![bare.clone()];
+                    if bare.ends_with("@lid")
+                        && let Some(pn_jid) = self.db.lid_to_pn_jid(&bare).await
+                    {
+                        forms.push(pn_jid);
+                    } else if bare.ends_with("@s.whatsapp.net") {
+                        forms.extend(self.db.pn_to_lid_jids(&bare).await);
+                    }
+
+                    if let Some(chat) = self
+                        .chats
+                        .iter_mut()
+                        .find(|c| forms.contains(&c.jid) && c.name == removed_name)
+                    {
+                        chat.name = String::new();
+
+                        let db = self.db.clone();
+                        let chat_clone = chat.clone();
+                        relm4::spawn(async move {
+                            if let Err(e) = chat_clone.upsert(&db).await {
+                                tracing::error!(
+                                    "Failed to update chat name for {}: {}",
+                                    chat_clone.jid,
+                                    e
+                                );
+                            }
+                        });
+
+                        self.chat_list.emit(ChatListInput::UpdateChat {
+                            chat: chat.clone(),
+                            move_to_top: false,
+                        });
+
+                        if self.open_chat_jid.as_ref() == Some(&chat.jid) {
+                            self.chat_view
+                                .emit(ChatViewInput::ChatUpdated { chat: chat.clone() });
+                        }
+                    }
+                }
             }
             AppMsg::ReceiptUpdate {
                 mut chat_jid,
@@ -1847,17 +1975,23 @@ impl AsyncComponent for Application {
                     }
                 }
             }
-            AppMsg::PushNameLearned { entries } => {
-                for (jid, push_name) in entries {
-                    if self
-                        .user_jid
-                        .as_ref()
-                        .is_some_and(|user| *user == bare_jid(&jid))
-                    {
+            // Type-4 chunk entries (no chat context) ride the persisting
+            // learner; metadata batches arrive persisted, spawned off-queue.
+            AppMsg::PushNamesLearned { chat_jid, entries } => {
+                for (jid, name) in entries {
+                    let bare = bare_jid(&jid);
+                    if self.user_jid.as_ref().is_some_and(|user| *user == bare) {
                         continue;
                     }
 
-                    self.learn_push_name(&jid, &push_name).await;
+                    match &chat_jid {
+                        Some(chat_jid) => {
+                            self.push_names.insert(bare.clone(), name.clone());
+                            self.register_participant(chat_jid, &jid, Some(&name));
+                            self.refresh_open_chat_sender(&bare).await;
+                        }
+                        None => self.learn_push_name(&jid, &name).await,
+                    }
                 }
             }
             AppMsg::LidMappingsLearned { pairs } => {
@@ -1866,6 +2000,67 @@ impl AsyncComponent for Application {
                         tracing::error!("Failed to learn LID mapping {lid} -> {phone}: {e}");
                     }
                 }
+            }
+            AppMsg::GroupParticipantsLearned { chat_jid, entries } => {
+                let entries = entries
+                    .into_iter()
+                    .filter(|(jid, name)| {
+                        self.push_names.get(jid).map(String::as_str) != Some(name.as_str())
+                    })
+                    .collect::<Vec<(String, String)>>();
+                if entries.is_empty() {
+                    return;
+                }
+
+                let db = self.db.clone();
+                let sender = sender.clone();
+                let user_jid = self.user_jid.clone();
+                relm4::spawn(async move {
+                    let mut learned: Vec<(String, String)> = Vec::new();
+                    for (jid, name) in entries {
+                        let bare = bare_jid(&jid);
+                        if user_jid.as_ref().is_some_and(|u| *u == bare) {
+                            continue;
+                        }
+
+                        match db.get_contact(&bare).await {
+                            Ok(Some(mut contact)) => {
+                                if contact.push_name.as_deref() == Some(name.as_str()) {
+                                    continue;
+                                }
+
+                                contact.push_name = Some(name.clone());
+                                if db.save_contact(&contact).await.is_ok() {
+                                    learned.push((bare, name));
+                                }
+                            }
+                            Ok(None) => {
+                                let contact = Contact {
+                                    jid: bare.clone(),
+                                    name: None,
+                                    push_name: Some(name.clone()),
+                                    last_updated: 0,
+                                    phone_number: None,
+                                    is_registered: false,
+                                    profile_picture_url: None,
+                                };
+                                if db.save_contact(&contact).await.is_ok() {
+                                    learned.push((bare, name));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("Failed to load contact {bare}: {e}");
+                            }
+                        }
+                    }
+
+                    if !learned.is_empty() {
+                        sender.input(AppMsg::PushNamesLearned {
+                            chat_jid: Some(chat_jid),
+                            entries: learned,
+                        });
+                    }
+                });
             }
 
             AppMsg::TypingExpired {
@@ -1913,7 +2108,7 @@ impl AsyncComponent for Application {
                     .or_else(|| media.as_ref().and_then(|m| m.caption.clone()));
 
                 if content.is_some() || media.is_some() {
-                    if content.as_deref() == Some("status@broadcast") {
+                    if is_status_broadcast(&info.source.chat.to_string()) {
                         // TODO: handle status events
                     } else {
                         let chat_jid = self.resolve_jid(&info.source.chat.to_string()).await;
@@ -2188,6 +2383,10 @@ impl AsyncComponent for Application {
                             }
                         }
 
+                        // The shared status conversation never appears as
+                        // a chat row; its events are dropped on arrival.
+                        chats.retain(|chat| !is_status_broadcast(&chat.jid));
+
                         self.chats.extend(chats.clone());
                         self.chat_list.emit(ChatListInput::PopulateAll(chats));
                         self.flush_pending_receipts().await;
@@ -2238,14 +2437,28 @@ impl AsyncComponent for Application {
                     let jid = self.sync_target_jid(&jid).await;
                     let chat_jid = jid.clone();
 
+                    // Status conversations carry no chat history in papo.
+                    if is_status_broadcast(&jid) {
+                        continue;
+                    }
+
                     if !messages.is_empty() {
                         self.synced_history_chats.insert(chat_jid.clone());
                     }
 
                     // The phone's own unread state for the chat: zero
                     // means the user read it there, which no receipt will
-                    // ever announce after the fact.
-                    if unread_count.is_some_and(|count| count == 0) {
+                    // ever announce after the fact. A backfill chunk landing
+                    // on the OPEN chat is also read: the user is watching
+                    // it fill (opening = read), and stale Delivered
+                    // statuses on incoming history would paint month-old
+                    // pages unread until phone receipts heal them.
+                    let resolved = self.resolve_jid(&chat_jid).await;
+                    let open_chat = self
+                        .open_chat_jid
+                        .as_ref()
+                        .is_some_and(|open| *open == chat_jid || *open == resolved);
+                    if unread_count.is_some_and(|count| count == 0) || open_chat {
                         self.mark_read_on_device(chat_jid.clone());
                     }
 

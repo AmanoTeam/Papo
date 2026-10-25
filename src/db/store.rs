@@ -468,6 +468,23 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Every mapping row, as bare `(lid, phone)` digit pairs. Used for
+    /// load-time sender resolution, where several per-sender lookups
+    /// would turn into a query storm.
+    pub async fn get_all_lid_mappings(&self) -> Vec<(String, String)> {
+        let mut db = self.db.clone();
+        match LidMapping::all().exec(&mut db).await {
+            Ok(mappings) => mappings
+                .into_iter()
+                .map(|entry| (entry.lid, entry.phone_number))
+                .collect(),
+            Err(e) => {
+                tracing::error!("Failed to load lid mappings: {e}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Loads messages for a chat, most recent first, up to `limit`.
     pub async fn load_messages(
         &self,

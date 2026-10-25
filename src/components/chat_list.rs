@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    mem,
+    mem, slice,
 };
 
 use adw::prelude::*;
@@ -15,7 +15,7 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f,
     state::{Chat, ChatMessage, MessageStatus, TypingSender},
-    utils::{cached_avatar, format_lid_as_number, get_first_name, load_avatar},
+    utils::{SenderResolution, cached_avatar, format_lid_as_number, get_first_name, load_avatar},
     widgets::TypingDots,
 };
 
@@ -213,7 +213,7 @@ impl SimpleAsyncComponent for ChatList {
                         move_to_top: at_top,
                     });
                 } else {
-                    let last_message = match chat.get_last_message(&self.db).await {
+                    let mut last_message = match chat.get_last_message(&self.db).await {
                         Ok(message) => message,
                         Err(e) => {
                             tracing::error!("Failed to get chat last message: {}", e);
@@ -221,12 +221,21 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     };
 
+                    // Previews must match what the chat view would
+                    // render on open.
+                    if let Some(message) = last_message.as_mut() {
+                        let mut resolution = SenderResolution::new(&self.db).await;
+                        resolution
+                            .learn_identity_pairs(&self.db, &chat, slice::from_ref(message))
+                            .await;
+                        resolution.resolve_message(&chat, message);
+                    }
+
+                    // Build chat row.
                     let unread_count = chat
                         .get_unread_count(&self.db)
                         .await
                         .map_or(0, |c| u32::try_from(c).unwrap());
-
-                    // Build chat row.
                     let row = self.build_row(ChatRowData {
                         chat,
                         last_message,
@@ -323,19 +332,31 @@ impl SimpleAsyncComponent for ChatList {
                     const BATCH: usize = 100;
                     let mut batch = Vec::with_capacity(BATCH);
 
+                    // One snapshot for every preview: old rows carry
+                    // stale stored names, and the list must match
+                    // what the chat view would render on open.
+                    let mut resolution = SenderResolution::new(&db).await;
+
                     for chat in chats {
-                        let last_message = match chat.get_last_message(&db).await {
+                        let mut last_message = match chat.get_last_message(&db).await {
                             Ok(message) => message,
                             Err(e) => {
                                 tracing::error!("Failed to get chat last message: {e}");
                                 None
                             }
                         };
+
+                        if let Some(message) = last_message.as_mut() {
+                            resolution
+                                .learn_identity_pairs(&db, &chat, slice::from_ref(message))
+                                .await;
+                            resolution.resolve_message(&chat, message);
+                        }
+
                         let unread_count = chat
                             .get_unread_count(&db)
                             .await
                             .map_or(0, |c| u32::try_from(c).unwrap());
-
                         batch.push(ChatRowData {
                             chat,
                             last_message,

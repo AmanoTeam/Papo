@@ -65,8 +65,7 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
         let name = msg
             .sender_name
             .clone()
-            .map(|name| name.trim_start_matches('~').to_string())
-            .or_else(|| msg.sender_jid.split('@').next().map(str::to_string));
+            .map(|name| name.trim_start_matches('~').to_string());
         widgets.avatar.set_text(name.as_deref());
     }
 

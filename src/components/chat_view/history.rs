@@ -1,4 +1,9 @@
-use std::{cell::RefCell, fmt, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fmt,
+    time::Duration,
+};
 
 use adw::prelude::*;
 use gtk::{gio, glib, subclass::prelude::*};
@@ -8,12 +13,30 @@ use relm4::{prelude::*, typed_view::list::RelmListItem};
 use super::rows::ChatRow;
 use crate::{
     state::{ChatMessage, MessageStatus},
-    utils::format_date_label,
+    utils::{bare_jid, format_date_label},
 };
 
+/// The canonical identity key for author grouping: a LID-keyed
+/// sender maps onto its phone-number identity when a learned
+/// mapping pair covers it, so one person's rows form one group
+/// regardless of which wire form each row was keyed by.
+fn identity_key(jid: &str, identities: &HashMap<String, String>) -> String {
+    let bare = bare_jid(jid);
+
+    match bare.strip_suffix("@lid") {
+        Some(digits) => identities
+            .get(digits)
+            .map_or_else(|| bare, |phone| format!("{phone}@s.whatsapp.net")),
+        None => bare,
+    }
+}
+
 /// Whether two messages render in the same author group.
-fn same_group(a: &ChatMessage, b: &ChatMessage) -> bool {
-    (a.outgoing && b.outgoing) || (!a.outgoing && !b.outgoing && a.sender_jid == b.sender_jid)
+fn same_group(a: &ChatMessage, b: &ChatMessage, identities: &HashMap<String, String>) -> bool {
+    (a.outgoing && b.outgoing)
+        || (!a.outgoing
+            && !b.outgoing
+            && identity_key(&a.sender_jid, identities) == identity_key(&b.sender_jid, identities))
 }
 
 /// The local calendar day of a message, used for section boundaries.
@@ -136,20 +159,6 @@ impl TimelineModel {
 
     // Mutations. Each one releases the borrow before emitting
     // items-changed, so GTK never observes the model mid-update.
-
-    fn clear(&self) {
-        let removed = {
-            let rows = self.imp().rows.borrow();
-            u32::try_from(rows.len()).expect("row count fits u32")
-        };
-
-        if removed > 0 {
-            self.sections_changed(0, removed);
-            self.imp().rows.borrow_mut().clear();
-            self.upcast_ref::<gio::ListModel>()
-                .items_changed(0, removed, 0);
-        }
-    }
 
     /// Appends a batch of rows to the bottom, in chronological order.
     fn append_batch(&self, batch: Vec<(ChatRow, Date)>) {
@@ -352,6 +361,7 @@ pub(crate) struct ChatHistory {
     timeline: TimelineModel,
     has_newer: bool,
     has_older: bool,
+    identity_lid_to_pn: HashMap<String, String>,
     oldest_loaded_timestamp: Option<Timestamp>,
     newest_loaded_timestamp: Option<Timestamp>,
 }
@@ -376,6 +386,7 @@ impl ChatHistory {
             timeline,
             has_newer: false,
             has_older: false,
+            identity_lid_to_pn: HashMap::new(),
             oldest_loaded_timestamp: None,
             newest_loaded_timestamp: None,
         }
@@ -395,11 +406,53 @@ impl ChatHistory {
         self.timeline.len() == 0
     }
 
-    /// Clear all rows and reset all cursors.
-    pub(crate) fn clear(&mut self) {
-        self.timeline.clear();
+    /// Installs the LID→phone identity map a load resolved against,
+    /// so author grouping treats one person's LID- and PN-keyed rows
+    /// as the same sender. Cleared on reset like every other cursor.
+    pub(crate) fn set_identities(&mut self, identities: HashMap<String, String>) {
+        self.identity_lid_to_pn = identities;
+    }
+
+    /// Live-updates the sender name of rows whose sender matches any
+    /// of the jid forms. Day-preserving replaces leave the section
+    /// layout untouched.
+    pub(crate) fn update_sender_names(&self, forms: &[String], name: Option<&str>) {
+        let bares: HashSet<String> = forms.iter().map(|form| bare_jid(form)).collect();
+        for index in 0..self.len() {
+            let Some(mut row) = self.get_row(index) else {
+                continue;
+            };
+            let ChatRow::Message { message, .. } = &mut row else {
+                continue;
+            };
+
+            if message.outgoing
+                || !bares.contains(&bare_jid(&message.sender_jid))
+                || message.sender_name.as_deref() == name
+            {
+                continue;
+            }
+
+            message.sender_name = name.map(ToString::to_string);
+            self.replace_row(index, row, false);
+        }
+    }
+
+    /// Swap in a fresh timeline: a per-Open reset instead of clearing one
+    /// live model. `set_model` tears GTK's internal item-manager state down
+    /// completely, so the next fill starts from a clean slate — mutating a
+    /// cleared model can leave undisposed tile corpses behind (the
+    /// `ensure_items` SIGABRT).
+    pub(crate) fn reset(&mut self) {
+        let timeline = TimelineModel::new();
+        let selection = gtk::NoSelection::new(Some(timeline.clone()));
+        self.view.set_model(Some(&selection));
+        setup_day_headers(&self.view, &timeline);
+
+        self.timeline = timeline;
         self.has_older = false;
         self.has_newer = false;
+        self.identity_lid_to_pn = HashMap::new();
         self.oldest_loaded_timestamp = None;
         self.newest_loaded_timestamp = None;
     }
@@ -470,7 +523,7 @@ impl ChatHistory {
             };
 
             let first = match prev_msg {
-                Some(prev) if !date_break => !same_group(prev, msg),
+                Some(prev) if !date_break => !same_group(prev, msg, &self.identity_lid_to_pn),
                 _ => true,
             };
             let first_of_segment = in_unread && date_break && !divider_pushed;
@@ -479,7 +532,7 @@ impl ChatHistory {
             let next = (i > 0).then(|| &messages[i - 1]);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
-                || next.is_some_and(|n| !same_group(msg, n));
+                || next.is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
             rows.push((
@@ -518,9 +571,10 @@ impl ChatHistory {
         let old_bottom_row = old_bottom_idx.and_then(|idx| self.timeline.row(idx));
 
         let bottom_group = match &old_bottom_row {
-            Some(ChatRow::Message { message: prev, .. }) => {
-                Some((message_day(prev), same_group(prev, &message)))
-            }
+            Some(ChatRow::Message { message: prev, .. }) => Some((
+                message_day(prev),
+                same_group(prev, &message, &self.identity_lid_to_pn),
+            )),
             _ => None,
         };
         let date_break = bottom_group.is_none_or(|(day, _)| day != msg_date);
@@ -592,7 +646,9 @@ impl ChatHistory {
             .and_then(|idx| self.timeline.row(idx));
 
         let boundary_group = match &old_top_row {
-            Some(ChatRow::Message { message: prev, .. }) => same_group(prev, newest),
+            Some(ChatRow::Message { message: prev, .. }) => {
+                same_group(prev, newest, &self.identity_lid_to_pn)
+            }
             _ => false,
         };
 
@@ -606,7 +662,9 @@ impl ChatHistory {
             let msg_date = msg.timestamp.to_zoned(tz.clone()).date();
 
             let first = match prev_msg {
-                Some(prev) if prev_date == Some(msg_date) => !same_group(prev, msg),
+                Some(prev) if prev_date == Some(msg_date) => {
+                    !same_group(prev, msg, &self.identity_lid_to_pn)
+                }
                 _ => true,
             };
             let last = if i == 0 {
@@ -614,7 +672,7 @@ impl ChatHistory {
             } else {
                 let next = &messages[i - 1];
                 let next_date = next.timestamp.to_zoned(tz.clone()).date();
-                next_date != msg_date || !same_group(msg, next)
+                next_date != msg_date || !same_group(msg, next, &self.identity_lid_to_pn)
             };
 
             rows.push((
@@ -653,9 +711,10 @@ impl ChatHistory {
         let old_bottom_row = old_bottom_idx.and_then(|idx| self.timeline.row(idx));
 
         let bottom_group = match &old_bottom_row {
-            Some(ChatRow::Message { message: prev, .. }) => {
-                Some((message_day(prev), same_group(prev, oldest_batch)))
-            }
+            Some(ChatRow::Message { message: prev, .. }) => Some((
+                message_day(prev),
+                same_group(prev, oldest_batch, &self.identity_lid_to_pn),
+            )),
             _ => None,
         };
         let boundary_group =
@@ -678,7 +737,7 @@ impl ChatHistory {
             let first = if i == 0 {
                 !boundary_group
             } else if let Some(prev) = prev_msg {
-                !same_group(prev, msg)
+                !same_group(prev, msg, &self.identity_lid_to_pn)
             } else {
                 true
             };
@@ -688,7 +747,7 @@ impl ChatHistory {
             let next = messages.get(i + 1);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
-                || next.is_some_and(|n| !same_group(msg, n));
+                || next.is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
             rows.push((
@@ -1036,7 +1095,7 @@ mod timeline_tests {
         pump(750);
 
         // Opening the next chat clears the timeline back to zero.
-        history.clear();
+        history.reset();
         assert_eq!(history.len(), 0);
         pump(500);
 
@@ -1076,7 +1135,7 @@ mod timeline_tests {
         // Back out, then stream chat C: prefix first, scroll loop still
         // spinning while the older tail lands on top. Unread pages don't
         // stream in production, so this page is all-read.
-        history.clear();
+        history.reset();
         assert_eq!(history.len(), 0);
         pump(400);
 
@@ -1091,7 +1150,7 @@ mod timeline_tests {
         assert_eq!(history.len(), 40);
         pump(900);
 
-        history.clear();
+        history.reset();
         assert_eq!(history.len(), 0);
         pump(300);
 
@@ -1113,7 +1172,7 @@ mod timeline_tests {
         // prepends into the existing day section instead of pushing a
         // fresh header through it. If the old top header's stale range
         // never gets repaired, this is where the field abort fires.
-        history.clear();
+        history.reset();
         assert_eq!(history.len(), 0);
         pump(300);
 
@@ -1134,7 +1193,7 @@ mod timeline_tests {
         scrolled.vadjustment().set_value(0.0);
         pump(900);
 
-        history.clear();
+        history.reset();
         assert_eq!(history.len(), 0);
         pump(300);
     }
