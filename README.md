@@ -79,7 +79,7 @@ meson install -C build
 
 ## Translations
 
-The project uses gettext for internationalization. Brazilian Portuguese (pt_BR) is currently supported. Translation files are located in the po/ directory, and contributions for new languages are welcome.
+The project uses gettext for internationalization, with translation files in the `po/` directory. If you would like to help translate Papo — or start a new language — you can do it on [our Weblate instance](https://weblate.amanoteam.com/engage/papo/). Contributions for new languages are always welcome.
 
 ## Disclaimer
 
