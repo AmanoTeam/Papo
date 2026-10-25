@@ -443,7 +443,17 @@ impl SessionStore {
         lid: &str,
         phone_number: &str,
     ) -> Result<(), toasty::Error> {
-        let _guard = self.write_lock().lock().await;
+        let _guard = self.write_lock.lock().await;
+
+        // Callers pass either bare digits or full jids; the table is keyed
+        // by the bare local part on both sides (see `lid_to_pn_jid` and
+        // `pn_to_lid_jids`), so normalize here no matter the input form.
+        let lid = lid.split('@').next().unwrap_or_default();
+        let phone_number = phone_number.split('@').next().unwrap_or_default();
+        if lid.is_empty() || phone_number.is_empty() {
+            return Ok(());
+        }
+
         let mut db = self.db.clone();
         let now = Timestamp::now().as_millisecond();
 
