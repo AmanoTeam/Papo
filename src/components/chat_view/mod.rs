@@ -250,7 +250,7 @@ impl AsyncComponent for ChatView {
                     set_halign: gtk::Align::Center,
                     set_valign: gtk::Align::Center,
                     #[watch]
-                    set_css_classes: &["chat-title", "flat", if model.header_subtitle().is_some() { "with-subtitle" } else { "" }],
+                    set_css_classes: &["chat-title", "flat", if model.header_subtitle_markup().is_some() { "with-subtitle" } else { "" }],
 
                     gtk::Box {
                         set_halign: gtk::Align::Center,
@@ -276,14 +276,18 @@ impl AsyncComponent for ChatView {
                         },
 
                         gtk::Label {
+                            set_wrap: false,
                             #[watch]
-                            set_label?: model.header_subtitle().as_ref(),
+                            set_markup: model
+                                .header_subtitle_markup()
+                                .as_deref()
+                                .unwrap_or(""),
                             #[watch]
-                            set_visible: model.header_subtitle().is_some(),
-                            set_selectable: false,
+                            set_visible: model.header_subtitle_markup().is_some(),
                             set_ellipsize: pango::EllipsizeMode::End,
-                            set_max_width_chars: 40,
+                            set_selectable: false,
                             set_css_classes: &["subtitle"],
+                            set_single_line_mode: true,
                         },
                     },
                 },
@@ -1473,35 +1477,51 @@ impl ChatView {
         }
     }
 
-    /// The line under the header title: participant names for groups,
-    /// peer presence for private chats.
-    fn header_subtitle(&self) -> Option<String> {
+    /// The subtitle with the account's own name set apart: `You` reads
+    /// in bold so it stands out from the other participants.
+    fn header_subtitle_markup(&self) -> Option<String> {
         let chat = self.chat.as_ref()?;
 
         if chat.is_group() {
-            let mut names = chat
-                .participants
-                .values()
-                .filter(|name| name.as_str() != "Unknown")
-                .cloned()
-                .collect::<Vec<String>>();
-            names.sort_by_key(|name| name.to_lowercase());
-            if names.is_empty() {
+            let mut names = Self::participant_names_markup(chat);
+            let total = names.len();
+            if total == 0 {
                 return chat
                     .member_count
                     .filter(|count| *count > 0)
-                    .map(|count| i18n_f!("{0} members", count));
+                    .map(|count| i18n_f!("<b>{0}</b> members", count));
             }
 
-            let shown = names.iter().take(4).cloned().collect::<Vec<String>>();
-            Some(if names.len() > 4 {
-                format!("{}, +{}", shown.join(", "), names.len() - 4)
+            let shown = names.drain(..4.min(total)).collect::<Vec<String>>();
+            Some(if total > 4 {
+                format!("{}, <b>+{}</b>", shown.join(", "), total - 4)
             } else {
                 shown.join(", ")
             })
         } else {
-            self.state.presence.clone()
+            self.state
+                .presence
+                .as_deref()
+                .map(glib::markup_escape_text)
+                .map(String::from)
         }
+    }
+
+    /// Participant display names, markup-escaped, deduplicated and
+    /// sorted. The account's own entry stays out: it spends a name slot
+    /// saying nothing, and the member count already includes it.
+    fn participant_names_markup(chat: &Chat) -> Vec<String> {
+        let you = i18n!("You");
+        let mut names = chat
+            .participants
+            .values()
+            .filter(|name| name.as_str() != "Unknown" && name.as_str() != you)
+            .map(|name| glib::markup_escape_text(name).to_string())
+            .collect::<Vec<String>>();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+
+        names
     }
 
     fn rebuild_typing_avatars(&self) {

@@ -68,6 +68,9 @@ pub struct Application {
     push_names: HashMap<String, String>,
     /// Whether chats have already been loaded from the database.
     cache_loaded: bool,
+    /// LID siblings of the account's own jid (`user_jid` holds the
+    /// phone form).
+    own_lid_jids: Vec<String>,
     /// Bare jid of the chat currently shown in the chat view, if any;
     /// routes live name changes to the open rows.
     open_chat_jid: Option<String>,
@@ -329,7 +332,10 @@ impl ChatTypingState {
 
 impl Application {
     fn add_chat(&mut self, mut chat: Chat) {
-        if let Some(name) = self.contacts.get(&chat.jid).filter(|n| !n.is_empty()) {
+        let bare = bare_jid(&chat.jid);
+        if self.is_own_jid(&bare) {
+            chat.name = self.me_chat_title();
+        } else if let Some(name) = self.contacts.get(&chat.jid).filter(|n| !n.is_empty()) {
             chat.name.clone_from(name);
         } else if is_phone_jid(&chat.jid)
             && chat.jid != self.user_jid.clone().unwrap_or_default()
@@ -375,6 +381,19 @@ impl Application {
     }
 
     fn register_participant(&mut self, chat_jid: &str, jid: &str, name: Option<&str>) {
+        // The own participant renders as `You`, distinct from everyone
+        // else however it is keyed.
+        let bare = bare_jid(jid);
+        if self.is_own_jid(&bare) {
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.jid == chat_jid)
+                && chat.is_group()
+            {
+                chat.participants.insert(jid.to_string(), i18n!("You"));
+            }
+
+            return;
+        }
+
         // Contacts always win as the display source; the wire name fills
         // the rest.
         let display = self
@@ -390,6 +409,21 @@ impl Application {
             chat.participants
                 .insert(jid.to_string(), display.to_string());
         }
+    }
+
+    /// Whether the jid is the account itself, in either identity form.
+    fn is_own_jid(&self, bare: &str) -> bool {
+        self.user_jid.as_deref().is_some_and(|own| own == bare)
+            || self.own_lid_jids.iter().any(|lid| lid == bare)
+    }
+
+    /// The title of the account's own chat, so the me-chat row reads
+    /// `+DD… (You)` instead of a bare number.
+    fn me_chat_title(&self) -> String {
+        self.user_jid.as_deref().map_or_else(
+            || i18n!("You"),
+            |own| format!("{} ({})", format_lid_as_number(own), i18n!("You")),
+        )
     }
 
     /// The one name-resolution source: the direct contact entry first,
@@ -1374,6 +1408,7 @@ impl AsyncComponent for Application {
             contacts,
             push_names,
             cache_loaded: false,
+            own_lid_jids: Vec::new(),
             open_chat_jid: None,
             client_connected: false,
 
@@ -1477,6 +1512,18 @@ impl AsyncComponent for Application {
                 self.user_jid = jid.map(|jid| bare_jid(&jid));
                 self.user_push_name = Some(push_name);
                 self.client_connected = true;
+
+                // Participants keyed by the account's LID forms are the
+                // account itself.
+                if let Some(own) = self.user_jid.clone() {
+                    self.own_lid_jids = self
+                        .db
+                        .pn_to_lid_jids(&own)
+                        .await
+                        .into_iter()
+                        .map(|lid| bare_jid(&lid))
+                        .collect();
+                }
 
                 // Chats from the database already show for returning users;
                 // this is the first load after a fresh pairing.
@@ -2110,7 +2157,14 @@ impl AsyncComponent for Application {
                 if !self.contacts.is_empty() {
                     for jid in &participants {
                         let bare = bare_jid(jid);
-                        if bare == chat_jid || self.user_jid.as_ref().is_some_and(|u| *u == bare) {
+                        if bare == chat_jid {
+                            continue;
+                        }
+
+                        // The account reads as `You` in the subtitle even
+                        // though it never resolves to a contact.
+                        if self.is_own_jid(&bare) {
+                            self.register_participant(&chat_jid, &bare, None);
                             continue;
                         }
 
@@ -2515,12 +2569,14 @@ impl AsyncComponent for Application {
                         // Check for existing cached avatars.
                         let avatar_cache = avatar::global();
                         for chat in &mut chats {
-                            if let Some(name) =
+                            let bare = bare_jid(&chat.jid);
+                            if self.is_own_jid(&bare) {
+                                chat.name = self.me_chat_title();
+                            } else if let Some(name) =
                                 self.contacts.get(&chat.jid).filter(|n| !n.is_empty())
                             {
                                 chat.name.clone_from(name);
                             } else if is_phone_jid(&chat.jid)
-                                && chat.jid != self.user_jid.clone().unwrap_or_default()
                                 && format_lid_as_number(&chat.jid) != chat.name
                             {
                                 chat.name = format_lid_as_number(&chat.jid);
