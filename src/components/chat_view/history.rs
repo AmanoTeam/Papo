@@ -33,7 +33,18 @@ fn identity_key(jid: &str, identities: &HashMap<String, String>) -> String {
 }
 
 /// Whether two messages render in the same author group.
-fn same_group(a: &ChatMessage, b: &ChatMessage, identities: &HashMap<String, String>) -> bool {
+fn same_group(
+    a: &ChatMessage,
+    b: &ChatMessage,
+    identities: &HashMap<String, String>,
+    is_group_chat: bool,
+) -> bool {
+    if !is_group_chat {
+        // A private chat has exactly two authors and the wire may spell
+        // the same peer under several identities.
+        return a.outgoing == b.outgoing;
+    }
+
     (a.outgoing && b.outgoing)
         || (!a.outgoing
             && !b.outgoing
@@ -365,6 +376,7 @@ fn setup_day_headers(view: &gtk::ListView, timeline: &TimelineModel) {
 pub(crate) struct ChatHistory {
     view: gtk::ListView,
     timeline: TimelineModel,
+    is_group: bool,
     has_newer: bool,
     has_older: bool,
     identity_lid_to_pn: HashMap<String, String>,
@@ -390,6 +402,7 @@ impl ChatHistory {
         Self {
             view,
             timeline,
+            is_group: false,
             has_newer: false,
             has_older: false,
             identity_lid_to_pn: HashMap::new(),
@@ -410,6 +423,12 @@ impl ChatHistory {
     /// Whether the history is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.timeline.len() == 0
+    }
+
+    /// Records whether the open chat is a group, so author grouping can
+    /// switch to the direction rule for private chats.
+    pub(crate) fn set_group(&mut self, is_group: bool) {
+        self.is_group = is_group;
     }
 
     /// Installs the LID→phone identity map a load resolved against,
@@ -477,8 +496,9 @@ impl ChatHistory {
         setup_day_headers(&self.view, &timeline);
 
         self.timeline = timeline;
-        self.has_older = false;
+        self.is_group = false;
         self.has_newer = false;
+        self.has_older = false;
         self.identity_lid_to_pn = HashMap::new();
         self.oldest_loaded_timestamp = None;
         self.newest_loaded_timestamp = None;
@@ -550,7 +570,9 @@ impl ChatHistory {
             };
 
             let first = match prev_msg {
-                Some(prev) if !date_break => !same_group(prev, msg, &self.identity_lid_to_pn),
+                Some(prev) if !date_break => {
+                    !same_group(prev, msg, &self.identity_lid_to_pn, self.is_group)
+                }
                 _ => true,
             };
             let first_of_segment = in_unread && date_break && !divider_pushed;
@@ -559,7 +581,8 @@ impl ChatHistory {
             let next = (i > 0).then(|| &messages[i - 1]);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
-                || next.is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn));
+                || next
+                    .is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn, self.is_group));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
             rows.push((
@@ -600,7 +623,7 @@ impl ChatHistory {
         let bottom_group = match &old_bottom_row {
             Some(ChatRow::Message { message: prev, .. }) => Some((
                 message_day(prev),
-                same_group(prev, &message, &self.identity_lid_to_pn),
+                same_group(prev, &message, &self.identity_lid_to_pn, self.is_group),
             )),
             _ => None,
         };
@@ -674,7 +697,7 @@ impl ChatHistory {
 
         let boundary_group = match &old_top_row {
             Some(ChatRow::Message { message: prev, .. }) => {
-                same_group(prev, newest, &self.identity_lid_to_pn)
+                same_group(prev, newest, &self.identity_lid_to_pn, self.is_group)
             }
             _ => false,
         };
@@ -690,7 +713,7 @@ impl ChatHistory {
 
             let first = match prev_msg {
                 Some(prev) if prev_date == Some(msg_date) => {
-                    !same_group(prev, msg, &self.identity_lid_to_pn)
+                    !same_group(prev, msg, &self.identity_lid_to_pn, self.is_group)
                 }
                 _ => true,
             };
@@ -699,7 +722,8 @@ impl ChatHistory {
             } else {
                 let next = &messages[i - 1];
                 let next_date = next.timestamp.to_zoned(tz.clone()).date();
-                next_date != msg_date || !same_group(msg, next, &self.identity_lid_to_pn)
+                next_date != msg_date
+                    || !same_group(msg, next, &self.identity_lid_to_pn, self.is_group)
             };
 
             rows.push((
@@ -740,7 +764,7 @@ impl ChatHistory {
         let bottom_group = match &old_bottom_row {
             Some(ChatRow::Message { message: prev, .. }) => Some((
                 message_day(prev),
-                same_group(prev, oldest_batch, &self.identity_lid_to_pn),
+                same_group(prev, oldest_batch, &self.identity_lid_to_pn, self.is_group),
             )),
             _ => None,
         };
@@ -764,7 +788,7 @@ impl ChatHistory {
             let first = if i == 0 {
                 !boundary_group
             } else if let Some(prev) = prev_msg {
-                !same_group(prev, msg, &self.identity_lid_to_pn)
+                !same_group(prev, msg, &self.identity_lid_to_pn, self.is_group)
             } else {
                 true
             };
@@ -774,7 +798,8 @@ impl ChatHistory {
             let next = messages.get(i + 1);
             let next_date = next.map(|n| n.timestamp.to_zoned(tz.clone()).date());
             let last = next_date.is_none_or(|nd| nd != msg_date)
-                || next.is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn));
+                || next
+                    .is_some_and(|n| !same_group(msg, n, &self.identity_lid_to_pn, self.is_group));
             let last_of_segment = in_unread && next_date != Some(msg_date);
 
             rows.push((

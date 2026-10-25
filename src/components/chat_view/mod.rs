@@ -239,6 +239,7 @@ impl AsyncComponent for ChatView {
     view! {
         adw::ToolbarView {
             set_css_classes: &["chat-view"],
+            set_bottom_bar_style: adw::ToolbarStyle::Flat,
 
             add_top_bar = &adw::HeaderBar {
                 set_css_classes: &["flat"],
@@ -612,9 +613,11 @@ impl AsyncComponent for ChatView {
 
                 self.generation += 1;
                 self.history.reset();
+                self.history.set_group(chat.is_group());
 
                 if self.state.is_typing
                     && let Some(ref old) = self.chat
+                    && old.jid == chat.jid
                 {
                     self.state.is_typing = false;
                     let _ = sender.output(ChatViewOutput::TypingStateChanged {
@@ -784,8 +787,16 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
+                let was_typing = !self.state.typing.is_empty();
                 self.state.typing = senders;
                 self.rebuild_typing_avatars();
+
+                // The indicator expands below the timeline: when it first
+                // appears, keep the bottom-most message fully visible for
+                // readers parked at the bottom.
+                if !was_typing && !self.state.typing.is_empty() && self.state.is_at_bottom {
+                    self.scroll_to_bottom(|| {});
+                }
             }
             ChatViewInput::PresenceUpdate {
                 jid,
@@ -806,6 +817,7 @@ impl AsyncComponent for ChatView {
             }
             ChatViewInput::SenderAvatarUpdated { jid } => {
                 self.history.update_sender_avatars(&jid);
+                self.rebuild_typing_avatars();
             }
             ChatViewInput::MessageStatusUpdate { local_id, status } => {
                 if let Some(index) = self
@@ -1460,6 +1472,34 @@ impl ChatView {
         }
     }
 
+    /// The line under the header title: participant names for groups,
+    /// peer presence for private chats.
+    fn header_subtitle(&self) -> Option<String> {
+        let chat = self.chat.as_ref()?;
+
+        if chat.is_group() {
+            let mut names = chat
+                .participants
+                .values()
+                .filter(|name| name.as_str() != "Unknown")
+                .cloned()
+                .collect::<Vec<String>>();
+            names.sort_by_key(|name| name.to_lowercase());
+            if names.is_empty() {
+                return None;
+            }
+
+            let shown = names.iter().take(4).cloned().collect::<Vec<String>>();
+            Some(if names.len() > 4 {
+                format!("{}, +{}", shown.join(", "), names.len() - 4)
+            } else {
+                shown.join(", ")
+            })
+        } else {
+            self.state.presence.clone()
+        }
+    }
+
     fn rebuild_typing_avatars(&self) {
         while let Some(child) = self.typing_avatars.first_child() {
             self.typing_avatars.remove(&child);
@@ -1468,16 +1508,31 @@ impl ChatView {
         let is_group = self.chat.as_ref().is_some_and(Chat::is_group);
         self.typing_avatars.set_visible(is_group);
 
-        if !is_group {
-            return;
-        }
-
         for sender in &self.state.typing {
             let avatar = adw::Avatar::builder().size(24).show_initials(true).build();
             avatar.set_text(
                 (!sender.name.starts_with('+') && sender.name != i18n!("Someone"))
                     .then_some(sender.name.as_str()),
             );
+            avatar.set_widget_name(&sender.jid);
+
+            if let Some(path) = avatar::sender_cached_path(&sender.jid) {
+                if let Some(texture) = avatar::texture(&path) {
+                    avatar.set_custom_image(Some(&texture));
+                } else {
+                    let name = sender.jid.clone();
+                    let path = path.clone();
+                    let avatar = avatar.clone();
+
+                    glib::spawn_future_local(async move {
+                        if let Some(texture) = avatar::load(&path).await
+                            && avatar.widget_name() == name
+                        {
+                            avatar.set_custom_image(Some(&texture));
+                        }
+                    });
+                }
+            }
 
             let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             frame.append(&avatar);

@@ -40,8 +40,8 @@ use crate::{
     session::{ChatsSyncedEntry, Client, ClientInput, ClientOutput, avatar},
     state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
     utils::{
-        bare_jid, format_lid_as_number, get_first_name, is_group_jid, is_lid_jid, is_phone_jid,
-        is_status_broadcast, looks_like_jid,
+        bare_jid, cmp_chat_order, format_lid_as_number, get_first_name, is_group_jid, is_lid_jid,
+        is_phone_jid, is_status_broadcast, looks_like_jid,
     },
 };
 
@@ -1892,9 +1892,14 @@ impl AsyncComponent for Application {
                     state.generation += 1;
                     let generation = state.generation;
 
-                    state
-                        .senders
-                        .insert(sender_jid.clone(), TypingSender { name, recording });
+                    state.senders.insert(
+                        sender_jid.clone(),
+                        TypingSender {
+                            jid: sender_jid.clone(),
+                            name,
+                            recording,
+                        },
+                    );
                     self.emit_typing(&chat_jid);
 
                     let sender = sender.clone();
@@ -1983,8 +1988,9 @@ impl AsyncComponent for Application {
                         };
                         if let Some(state) = self.typing.get_mut(&chat_jid) {
                             state.senders.insert(
-                                lid,
+                                lid.clone(),
                                 TypingSender {
+                                    jid: lid,
                                     name: display,
                                     recording,
                                 },

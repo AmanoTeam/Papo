@@ -128,6 +128,7 @@ impl Chat {
 /// A user currently typing in a chat, and whether they are recording audio.
 #[derive(Clone, Debug)]
 pub struct TypingSender {
+    pub jid: String,
     pub name: String,
     pub recording: bool,
 }
