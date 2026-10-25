@@ -310,9 +310,10 @@ fn extract_synced_messages(
         {
             let msg_id = web_msg.key.id.clone().unwrap_or_default();
             let sender_jid = web_msg
-                .key
                 .participant
                 .clone()
+                .filter(|p| !p.is_empty())
+                .or_else(|| web_msg.key.participant.clone())
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
 

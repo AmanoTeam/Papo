@@ -327,10 +327,15 @@ impl SenderResolution {
         let unknown = i18n!("Unknown");
         let chat_bare = bare_jid(&chat.jid);
         if chat.is_group() && bare == chat_bare {
-            // The group never signed its own messages; showing its
-            // jid as a "sender" is worse than showing none.
-            message.sender_name = None;
-            return None;
+            let stored = message
+                .sender_name
+                .take()
+                .map(|name| name.trim_start_matches('~').to_string())
+                .filter(|name| !looks_like_jid(name, &bare))?;
+            let display = format!("~{stored}");
+            message.sender_name = Some(display.clone());
+
+            return Some(display);
         }
 
         let name = if let Some(name) =
