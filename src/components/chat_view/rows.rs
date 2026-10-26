@@ -40,6 +40,9 @@ pub struct ChatRowWidgets {
     message_box: gtk::Box,
     status_icon: gtk::Image,
     sender_label: gtk::Label,
+    quote_box: gtk::Box,
+    quote_sender: gtk::Label,
+    quote_body: gtk::Label,
     content_label: gtk::Label,
     divider_label: gtk::Label,
     service_label: gtk::Label,
@@ -124,6 +127,39 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
         widgets.sender_label.set_label(name);
         widgets.sender_label.set_visible(true);
     }
+}
+
+fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool) {
+    let Some(quote) = &msg.quote else {
+        return;
+    };
+
+    widgets.quote_box.set_visible(true);
+    widgets
+        .quote_box
+        .set_margin_top(i32::from(sender_visible) * 3);
+
+    if msg.outgoing {
+        widgets.quote_box.add_css_class("outgoing");
+        widgets.quote_box.remove_css_class("incoming");
+    } else {
+        widgets.quote_box.remove_css_class("outgoing");
+        widgets.quote_box.add_css_class("incoming");
+    }
+
+    if let Some(name) = quote.sender_name.as_deref().filter(|name| !name.is_empty()) {
+        widgets.quote_sender.set_label(name.trim_start_matches('~'));
+        widgets.quote_sender.set_visible(true);
+    } else if let Some(participant) = &quote.participant {
+        widgets.quote_sender.set_label(participant);
+        widgets.quote_sender.set_visible(true);
+    } else {
+        widgets.quote_sender.set_visible(false);
+    }
+
+    widgets
+        .quote_body
+        .set_label(quote.text().unwrap_or_default());
 }
 
 fn bind_content_label(widgets: &ChatRowWidgets, msg: &ChatMessage) {
@@ -269,6 +305,49 @@ impl RelmListItem for ChatRow {
             .build();
         bubble_box.append(&sender_label);
 
+        let quote_box = gtk::Box::builder()
+            .spacing(0)
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(["quote-box"])
+            .visible(false)
+            .build();
+        bubble_box.append(&quote_box);
+
+        let quote_bar = gtk::Box::builder()
+            .width_request(3)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Fill)
+            .css_classes(["quote-bar"])
+            .build();
+        quote_box.append(&quote_bar);
+
+        let quote_stack = gtk::Box::builder()
+            .valign(gtk::Align::Center)
+            .spacing(1)
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(6)
+            .margin_end(4)
+            .build();
+        quote_box.append(&quote_stack);
+
+        let quote_sender = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .css_classes(["quote-sender"])
+            .ellipsize(pango::EllipsizeMode::End)
+            .visible(false)
+            .build();
+        quote_stack.append(&quote_sender);
+        let quote_body = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .css_classes(["quote-text"])
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .ellipsize(pango::EllipsizeMode::End)
+            .max_width_chars(32)
+            .build();
+        quote_stack.append(&quote_body);
+
         let content_box = gtk::Box::builder()
             .spacing(12)
             .orientation(gtk::Orientation::Horizontal)
@@ -325,6 +404,9 @@ impl RelmListItem for ChatRow {
             message_box,
             status_icon,
             sender_label,
+            quote_box,
+            quote_sender,
+            quote_body,
             content_label,
             divider_label,
             service_label,
@@ -343,6 +425,7 @@ impl RelmListItem for ChatRow {
         widgets.divider_separator.set_visible(false);
         widgets.service_label.set_visible(false);
         widgets.message_box.set_visible(false);
+        widgets.quote_box.set_visible(false);
 
         root.remove_css_class("unread-row");
         root.remove_css_class("unread-first");
@@ -381,6 +464,11 @@ impl RelmListItem for ChatRow {
             } => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
+                bind_quote(
+                    widgets,
+                    msg,
+                    *first && msg.sender_name.is_some() && !msg.outgoing,
+                );
                 bind_content_label(widgets, msg);
 
                 // Convert UTC timestamp to local time for display

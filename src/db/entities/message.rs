@@ -18,9 +18,16 @@ pub struct Message {
     #[unique]
     pub server_id: Option<String>,
     pub timestamp: Timestamp,
+    pub sender_jid: String,
+    pub sender_name: Option<String>,
+
     pub media_mime: Option<String>,
     pub media_path: Option<String>,
     pub media_type: Option<String>,
-    pub sender_jid: String,
-    pub sender_name: Option<String>,
+
+    pub quote_body: Option<String>,
+    pub quote_media: Option<String>,
+    pub quote_stanza_id: Option<String>,
+    pub quote_participant: Option<String>,
+    pub quote_sender_name: Option<String>,
 }

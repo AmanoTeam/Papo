@@ -2320,7 +2320,7 @@ impl AsyncComponent for Application {
                             MessageStatus::Sent
                         };
 
-                        let chat_message = ChatMessage {
+                        let mut chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.to_string(),
                             chat_jid: chat_jid.clone(),
@@ -2328,6 +2328,7 @@ impl AsyncComponent for Application {
                             sender_name,
 
                             media,
+                            quote: ChatMessage::wire_quote(&message),
                             status,
                             content: content.unwrap_or_default(),
                             outgoing,
@@ -2335,6 +2336,19 @@ impl AsyncComponent for Application {
                             timestamp: Timestamp::from_second(info.timestamp.timestamp())
                                 .expect("Invalid timestamp"),
                         };
+
+                        if let Some(quote) = chat_message.quote.as_mut()
+                            && let Some(participant) = quote.participant.clone()
+                        {
+                            let chat = self.chats.iter().find(|chat| chat.jid == chat_jid).cloned();
+                            let mut sender_name = self
+                                .resolve_sender_name(&participant, None, chat.as_ref(), None)
+                                .await;
+                            if sender_name.is_none() {
+                                sender_name = self.resolve_sender_display(&participant).await;
+                            }
+                            quote.sender_name = sender_name;
+                        }
                         self.add_message(&chat_jid, chat_message).await;
 
                         if !outgoing {
@@ -2383,6 +2397,7 @@ impl AsyncComponent for Application {
                         sender_name: self.user_push_name.clone(),
 
                         media: None,
+                        quote: None,
                         status: MessageStatus::Sending,
                         content: text,
                         outgoing: true,
@@ -2870,18 +2885,18 @@ impl AsyncComponent for Application {
                                     .unwrap_or(Timestamp::MIN);
 
                             let message = ChatMessage {
-                                local_id: Uuid::new_v4(),
-                                server_id: synced_msg.id,
-                                chat_jid: chat_jid.clone(),
-                                sender_jid: synced_msg.sender_jid.clone(),
-                                sender_name,
-
                                 media,
+                                quote: synced_msg.quote,
                                 status: synced_msg.status,
                                 content: content.unwrap_or_default(),
+                                chat_jid: chat_jid.clone(),
+                                local_id: Uuid::new_v4(),
                                 outgoing: synced_msg.outgoing,
                                 reactions: IndexMap::new(),
+                                sender_jid: synced_msg.sender_jid.clone(),
+                                server_id: synced_msg.id,
                                 timestamp,
+                                sender_name,
                             };
 
                             // Save the message, skipping duplicates on server_id.

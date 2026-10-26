@@ -1111,6 +1111,7 @@ mod timeline_tests {
         (0..count)
             .map(|i| ChatMessage {
                 media: None,
+                quote: None,
                 status: if unread && i < 6 && i % 4 == 1 {
                     MessageStatus::Delivered
                 } else {

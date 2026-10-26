@@ -389,6 +389,34 @@ impl SenderResolution {
             }
         };
 
+        // The quoted author is anonymous to the wire: resolve like any
+        // other sender, with the number fallback; the display survives
+        // across rebinds via the stored name.
+        if let Some(quote) = &mut message.quote {
+            quote.sender_name = quote.participant.as_deref().and_then(|bare| {
+                let resolved =
+                    resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
+                        .or_else(|| {
+                            if is_lid_jid(bare) {
+                                self.lid_to_pn.get(bare).map(|pn| format_lid_as_number(pn))
+                            } else if is_phone_jid(bare) {
+                                Some(format_lid_as_number(bare))
+                            } else {
+                                None
+                            }
+                        });
+                if resolved.is_none() {
+                    tracing::debug!(
+                        "Quote author {bare} unresolved: contact={} pn-mapping={}",
+                        self.contacts.contains_key(bare),
+                        is_lid_jid(bare).then(|| self.lid_to_pn.get(bare)).is_some()
+                    );
+                }
+
+                resolved
+            });
+        }
+
         if let Some(name) = name {
             message.sender_name = Some(name.clone());
             Some(name)
