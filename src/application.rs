@@ -850,6 +850,11 @@ impl Application {
             return;
         };
 
+        // The sort key rides every UpdateChat for this chat, and a
+        // received message always lifts it: keep the time at the newest
+        // message, never an older one.
+        chat.last_message_time = chat.last_message_time.max(message.timestamp);
+
         if !message.outgoing && is_group && !chat.participants.contains_key(&message.sender_jid) {
             chat.participants.insert(
                 message.sender_jid.clone(),
@@ -2451,8 +2456,11 @@ impl AsyncComponent for Application {
                 quote,
                 recipient,
             } => {
-                if let Some(chat) = self.chats.iter().find(|c| c.jid == recipient).cloned() {
+                if let Some(chat_entry) = self.chats.iter_mut().find(|c| c.jid == recipient) {
                     let timestamp = Timestamp::now();
+                    chat_entry.last_message_time = chat_entry.last_message_time.max(timestamp);
+                    let chat = chat_entry.clone();
+
                     let message = ChatMessage {
                         local_id: Uuid::new_v4(),
                         server_id: String::new(), // will be replaced later by the client.

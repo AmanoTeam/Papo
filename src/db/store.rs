@@ -202,9 +202,37 @@ impl SessionStore {
 
     /// Loads all non-archived chats, ordered by pinned, then pin time,
     /// then `last_message_time` — newest pin on top, reference order.
+    ///
+    /// The sort key is repaired against the messages table on the way
+    /// out: backfilled history once regressed it toward older chunks,
+    /// and only the true newest message may order the list.
     pub async fn load_chats(&self) -> Result<Vec<Chat>, toasty::Error> {
+        let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
         let mut chats = ChatEntity::filter_by_archived(false).exec(&mut db).await?;
+
+        for chat in &mut chats {
+            let Some(newest) = MessageEntity::filter_by_chat_jid(chat.jid.as_str())
+                .order_by(MessageEntity::fields().timestamp().desc())
+                .limit(1)
+                .exec(&mut db)
+                .await?
+                .into_iter()
+                .next()
+                .map(|message| message.timestamp)
+            else {
+                continue;
+            };
+
+            if chat.last_message_time.is_none_or(|stored| newest > stored) {
+                chat.update()
+                    .last_message_time(Some(newest))
+                    .exec(&mut db)
+                    .await?;
+                chat.last_message_time = Some(newest);
+            }
+        }
+
         chats.sort_by(|a, b| {
             cmp_chat_order(
                 &(
@@ -338,6 +366,9 @@ impl SessionStore {
             .first()
             .exec(&mut db)
             .await?
+            && chat
+                .last_message_time
+                .is_none_or(|current| msg.timestamp > current)
         {
             chat.update()
                 .last_message_time(Some(msg.timestamp))
@@ -513,6 +544,9 @@ impl SessionStore {
             .first()
             .exec(&mut db)
             .await?
+            && chat
+                .last_message_time
+                .is_none_or(|current| msg.timestamp > current)
         {
             chat.update()
                 .last_message_time(Some(msg.timestamp))
