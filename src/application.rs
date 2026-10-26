@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    mem,
+    iter, mem,
     time::Duration,
 };
 
@@ -1523,6 +1523,12 @@ impl AsyncComponent for Application {
                         .into_iter()
                         .map(|lid| bare_jid(&lid))
                         .collect();
+
+                    let forms = iter::once(own)
+                        .chain(self.own_lid_jids.iter().cloned())
+                        .collect::<Vec<String>>();
+                    self.chat_view.emit(ChatViewInput::OwnJids(forms.clone()));
+                    self.chat_list.emit(ChatListInput::OwnJids(forms));
                 }
 
                 // Chats from the database already show for returning users;
@@ -2054,6 +2060,12 @@ impl AsyncComponent for Application {
                 lid,
                 phone,
             } => {
+                if let Some(phone) = &phone {
+                    if let Err(e) = self.db.learn_lid_mapping(&lid, phone).await {
+                        tracing::debug!("Failed to learn resolved LID-PN {lid}: {e}");
+                    }
+                }
+
                 if let Some(phone) = phone
                     && is_group_jid(&chat_jid)
                 {
@@ -2340,14 +2352,39 @@ impl AsyncComponent for Application {
                         if let Some(quote) = chat_message.quote.as_mut()
                             && let Some(participant) = quote.participant.clone()
                         {
-                            let chat = self.chats.iter().find(|chat| chat.jid == chat_jid).cloned();
-                            let mut sender_name = self
-                                .resolve_sender_name(&participant, None, chat.as_ref(), None)
-                                .await;
-                            if sender_name.is_none() {
-                                sender_name = self.resolve_sender_display(&participant).await;
+                            // Your own messages quote back as `You`.
+                            if outgoing || self.is_own_jid(&participant) {
+                                quote.sender_name = Some(i18n!("You"));
+                            } else {
+                                let chat =
+                                    self.chats.iter().find(|chat| chat.jid == chat_jid).cloned();
+
+                                let mut sender_name = self
+                                    .resolve_sender_name(&participant, None, chat.as_ref(), None)
+                                    .await;
+                                if sender_name.is_none() {
+                                    sender_name = self.resolve_sender_display(&participant).await;
+                                }
+
+                                quote.sender_name = sender_name;
                             }
-                            quote.sender_name = sender_name;
+                            if quote.sender_name.is_none() {
+                                let mapped = self.db.lid_to_pn_jid(&participant).await.is_some();
+                                tracing::debug!(
+                                    "Quote author {participant} unresolved: contact={} pn-mapping={mapped}",
+                                    !self.contacts.contains_key(&participant)
+                                );
+
+                                // Ask the phone for the pair on demand:
+                                // once the answer lands the mapping is
+                                // learned and the next load resolves.
+                                if is_lid_jid(&participant) {
+                                    self.client.emit(ClientInput::ResolveLidPn {
+                                        chat_jid: chat_jid.clone(),
+                                        lid: participant,
+                                    });
+                                }
+                            }
                         }
                         self.add_message(&chat_jid, chat_message).await;
 

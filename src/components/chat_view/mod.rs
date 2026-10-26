@@ -44,6 +44,9 @@ pub struct ChatView {
     chat: Option<Chat>,
     state: ChatViewState,
     history: ChatHistory,
+    /// Every identity the account renders as itself (`You`), set at
+    /// connect for quote author labels.
+    own_forms: Vec<String>,
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
@@ -139,6 +142,7 @@ pub enum ChatViewInput {
         jid: String,
     },
 
+    OwnJids(Vec<String>),
     QuoteActivated {
         stanza_id: String,
     },
@@ -502,6 +506,7 @@ impl AsyncComponent for ChatView {
             chat: None,
             state: ChatViewState::new(),
             history,
+            own_forms: Vec::new(),
             generation: 0,
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
@@ -663,17 +668,20 @@ impl AsyncComponent for ChatView {
 
                 // Load the initial batch of messages.
                 let db = self.db.clone();
+                let own_forms = self.own_forms.clone();
                 let generation = self.generation;
                 sender.oneshot_command(async move {
                     let mut messages = chat
                         .load_messages(&db, INITIAL_LOAD_COUNT)
                         .await
                         .unwrap_or_default();
-                    let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                    let identities =
+                        re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
                     let had_unread = chat
                         .get_unread_count(&db)
                         .await
                         .is_ok_and(|count| count > 0);
+
                     ChatViewCommand::InitialMessagesLoaded {
                         generation,
                         messages,
@@ -867,6 +875,9 @@ impl AsyncComponent for ChatView {
                 }
             }
 
+            ChatViewInput::OwnJids(forms) => {
+                self.own_forms = forms;
+            }
             ChatViewInput::QuoteActivated { stanza_id } => {
                 self.history.set_row_highlight(&stanza_id, true);
 
@@ -920,13 +931,15 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let mut messages = chat
                             .load_messages(&db, INITIAL_LOAD_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::InitialMessagesLoaded {
                             generation,
@@ -941,6 +954,7 @@ impl AsyncComponent for ChatView {
                     let before_ts = self.history.oldest_timestamp();
                     let after_ts = self.history.newest_timestamp();
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let mut older = match before_ts {
@@ -957,8 +971,9 @@ impl AsyncComponent for ChatView {
                                 .unwrap_or_default(),
                             None => Vec::new(),
                         };
-                        let identities = re_resolve_senders(&db, &chat, &mut older).await;
-                        re_resolve_senders(&db, &chat, &mut newer).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut older).await;
+                        re_resolve_senders(&db, &own_forms, &chat, &mut newer).await;
 
                         ChatViewCommand::BackfillLoaded {
                             generation,
@@ -980,6 +995,7 @@ impl AsyncComponent for ChatView {
 
                     if let Some(ref chat) = self.chat {
                         let db = self.db.clone();
+                        let own_forms = self.own_forms.clone();
                         let chat = chat.clone();
                         let generation = self.generation;
                         sender.oneshot_command(async move {
@@ -987,7 +1003,8 @@ impl AsyncComponent for ChatView {
                                 .load_messages(&db, INITIAL_LOAD_COUNT)
                                 .await
                                 .unwrap_or_default();
-                            let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                            let identities =
+                                re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                             ChatViewCommand::JumpLoaded {
                                 generation,
@@ -1260,6 +1277,7 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
@@ -1267,7 +1285,8 @@ impl AsyncComponent for ChatView {
                             .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::OlderMessagesLoaded {
                             generation,
@@ -1283,6 +1302,7 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
@@ -1290,7 +1310,8 @@ impl AsyncComponent for ChatView {
                             .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::NewerMessagesLoaded {
                             generation,

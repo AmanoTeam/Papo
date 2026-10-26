@@ -212,6 +212,9 @@ fn resolve_stored_name(
 /// queries instead of two per sender.
 pub(crate) struct SenderResolution {
     contacts: HashMap<String, Contact>,
+    /// Every identity the account renders as itself (`You`): its own
+    /// phone form plus every LID form the phone uses.
+    own_forms: Vec<String>,
     lid_to_pn: HashMap<String, String>,
     pn_to_lids: HashMap<String, Vec<String>>,
     /// Digit-keyed index of the same pairs, handed to the timeline
@@ -221,7 +224,7 @@ pub(crate) struct SenderResolution {
 }
 
 impl SenderResolution {
-    pub(crate) async fn new(db: &SessionStore) -> Self {
+    pub(crate) async fn new(db: &SessionStore, own_forms: Vec<String>) -> Self {
         let contacts = db
             .get_all_contacts()
             .await
@@ -252,6 +255,7 @@ impl SenderResolution {
 
         Self {
             contacts,
+            own_forms,
             lid_to_pn,
             pn_to_lids,
             lid_digits_to_phone,
@@ -394,6 +398,12 @@ impl SenderResolution {
         // across rebinds via the stored name.
         if let Some(quote) = &mut message.quote {
             quote.sender_name = quote.participant.as_deref().and_then(|bare| {
+                if message.outgoing
+                    || (!self.own_forms.is_empty() && self.own_forms.contains(&bare.to_string()))
+                {
+                    return Some(i18n!("You"));
+                }
+
                 let resolved =
                     resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
                         .or_else(|| {
@@ -433,6 +443,7 @@ impl SenderResolution {
 /// passes return an empty map.
 pub(crate) async fn re_resolve_senders(
     db: &SessionStore,
+    own_forms: &[String],
     chat: &Chat,
     messages: &mut [ChatMessage],
 ) -> HashMap<String, String> {
@@ -462,7 +473,7 @@ pub(crate) async fn re_resolve_senders(
         return HashMap::new();
     }
 
-    let mut resolution = SenderResolution::new(db).await;
+    let mut resolution = SenderResolution::new(db, own_forms.to_vec()).await;
     resolution.learn_identity_pairs(db, chat, messages).await;
     let identities = resolution.identities();
 

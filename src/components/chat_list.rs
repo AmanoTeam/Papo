@@ -32,6 +32,7 @@ pub struct ChatList {
     pending_avatars: HashMap<String, String>,
 
     chat_jid: Option<String>,
+    own_forms: Vec<String>,
     filter_state: Rc<RefCell<ChatListFilter>>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
@@ -82,6 +83,7 @@ pub enum ChatListInput {
     SelectPosition(u32),
     ClearSelection,
 
+    OwnJids(Vec<String>),
     PumpPending,
 }
 
@@ -181,6 +183,7 @@ impl SimpleAsyncComponent for ChatList {
             pending_avatars: HashMap::new(),
 
             chat_jid: None,
+            own_forms: Vec::new(),
             filter_state: Rc::new(RefCell::new(ChatListFilter::All)),
             list_view_wrapper: TypedListView::new(),
         };
@@ -230,7 +233,8 @@ impl SimpleAsyncComponent for ChatList {
                     // Previews must match what the chat view would
                     // render on open.
                     if let Some(message) = last_message.as_mut() {
-                        let mut resolution = SenderResolution::new(&self.db).await;
+                        let forms = self.own_forms.clone();
+                        let mut resolution = SenderResolution::new(&self.db, forms).await;
                         resolution
                             .learn_identity_pairs(&self.db, &chat, slice::from_ref(message))
                             .await;
@@ -335,6 +339,7 @@ impl SimpleAsyncComponent for ChatList {
             ChatListInput::PopulateAll(chats) => {
                 let db = self.db.clone();
                 let sender = sender.clone();
+                let own_forms = self.own_forms.clone();
                 relm4::spawn(async move {
                     const BATCH: usize = 100;
                     let mut batch = Vec::with_capacity(BATCH);
@@ -342,7 +347,7 @@ impl SimpleAsyncComponent for ChatList {
                     // One snapshot for every preview: old rows carry
                     // stale stored names, and the list must match
                     // what the chat view would render on open.
-                    let mut resolution = SenderResolution::new(&db).await;
+                    let mut resolution = SenderResolution::new(&db, own_forms).await;
 
                     for chat in chats {
                         let mut last_message = match chat.get_last_message(&db).await {
@@ -520,6 +525,9 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
 
+            ChatListInput::OwnJids(forms) => {
+                self.own_forms = forms;
+            }
             ChatListInput::PumpPending => {
                 // Draining a bounded slice per message keeps every other
                 // input ahead of the remainder: the self-queued pump goes
