@@ -103,6 +103,48 @@ pub fn bare_jid(jid: &str) -> String {
     }
 }
 
+/// Truncates `text` to at most `max_chars` characters, appending `…`
+/// when the cap was reached.
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+/// Truncates `text` to at most `max_lines` whole lines, clipping each
+/// line to about `max_line_chars` characters of visible width, with
+/// the `…` marker applied whenever content was lost. Long
+/// single-paragraph quotes get cut at the approximate row width; multi-
+/// paragraph quotes preserve their embedded line breaks.
+pub fn truncate_lines(text: &str, max_lines: usize, max_line_chars: usize) -> String {
+    let mut kept = Vec::new();
+    let mut lost = false;
+
+    for (index, line) in text.lines().enumerate() {
+        if index == max_lines {
+            lost = true;
+            break;
+        }
+
+        if line.chars().count() > max_line_chars {
+            lost = true;
+            kept.push(truncate_chars(line, max_line_chars));
+        } else {
+            kept.push(line.to_string());
+        }
+    }
+
+    let mut result = kept.join("\n");
+    if lost && !result.ends_with('…') {
+        result.push('…');
+    }
+    result
+}
+
 /// Whether the jid addresses a contact by its linked-device identity.
 pub fn is_lid_jid(jid: &str) -> bool {
     jid.ends_with("@lid")
@@ -514,4 +556,28 @@ pub(crate) async fn re_resolve_senders(
     );
 
     identities
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_lines;
+
+    #[test]
+    fn truncate_lines_keeps_whole_lines() {
+        assert_eq!(truncate_lines("one", 2, 85), "one");
+        assert_eq!(truncate_lines("one\ntwo", 2, 85), "one\ntwo");
+        assert_eq!(truncate_lines("one\ntwo\nthree", 2, 85), "one\ntwo…");
+        assert_eq!(truncate_lines("", 2, 85), "");
+    }
+
+    #[test]
+    fn truncate_lines_clips_per_line_width() {
+        let long = "abcdefghijklmno";
+
+        assert_eq!(truncate_lines(long, 1, 6), "abcdef…");
+        assert_eq!(
+            truncate_lines("one\ntwo\nthree\nfour\nfive\nsix\nseven", 5, 85),
+            "one\ntwo\nthree\nfour\nfive…"
+        );
+    }
 }

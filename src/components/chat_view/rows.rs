@@ -8,7 +8,7 @@ use crate::{
     i18n,
     session::avatar,
     state::{ChatMessage, MessageStatus},
-    utils::{bare_jid, format_date_label, is_group_jid},
+    utils::{bare_jid, format_date_label, is_group_jid, truncate_lines},
     widgets::{MessageTail, TailDirection},
 };
 
@@ -221,9 +221,11 @@ fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool)
         widgets.quote_sender.set_visible(false);
     }
 
+    // Long quotes are truncated in code: wrapping labels ignore
+    // ellipsization, so the cap must be part of the string itself.
     widgets
         .quote_body
-        .set_label(quote.text().unwrap_or_default());
+        .set_label(&truncate_lines(quote.text().unwrap_or_default(), 5, 85));
 }
 
 fn bind_content_label(widgets: &ChatRowWidgets, msg: &ChatMessage) {
@@ -342,6 +344,7 @@ impl RelmListItem for ChatRow {
             .spacing(0)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        root.append(&message_box);
 
         let avatar = adw::Avatar::builder()
             .size(32)
@@ -352,15 +355,17 @@ impl RelmListItem for ChatRow {
 
         let avatar_slot = gtk::Box::builder().width_request(32).build();
         avatar_slot.append(&avatar);
+        message_box.append(&avatar_slot);
 
         let tail_left = new_tail(TailDirection::Left, "incoming");
-        let tail_right = new_tail(TailDirection::Right, "outgoing");
+        message_box.append(&tail_left);
 
         let bubble_box = gtk::Box::builder()
             .spacing(2)
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["message-bubble", "card"])
             .build();
+        message_box.append(&bubble_box);
 
         let sender_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -409,7 +414,6 @@ impl RelmListItem for ChatRow {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .ellipsize(pango::EllipsizeMode::End)
-            .max_width_chars(32)
             .build();
         quote_stack.append(&quote_body);
 
@@ -417,6 +421,7 @@ impl RelmListItem for ChatRow {
             .spacing(12)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        bubble_box.append(&content_box);
 
         let content_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -439,6 +444,7 @@ impl RelmListItem for ChatRow {
             .spacing(4)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        content_box.append(&time_status_box);
 
         let timestamp_label = gtk::Label::builder()
             .css_classes(["dimmed", "caption", "numeric"])
@@ -451,13 +457,8 @@ impl RelmListItem for ChatRow {
             .build();
         time_status_box.append(&status_icon);
 
-        content_box.append(&time_status_box);
-        bubble_box.append(&content_box);
-        message_box.append(&avatar_slot);
-        message_box.append(&tail_left);
-        message_box.append(&bubble_box);
+        let tail_right = new_tail(TailDirection::Right, "outgoing");
         message_box.append(&tail_right);
-        root.append(&message_box);
 
         let widgets = ChatRowWidgets {
             input: None,
@@ -480,6 +481,7 @@ impl RelmListItem for ChatRow {
             timestamp_label,
             divider_separator,
         };
+        widgets.context_popover.add_css_class("context-menu");
 
         // The context menu opens from anywhere on the row line.
         widgets.add_context_gesture(&root);

@@ -21,7 +21,7 @@ use crate::{
     i18n, i18n_f, ni18n_f,
     session::avatar,
     state::{Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus, TypingSender},
-    utils::{bare_jid, is_status_broadcast, re_resolve_senders},
+    utils::{bare_jid, is_status_broadcast, re_resolve_senders, truncate_lines},
     widgets::TypingDots,
 };
 
@@ -50,6 +50,8 @@ pub struct ChatView {
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
+
+    quote_preview: gtk::Label,
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
     /// In-flight marker for an on-demand history request; doubles as the
@@ -107,6 +109,7 @@ impl ChatViewState {
 pub enum ChatViewInput {
     Open(Chat),
     Close,
+    Escape,
 
     SendMessage,
     EntryChanged,
@@ -148,6 +151,7 @@ pub enum ChatViewInput {
     QuoteActivated {
         stanza_id: String,
     },
+    QuoteBarClicked,
     QuoteHighlightExpired {
         stanza_id: String,
     },
@@ -248,6 +252,22 @@ pub enum ChatViewCommand {
         generation: u64,
     },
 }
+
+/// Jumps to the quoted message whenever the reader clicks onto the
+/// quote preview.
+/// Focuses the scroll window whenever the reader clicks inside it.
+fn setup_focus_on_click(scroll_window: &gtk::ScrolledWindow) {
+    let scroll = scroll_window.clone();
+    let click_gesture = gtk::GestureClick::new();
+    click_gesture.connect_pressed(move |_, _, _, _| {
+        scroll.grab_focus();
+    });
+
+    scroll_window.add_controller(click_gesture);
+}
+
+/// Wires the composer quote preview's line-count lifecycle: it clamps
+/// tight once the reader scrolls, and relaxes again while they type.
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
@@ -485,36 +505,50 @@ impl AsyncComponent for ChatView {
 
                     gtk::Box {
                         set_spacing: 6,
-                        set_margin_start: 10,
+                        set_margin_start: 14,
                         set_margin_end: 10,
                         set_margin_top: 4,
 
-                        gtk::Box {
-                            set_valign: gtk::Align::Fill,
-                            set_css_classes: &["quote-bar"],
-                            set_width_request: 3,
-                        },
-
-                        gtk::Box {
-                            set_valign: gtk::Align::Center,
+                        gtk::Button {
                             set_hexpand: true,
-                            set_spacing: 1,
-                            set_orientation: gtk::Orientation::Vertical,
+                            set_css_classes: &["flat", "quote-box"],
 
-                            gtk::Label {
-                                #[watch]
-                                set_label: model.pending_quote_sender().as_str(),
-                                set_halign: gtk::Align::Start,
-                                set_css_classes: &["quote-sender"],
-                                set_ellipsize: pango::EllipsizeMode::End,
-                            },
+                            connect_clicked => ChatViewInput::QuoteBarClicked,
 
-                            gtk::Label {
-                                #[watch]
-                                set_label: model.pending_quote_preview().as_str(),
-                                set_halign: gtk::Align::Start,
-                                set_css_classes: &["quote-text", "dimmed"],
-                                set_ellipsize: pango::EllipsizeMode::End,
+                            gtk::Box {
+                                set_spacing: 6,
+
+                                gtk::Box {
+                                    set_valign: gtk::Align::Fill,
+                                    set_css_classes: &["quote-bar"],
+                                    set_width_request: 3,
+                                },
+
+                                gtk::Box {
+                                    set_valign: gtk::Align::Center,
+                                    set_hexpand: true,
+                                    set_spacing: 1,
+                                    set_orientation: gtk::Orientation::Vertical,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: model.pending_quote_sender().as_str(),
+                                        set_halign: gtk::Align::Start,
+                                        set_css_classes: &["quote-sender"],
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                    },
+
+                                    #[local_ref]
+                                    quote_preview -> gtk::Label {
+                                        #[watch]
+                                        set_label: model.pending_quote_preview().as_str(),
+                                        set_halign: gtk::Align::Start,
+                                        set_css_classes: &["quote-text", "dimmed"],
+                                        set_wrap: true,
+                                        set_wrap_mode: pango::WrapMode::WordChar,
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                    },
+                                },
                             },
                         },
 
@@ -569,6 +603,7 @@ impl AsyncComponent for ChatView {
             history,
             own_forms: Vec::new(),
             generation: 0,
+            quote_preview: gtk::Label::new(None),
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             history_fetch_at: None,
@@ -578,19 +613,15 @@ impl AsyncComponent for ChatView {
         };
 
         let list_view = model.history.view().clone();
+        let quote_preview = &model.quote_preview;
         let message_entry = &model.message_entry;
         let typing_avatars = &model.typing_avatars;
         let widgets = view_output!();
 
-        // Focus the scroll window when clicked within.
-        let scroll = scroll_window.clone();
-        let click_gesture = gtk::GestureClick::new();
-        click_gesture.connect_pressed(move |_, _, _, _| {
-            scroll.grab_focus();
-        });
-        scroll_window.add_controller(click_gesture);
+        setup_focus_on_click(&scroll_window);
 
-        // Return focus to message entry when `Esc` is pressed and scroll window is focused.
+        // Return focus to message entry when `Esc` is pressed and the
+        // scroll window is focused.
         let entry = message_entry.clone();
         let key_event_controller = gtk::EventControllerKey::new();
         key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
@@ -602,12 +633,13 @@ impl AsyncComponent for ChatView {
         });
         scroll_window.add_controller(key_event_controller);
 
-        // Close the chat when `Esc` is pressed and message entry is focused.
+        // Cancel a drafted reply when `Esc` is pressed on the entry;
+        // without one, it keeps closing the chat.
         let input_sender = sender.input_sender().clone();
         let key_event_controller = gtk::EventControllerKey::new();
         key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
             gdk::Key::Escape => {
-                input_sender.emit(ChatViewInput::Close);
+                input_sender.emit(ChatViewInput::Escape);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -615,21 +647,19 @@ impl AsyncComponent for ChatView {
         message_entry.add_controller(key_event_controller);
 
         // Track scroll position and notify the model when it changes.
-        let adj = widgets.scroll_window.vadjustment();
+        let adj = scroll_window.vadjustment();
         let command_sender = sender.command_sender().clone();
 
         // Scrolling past the top edge is a request for more history.
         let edge_sender = command_sender.clone();
-        widgets
-            .scroll_window
-            .connect_edge_overshot(move |_, position| {
-                if position == gtk::PositionType::Top {
-                    edge_sender.emit(ChatViewCommand::ScrollPositionChanged {
-                        at_top: true,
-                        at_bottom: false,
-                    });
-                }
-            });
+        scroll_window.connect_edge_overshot(move |_, position| {
+            if position == gtk::PositionType::Top {
+                edge_sender.emit(ChatViewCommand::ScrollPositionChanged {
+                    at_top: true,
+                    at_bottom: false,
+                });
+            }
+        });
 
         // Level-checked near the top, but only while the user is
         // actually scrolling up: an anchoring bump after a prepend
@@ -779,6 +809,13 @@ impl AsyncComponent for ChatView {
 
                 let _ = sender.output(ChatViewOutput::ChatClosed);
             }
+            ChatViewInput::Escape => {
+                if self.state.pending_quote.is_some() {
+                    self.state.pending_quote = None;
+                } else {
+                    sender.input(ChatViewInput::Close);
+                }
+            }
 
             ChatViewInput::SendMessage => {
                 if let Some(ref chat) = self.chat
@@ -789,9 +826,10 @@ impl AsyncComponent for ChatView {
 
                     // Send a plain text message, or a reply with the
                     // quote bar's pending context attached.
+                    let quote = self.state.pending_quote.take();
                     let _ = sender.output(ChatViewOutput::SendTextMessage {
                         text,
-                        quote: self.state.pending_quote.take(),
+                        quote,
                         recipient: chat.jid.clone(),
                     });
 
@@ -954,6 +992,16 @@ impl AsyncComponent for ChatView {
                     sender.input(ChatViewInput::QuoteHighlightExpired { stanza_id });
                 });
             }
+            ChatViewInput::QuoteBarClicked => {
+                if let Some(stanza_id) = self
+                    .state
+                    .pending_quote
+                    .as_ref()
+                    .and_then(|quote| quote.stanza_id.clone())
+                {
+                    sender.input(ChatViewInput::QuoteActivated { stanza_id });
+                }
+            }
             ChatViewInput::QuoteHighlightExpired { stanza_id } => {
                 self.history.set_row_highlight(&stanza_id, false);
             }
@@ -971,7 +1019,11 @@ impl AsyncComponent for ChatView {
                     media: message.media.as_ref().map(Media::preview_label),
                     stanza_id: Some(message.server_id.clone()),
                     participant: Some(bare_jid(&message.sender_jid)),
-                    sender_name: message.sender_name.clone(),
+                    sender_name: if message.outgoing {
+                        Some(i18n!("You"))
+                    } else {
+                        message.sender_name.clone()
+                    },
                 });
 
                 if self.history.truly_at_bottom() {
@@ -1610,8 +1662,8 @@ impl ChatView {
         self.state
             .pending_quote
             .as_ref()
-            .and_then(|quote| quote.text().map(ToString::to_string))
-            .unwrap_or_default()
+            .and_then(|quote| quote.text())
+            .map_or_else(String::new, |text| truncate_lines(text, 2, 85))
     }
 
     fn typing_text(&self) -> String {
