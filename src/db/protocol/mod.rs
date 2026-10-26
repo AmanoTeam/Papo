@@ -44,7 +44,7 @@ pub use signed_pre_key::SignedPreKey;
 pub use sync_key::SyncKey;
 pub use tc_token::TcToken;
 
-use super::entities::{Chat, Contact, Message};
+use super::entities::{Chat, Contact, Message, PendingReadMark};
 
 pub(crate) fn session_models() -> ModelSet {
     toasty::models!(
@@ -61,6 +61,7 @@ pub(crate) fn session_models() -> ModelSet {
         MutationMac,
         MsgSecret,
         PendingInbound,
+        PendingReadMark,
         PreKey,
         SenderKey,
         SenderKeyDevice,

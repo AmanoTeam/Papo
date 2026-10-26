@@ -14,6 +14,7 @@ use whatsapp_rust::{
     Jid, TokioRuntime,
     bot::Bot,
     http::{HttpRequest, UreqHttpClient},
+    message_range,
     pair_code::{CompanionWebClientType, PairCodeOptions},
     transport::TokioWebSocketTransportFactory,
     types::{
@@ -56,6 +57,7 @@ pub struct Client {
 
     history_queue: HistoryQueue,
     inflight_avatars: Arc<Mutex<HashSet<String>>>,
+    read_sync_in_flight: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -477,6 +479,7 @@ pub enum ClientCommand {
         chat_jid: String,
         lid: String,
     },
+    PumpReadMarks,
     DriveHistoryQueue,
     FetchGroupMetadata {
         chat_jid: String,
@@ -489,6 +492,97 @@ pub enum ClientCommand {
 impl Client {
     fn update_state(&mut self, state: ClientState) {
         self.state = state;
+    }
+
+    /// Appstate read-marks, one write at a time: every mark uses the
+    /// `regular_low` collection, so parallel writes would stampede a
+    /// collection whose bootstrap may still be running. Queued rows are
+    /// durable in the session database; this only limits in-flight work.
+    async fn pump_read_sync(
+        handle: &ClientHandle,
+        store: &SessionStore,
+        in_flight: &Arc<Mutex<Option<String>>>,
+        sender: &AsyncComponentSender<Self>,
+    ) {
+        let now = Timestamp::now().as_second();
+        let mark = match store.next_due_read_mark(now).await {
+            Ok(Some(mark)) => mark,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("Failed to read the queued chat read marks: {e}");
+                return;
+            }
+        };
+
+        let mut guard = in_flight.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        *guard = Some(mark.chat_jid.clone());
+        drop(guard);
+
+        let store = store.clone();
+        let handle = handle.clone();
+        let sender = sender.clone();
+        let in_flight = in_flight.clone();
+        relm4::spawn(async move {
+            let client = handle.lock().await.clone();
+            let result = match client {
+                Some(client) => match mark.chat_jid.parse::<Jid>() {
+                    Ok(jid) => {
+                        let range = message_range(mark.position, None, Vec::new());
+                        client
+                            .chat_actions()
+                            .mark_chat_as_read(&jid, true, Some(range))
+                            .await
+                            .map_err(|e| e.to_string())
+                    }
+                    Err(e) => Err(e.to_string()),
+                },
+                None => Err("no connected client".to_string()),
+            };
+
+            match result {
+                Ok(()) => {
+                    tracing::debug!("Synced chat read state for {}", mark.chat_jid);
+                    if let Err(e) = store.delete_read_mark(&mark.chat_jid).await {
+                        tracing::warn!("Failed to drop the synced read mark: {e}");
+                    }
+
+                    *in_flight.lock().await = None;
+                    sender.oneshot_command(async { ClientCommand::PumpReadMarks });
+                }
+                Err(e) => {
+                    // A failure blocks every pending chat, not just this
+                    // one: the broken piece is the shared collection.
+                    let attempts = mark.attempts + 1;
+                    let retry_delay = 30i64
+                        .saturating_mul(1 << (attempts - 1).min(5))
+                        .min(15 * 60);
+                    let retry_at = Timestamp::now().as_second() + retry_delay;
+                    if let Err(e) = store
+                        .defer_read_mark(&mark.chat_jid, attempts, retry_at)
+                        .await
+                    {
+                        tracing::warn!("Failed to defer the read mark: {e}");
+                    }
+
+                    tracing::debug!(
+                        "Chat read state not synced for {}: {e}; retrying in {retry_delay}s",
+                        mark.chat_jid
+                    );
+                    *in_flight.lock().await = None;
+
+                    sender.oneshot_command(async move {
+                        time::sleep(Duration::from_secs(
+                            u64::try_from(retry_delay).unwrap_or(15 * 60),
+                        ))
+                        .await;
+                        ClientCommand::PumpReadMarks
+                    });
+                }
+            }
+        });
     }
 
     /// Sends the next queued on-demand history request, one at a time.
@@ -589,6 +683,7 @@ impl AsyncComponent for Client {
             os_type,
             history_queue: HistoryQueue::default(),
             inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
+            read_sync_in_flight: Arc::new(Mutex::new(None)),
         };
 
         let widgets = view_output!();
@@ -723,13 +818,29 @@ impl AsyncComponent for Client {
                         return;
                     }
 
-                    match Box::pin(client.send_message(jid, (*message).clone().into())).await {
+                    match Box::pin(client.send_message(jid.clone(), (*message).clone().into()))
+                        .await
+                    {
                         Ok(result) => {
                             message.server_id = result.message_id;
                             if let Err(e) = message.upsert(&self.store).await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
 
+                            // Sending implies the conversation was read up
+                            // to this point: pin the position now, so a
+                            // later retry cannot mark messages read that
+                            // arrive meanwhile.
+                            let position = Timestamp::now().as_second();
+                            if let Err(e) = self
+                                .store
+                                .queue_read_mark(&message.chat_jid, position)
+                                .await
+                            {
+                                tracing::warn!("Failed to queue the chat read mark: {e}");
+                            }
+
+                            sender.oneshot_command(async { ClientCommand::PumpReadMarks });
                             let _ = sender.output(ClientOutput::MessageSent {
                                 chat_jid: message.chat_jid,
                                 msg_id: message.local_id,
@@ -1065,6 +1176,8 @@ impl AsyncComponent for Client {
                     |client| (client.pn().map(|j| j.to_string()), client.push_name()),
                 );
                 drop(handle);
+
+                sender.oneshot_command(async { ClientCommand::PumpReadMarks });
 
                 self.update_state(ClientState::Connected);
                 let _ = sender.output(ClientOutput::Connected { jid, push_name });
@@ -1435,6 +1548,15 @@ impl AsyncComponent for Client {
                         phone,
                     });
                 }
+            }
+            ClientCommand::PumpReadMarks => {
+                Self::pump_read_sync(
+                    &self.handle,
+                    &self.store,
+                    &self.read_sync_in_flight,
+                    &sender,
+                )
+                .await;
             }
             ClientCommand::DriveHistoryQueue => {
                 self.drive_history_queue(&sender).await;

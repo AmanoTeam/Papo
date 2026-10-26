@@ -49,8 +49,8 @@ src/
 ├── db/                      # Database layer (toasty + vendored sqlite driver)
 │   ├── mod.rs
 │   ├── connection.rs        # Database open (plain + encrypted), WAL, key verification
-│   ├── entities/            # toasty models: Chat, Contact, Message, SessionMeta
-│   ├── migrations.rs        # Schema migrations (toasty auto-migrates additive fields)
+│   ├── entities/            # toasty models: Chat, Contact, Message, PendingReadMark (durable read-sync queue), SessionMeta
+│   ├── migrations.rs        # Schema migrations (toasty auto-migrates additive fields; new TABLES go in connection.rs ensure_tables)
 │   ├── keyring.rs           # Secret Service key storage
 │   ├── media.rs             # Media blob storage
 │   ├── protocol/            # ProtocolStore implementation backing wacore (signal stores, LID/PN mappings, tc tokens)

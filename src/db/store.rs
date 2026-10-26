@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     db::{
-        entities::{Chat as ChatEntity, Contact, Message as MessageEntity},
+        entities::{Chat as ChatEntity, Contact, Message as MessageEntity, PendingReadMark},
         media::MediaStorage,
         protocol::LidMapping,
     },
@@ -341,6 +341,99 @@ impl SessionStore {
         {
             chat.update()
                 .last_message_time(Some(msg.timestamp))
+                .exec(&mut db)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Queues (or refreshes) a durable chat read mark for the multi-device
+    /// appstate sync. Re-queueing pulls the retry deadline forward so a
+    /// fresh send is attempted promptly.
+    pub async fn queue_read_mark(
+        &self,
+        chat_jid: &str,
+        position: i64,
+    ) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+        let now = Timestamp::now().as_second();
+
+        if let Some(mut existing) = PendingReadMark::filter_by_chat_jid(chat_jid.to_owned())
+            .first()
+            .exec(&mut db)
+            .await?
+        {
+            existing
+                .update()
+                .position(position)
+                .next_retry_at(now)
+                .exec(&mut db)
+                .await?;
+        } else {
+            PendingReadMark::create()
+                .chat_jid(chat_jid.to_owned())
+                .position(position)
+                .attempts(0)
+                .next_retry_at(now)
+                .exec(&mut db)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// The next queued read mark whose retry deadline has passed. The
+    /// queue is one row per chat, so the scan is trivial.
+    pub async fn next_due_read_mark(
+        &self,
+        now: i64,
+    ) -> Result<Option<PendingReadMark>, toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        let marks = PendingReadMark::all().exec(&mut db).await?;
+        Ok(marks
+            .into_iter()
+            .filter(|mark| mark.next_retry_at <= now)
+            .min_by_key(|mark| (mark.next_retry_at, mark.position)))
+    }
+
+    /// Removes a read mark whose sync went through.
+    pub async fn delete_read_mark(&self, chat_jid: &str) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        if let Some(mark) = PendingReadMark::filter_by_chat_jid(chat_jid.to_owned())
+            .first()
+            .exec(&mut db)
+            .await?
+        {
+            mark.delete().exec(&mut db).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Records a failed sync attempt and sets the next retry deadline.
+    pub async fn defer_read_mark(
+        &self,
+        chat_jid: &str,
+        attempts: i64,
+        next_retry_at: i64,
+    ) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        if let Some(mut mark) = PendingReadMark::filter_by_chat_jid(chat_jid.to_owned())
+            .first()
+            .exec(&mut db)
+            .await?
+        {
+            mark.update()
+                .attempts(attempts)
+                .next_retry_at(next_retry_at)
                 .exec(&mut db)
                 .await?;
         }

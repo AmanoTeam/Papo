@@ -55,6 +55,7 @@ pub(crate) async fn open_encrypted_db(
         if is_fresh {
             db.push_schema().await?;
         } else if db_is_readable(&mut db).await {
+            ensure_tables(&mut db).await;
             ensure_indices(&mut db).await;
         } else {
             quarantine_file(path);
@@ -67,7 +68,6 @@ pub(crate) async fn open_encrypted_db(
     }
 
     quarantine_file(path);
-
     recreate_encrypted_db(path, hexkey, models).await
 }
 
@@ -119,6 +119,31 @@ async fn set_sync_mode(db: &mut Db) {
 
     if let Err(e) = result {
         tracing::warn!("Failed to relax the database sync mode: {e}");
+    }
+}
+
+/// Creates schema tables that are missing from an existing database.
+async fn ensure_tables(db: &mut Db) {
+    const CREATE_TABLES: &[&str] = &["CREATE TABLE IF NOT EXISTS \"pending_read_marks\" (
+        \"chat_jid\" TEXT NOT NULL,
+        \"position\" INTEGER NOT NULL,
+        \"attempts\" INTEGER NOT NULL,
+        \"next_retry_at\" INTEGER NOT NULL,
+        PRIMARY KEY (\"chat_jid\")
+    )"];
+
+    for sql in CREATE_TABLES {
+        let result = db
+            .exec_raw_sql(RawSql {
+                sql: (*sql).to_owned(),
+                ret: RawSqlRet::None,
+                params: Vec::new(),
+            })
+            .await;
+
+        if let Err(e) = result {
+            tracing::warn!("Failed to ensure schema table: {e}");
+        }
     }
 }
 
