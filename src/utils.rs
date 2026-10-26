@@ -103,6 +103,48 @@ pub fn bare_jid(jid: &str) -> String {
     }
 }
 
+/// Truncates `text` to at most `max_chars` characters, appending `…`
+/// when the cap was reached.
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+/// Truncates `text` to at most `max_lines` whole lines, clipping each
+/// line to about `max_line_chars` characters of visible width, with
+/// the `…` marker applied whenever content was lost. Long
+/// single-paragraph quotes get cut at the approximate row width; multi-
+/// paragraph quotes preserve their embedded line breaks.
+pub fn truncate_lines(text: &str, max_lines: usize, max_line_chars: usize) -> String {
+    let mut kept = Vec::new();
+    let mut lost = false;
+
+    for (index, line) in text.lines().enumerate() {
+        if index == max_lines {
+            lost = true;
+            break;
+        }
+
+        if line.chars().count() > max_line_chars {
+            lost = true;
+            kept.push(truncate_chars(line, max_line_chars));
+        } else {
+            kept.push(line.to_string());
+        }
+    }
+
+    let mut result = kept.join("\n");
+    if lost && !result.ends_with('…') {
+        result.push('…');
+    }
+    result
+}
+
 /// Whether the jid addresses a contact by its linked-device identity.
 pub fn is_lid_jid(jid: &str) -> bool {
     jid.ends_with("@lid")
@@ -212,6 +254,9 @@ fn resolve_stored_name(
 /// queries instead of two per sender.
 pub(crate) struct SenderResolution {
     contacts: HashMap<String, Contact>,
+    /// Every identity the account renders as itself (`You`): its own
+    /// phone form plus every LID form the phone uses.
+    own_forms: Vec<String>,
     lid_to_pn: HashMap<String, String>,
     pn_to_lids: HashMap<String, Vec<String>>,
     /// Digit-keyed index of the same pairs, handed to the timeline
@@ -221,7 +266,7 @@ pub(crate) struct SenderResolution {
 }
 
 impl SenderResolution {
-    pub(crate) async fn new(db: &SessionStore) -> Self {
+    pub(crate) async fn new(db: &SessionStore, own_forms: Vec<String>) -> Self {
         let contacts = db
             .get_all_contacts()
             .await
@@ -252,6 +297,7 @@ impl SenderResolution {
 
         Self {
             contacts,
+            own_forms,
             lid_to_pn,
             pn_to_lids,
             lid_digits_to_phone,
@@ -389,6 +435,40 @@ impl SenderResolution {
             }
         };
 
+        // The quoted author is anonymous to the wire: resolve like any
+        // other sender, with the number fallback; the display survives
+        // across rebinds via the stored name.
+        if let Some(quote) = &mut message.quote {
+            quote.sender_name = quote.participant.as_deref().and_then(|bare| {
+                if message.outgoing
+                    || (!self.own_forms.is_empty() && self.own_forms.contains(&bare.to_string()))
+                {
+                    return Some(i18n!("You"));
+                }
+
+                let resolved =
+                    resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
+                        .or_else(|| {
+                            if is_lid_jid(bare) {
+                                self.lid_to_pn.get(bare).map(|pn| format_lid_as_number(pn))
+                            } else if is_phone_jid(bare) {
+                                Some(format_lid_as_number(bare))
+                            } else {
+                                None
+                            }
+                        });
+                if resolved.is_none() {
+                    tracing::debug!(
+                        "Quote author {bare} unresolved: contact={} pn-mapping={}",
+                        self.contacts.contains_key(bare),
+                        is_lid_jid(bare).then(|| self.lid_to_pn.get(bare)).is_some()
+                    );
+                }
+
+                resolved
+            });
+        }
+
         if let Some(name) = name {
             message.sender_name = Some(name.clone());
             Some(name)
@@ -405,6 +485,7 @@ impl SenderResolution {
 /// passes return an empty map.
 pub(crate) async fn re_resolve_senders(
     db: &SessionStore,
+    own_forms: &[String],
     chat: &Chat,
     messages: &mut [ChatMessage],
 ) -> HashMap<String, String> {
@@ -434,7 +515,7 @@ pub(crate) async fn re_resolve_senders(
         return HashMap::new();
     }
 
-    let mut resolution = SenderResolution::new(db).await;
+    let mut resolution = SenderResolution::new(db, own_forms.to_vec()).await;
     resolution.learn_identity_pairs(db, chat, messages).await;
     let identities = resolution.identities();
 
@@ -475,4 +556,28 @@ pub(crate) async fn re_resolve_senders(
     );
 
     identities
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_lines;
+
+    #[test]
+    fn truncate_lines_keeps_whole_lines() {
+        assert_eq!(truncate_lines("one", 2, 85), "one");
+        assert_eq!(truncate_lines("one\ntwo", 2, 85), "one\ntwo");
+        assert_eq!(truncate_lines("one\ntwo\nthree", 2, 85), "one\ntwo…");
+        assert_eq!(truncate_lines("", 2, 85), "");
+    }
+
+    #[test]
+    fn truncate_lines_clips_per_line_width() {
+        let long = "abcdefghijklmno";
+
+        assert_eq!(truncate_lines(long, 1, 6), "abcdef…");
+        assert_eq!(
+            truncate_lines("one\ntwo\nthree\nfour\nfive\nsix\nseven", 5, 85),
+            "one\ntwo\nthree\nfour\nfive…"
+        );
+    }
 }

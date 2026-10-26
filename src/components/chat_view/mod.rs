@@ -20,8 +20,8 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f, ni18n_f,
     session::avatar,
-    state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
-    utils::{bare_jid, is_status_broadcast, re_resolve_senders},
+    state::{Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus, TypingSender},
+    utils::{bare_jid, is_status_broadcast, re_resolve_senders, truncate_lines},
     widgets::TypingDots,
 };
 
@@ -44,9 +44,14 @@ pub struct ChatView {
     chat: Option<Chat>,
     state: ChatViewState,
     history: ChatHistory,
+    /// Every identity the account renders as itself (`You`), set at
+    /// connect for quote author labels.
+    own_forms: Vec<String>,
     /// Monotonic generation counter, incremented on every chat open or jump
     /// reload. Used to discard stale command results from a previous chat.
     generation: u64,
+
+    quote_preview: gtk::Label,
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
     /// In-flight marker for an on-demand history request; doubles as the
@@ -78,6 +83,7 @@ pub struct ChatViewState {
     is_at_top: bool,
     is_at_bottom: bool,
     unread_count: usize,
+    pending_quote: Option<ChatQuote>,
     typing_generation: u64,
 }
 
@@ -93,6 +99,7 @@ impl ChatViewState {
             is_at_top: false,
             is_at_bottom: true,
             unread_count: 0,
+            pending_quote: None,
             typing_generation: 0,
         }
     }
@@ -102,6 +109,7 @@ impl ChatViewState {
 pub enum ChatViewInput {
     Open(Chat),
     Close,
+    Escape,
 
     SendMessage,
     EntryChanged,
@@ -139,6 +147,20 @@ pub enum ChatViewInput {
         jid: String,
     },
 
+    OwnJids(Vec<String>),
+    QuoteActivated {
+        stanza_id: String,
+    },
+    QuoteBarClicked,
+    QuoteHighlightExpired {
+        stanza_id: String,
+    },
+
+    ReplyRequested {
+        server_id: String,
+    },
+    CancelPendingQuote,
+
     SyncProgress {
         active: bool,
         percent: Option<u32>,
@@ -161,6 +183,7 @@ pub enum ChatViewOutput {
 
     SendTextMessage {
         text: String,
+        quote: Option<ChatQuote>,
         recipient: String,
     },
 
@@ -229,6 +252,22 @@ pub enum ChatViewCommand {
         generation: u64,
     },
 }
+
+/// Jumps to the quoted message whenever the reader clicks onto the
+/// quote preview.
+/// Focuses the scroll window whenever the reader clicks inside it.
+fn setup_focus_on_click(scroll_window: &gtk::ScrolledWindow) {
+    let scroll = scroll_window.clone();
+    let click_gesture = gtk::GestureClick::new();
+    click_gesture.connect_pressed(move |_, _, _, _| {
+        scroll.grab_focus();
+    });
+
+    scroll_window.add_controller(click_gesture);
+}
+
+/// Wires the composer quote preview's line-count lifecycle: it clamps
+/// tight once the reader scrolls, and relaxes again while they type.
 
 #[relm4::component(async, pub)]
 impl AsyncComponent for ChatView {
@@ -424,7 +463,9 @@ impl AsyncComponent for ChatView {
 
                 gtk::Revealer {
                     #[watch]
-                    set_reveal_child: model.chat.is_some() && !model.state.typing.is_empty(),
+                    set_reveal_child: model.chat.is_some()
+                        && !model.state.typing.is_empty()
+                        && model.state.pending_quote.is_none(),
                     set_transition_type: gtk::RevealerTransitionType::SlideUp,
                     set_transition_duration: 250,
 
@@ -452,6 +493,71 @@ impl AsyncComponent for ChatView {
                             set_valign: gtk::Align::Center,
                             set_css_classes: &["dimmed"],
                             set_ellipsize: pango::EllipsizeMode::End,
+                        },
+                    },
+                },
+
+                gtk::Revealer {
+                    #[watch]
+                    set_reveal_child: model.state.pending_quote.is_some(),
+                    set_transition_type: gtk::RevealerTransitionType::SlideUp,
+                    set_transition_duration: 250,
+
+                    gtk::Box {
+                        set_spacing: 6,
+                        set_margin_start: 14,
+                        set_margin_end: 10,
+                        set_margin_top: 4,
+
+                        gtk::Button {
+                            set_hexpand: true,
+                            set_css_classes: &["flat", "quote-box"],
+
+                            connect_clicked => ChatViewInput::QuoteBarClicked,
+
+                            gtk::Box {
+                                set_spacing: 6,
+
+                                gtk::Box {
+                                    set_valign: gtk::Align::Fill,
+                                    set_css_classes: &["quote-bar"],
+                                    set_width_request: 3,
+                                },
+
+                                gtk::Box {
+                                    set_valign: gtk::Align::Center,
+                                    set_hexpand: true,
+                                    set_spacing: 1,
+                                    set_orientation: gtk::Orientation::Vertical,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: model.pending_quote_sender().as_str(),
+                                        set_halign: gtk::Align::Start,
+                                        set_css_classes: &["quote-sender"],
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                    },
+
+                                    #[local_ref]
+                                    quote_preview -> gtk::Label {
+                                        #[watch]
+                                        set_label: model.pending_quote_preview().as_str(),
+                                        set_halign: gtk::Align::Start,
+                                        set_css_classes: &["quote-text", "dimmed"],
+                                        set_wrap: true,
+                                        set_wrap_mode: pango::WrapMode::WordChar,
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                    },
+                                },
+                            },
+                        },
+
+                        gtk::Button {
+                            set_valign: gtk::Align::Center,
+                            set_icon_name: "x-symbolic",
+                            set_css_classes: &["flat", "circular"],
+
+                            connect_clicked => ChatViewInput::CancelPendingQuote,
                         },
                     },
                 },
@@ -495,7 +601,9 @@ impl AsyncComponent for ChatView {
             chat: None,
             state: ChatViewState::new(),
             history,
+            own_forms: Vec::new(),
             generation: 0,
+            quote_preview: gtk::Label::new(None),
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             history_fetch_at: None,
@@ -505,19 +613,15 @@ impl AsyncComponent for ChatView {
         };
 
         let list_view = model.history.view().clone();
+        let quote_preview = &model.quote_preview;
         let message_entry = &model.message_entry;
         let typing_avatars = &model.typing_avatars;
         let widgets = view_output!();
 
-        // Focus the scroll window when clicked within.
-        let scroll = scroll_window.clone();
-        let click_gesture = gtk::GestureClick::new();
-        click_gesture.connect_pressed(move |_, _, _, _| {
-            scroll.grab_focus();
-        });
-        scroll_window.add_controller(click_gesture);
+        setup_focus_on_click(&scroll_window);
 
-        // Return focus to message entry when `Esc` is pressed and scroll window is focused.
+        // Return focus to message entry when `Esc` is pressed and the
+        // scroll window is focused.
         let entry = message_entry.clone();
         let key_event_controller = gtk::EventControllerKey::new();
         key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
@@ -529,12 +633,13 @@ impl AsyncComponent for ChatView {
         });
         scroll_window.add_controller(key_event_controller);
 
-        // Close the chat when `Esc` is pressed and message entry is focused.
+        // Cancel a drafted reply when `Esc` is pressed on the entry;
+        // without one, it keeps closing the chat.
         let input_sender = sender.input_sender().clone();
         let key_event_controller = gtk::EventControllerKey::new();
         key_event_controller.connect_key_pressed(move |_, key, _, _| match key {
             gdk::Key::Escape => {
-                input_sender.emit(ChatViewInput::Close);
+                input_sender.emit(ChatViewInput::Escape);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -542,21 +647,19 @@ impl AsyncComponent for ChatView {
         message_entry.add_controller(key_event_controller);
 
         // Track scroll position and notify the model when it changes.
-        let adj = widgets.scroll_window.vadjustment();
+        let adj = scroll_window.vadjustment();
         let command_sender = sender.command_sender().clone();
 
         // Scrolling past the top edge is a request for more history.
         let edge_sender = command_sender.clone();
-        widgets
-            .scroll_window
-            .connect_edge_overshot(move |_, position| {
-                if position == gtk::PositionType::Top {
-                    edge_sender.emit(ChatViewCommand::ScrollPositionChanged {
-                        at_top: true,
-                        at_bottom: false,
-                    });
-                }
-            });
+        scroll_window.connect_edge_overshot(move |_, position| {
+            if position == gtk::PositionType::Top {
+                edge_sender.emit(ChatViewCommand::ScrollPositionChanged {
+                    at_top: true,
+                    at_bottom: false,
+                });
+            }
+        });
 
         // Level-checked near the top, but only while the user is
         // actually scrolling up: an anchoring bump after a prepend
@@ -637,6 +740,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_at_top = false;
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
+                self.state.pending_quote = None;
                 self.state.typing_generation += 1;
 
                 self.history_fetch_at = None;
@@ -656,17 +760,20 @@ impl AsyncComponent for ChatView {
 
                 // Load the initial batch of messages.
                 let db = self.db.clone();
+                let own_forms = self.own_forms.clone();
                 let generation = self.generation;
                 sender.oneshot_command(async move {
                     let mut messages = chat
                         .load_messages(&db, INITIAL_LOAD_COUNT)
                         .await
                         .unwrap_or_default();
-                    let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                    let identities =
+                        re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
                     let had_unread = chat
                         .get_unread_count(&db)
                         .await
                         .is_ok_and(|count| count > 0);
+
                     ChatViewCommand::InitialMessagesLoaded {
                         generation,
                         messages,
@@ -702,6 +809,13 @@ impl AsyncComponent for ChatView {
 
                 let _ = sender.output(ChatViewOutput::ChatClosed);
             }
+            ChatViewInput::Escape => {
+                if self.state.pending_quote.is_some() {
+                    self.state.pending_quote = None;
+                } else {
+                    sender.input(ChatViewInput::Close);
+                }
+            }
 
             ChatViewInput::SendMessage => {
                 if let Some(ref chat) = self.chat
@@ -710,9 +824,12 @@ impl AsyncComponent for ChatView {
                     let text = self.message_entry.text().to_string();
                     self.message_entry.set_text("");
 
-                    // Send a plain text message.
+                    // Send a plain text message, or a reply with the
+                    // quote bar's pending context attached.
+                    let quote = self.state.pending_quote.take();
                     let _ = sender.output(ChatViewOutput::SendTextMessage {
                         text,
+                        quote,
                         recipient: chat.jid.clone(),
                     });
 
@@ -860,6 +977,63 @@ impl AsyncComponent for ChatView {
                 }
             }
 
+            ChatViewInput::OwnJids(forms) => {
+                self.own_forms = forms;
+            }
+            ChatViewInput::QuoteActivated { stanza_id } => {
+                self.history.set_row_highlight(&stanza_id, true);
+
+                if let Some(index) = self.history.index_by_stanza(&stanza_id) {
+                    self.history.scroll_to_row(index);
+                }
+
+                // The highlight fades after a few seconds.
+                glib::timeout_add_seconds_local_once(2, move || {
+                    sender.input(ChatViewInput::QuoteHighlightExpired { stanza_id });
+                });
+            }
+            ChatViewInput::QuoteBarClicked => {
+                if let Some(stanza_id) = self
+                    .state
+                    .pending_quote
+                    .as_ref()
+                    .and_then(|quote| quote.stanza_id.clone())
+                {
+                    sender.input(ChatViewInput::QuoteActivated { stanza_id });
+                }
+            }
+            ChatViewInput::QuoteHighlightExpired { stanza_id } => {
+                self.history.set_row_highlight(&stanza_id, false);
+            }
+
+            ChatViewInput::ReplyRequested { server_id } => {
+                let Some(index) = self.history.index_by_stanza(&server_id) else {
+                    return;
+                };
+                let Some(ChatRow::Message { message, .. }) = self.history.get_row(index) else {
+                    return;
+                };
+
+                self.state.pending_quote = Some(ChatQuote {
+                    body: (!message.content.is_empty()).then_some(message.content.clone()),
+                    media: message.media.as_ref().map(Media::preview_label),
+                    stanza_id: Some(message.server_id.clone()),
+                    participant: Some(bare_jid(&message.sender_jid)),
+                    sender_name: if message.outgoing {
+                        Some(i18n!("You"))
+                    } else {
+                        message.sender_name.clone()
+                    },
+                });
+
+                if self.history.truly_at_bottom() {
+                    self.scroll_to_bottom(|| {});
+                }
+            }
+            ChatViewInput::CancelPendingQuote => {
+                self.state.pending_quote = None;
+            }
+
             ChatViewInput::SyncProgress {
                 active,
                 percent,
@@ -897,13 +1071,15 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let mut messages = chat
                             .load_messages(&db, INITIAL_LOAD_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::InitialMessagesLoaded {
                             generation,
@@ -918,6 +1094,7 @@ impl AsyncComponent for ChatView {
                     let before_ts = self.history.oldest_timestamp();
                     let after_ts = self.history.newest_timestamp();
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
                         let mut older = match before_ts {
@@ -934,8 +1111,9 @@ impl AsyncComponent for ChatView {
                                 .unwrap_or_default(),
                             None => Vec::new(),
                         };
-                        let identities = re_resolve_senders(&db, &chat, &mut older).await;
-                        re_resolve_senders(&db, &chat, &mut newer).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut older).await;
+                        re_resolve_senders(&db, &own_forms, &chat, &mut newer).await;
 
                         ChatViewCommand::BackfillLoaded {
                             generation,
@@ -957,6 +1135,7 @@ impl AsyncComponent for ChatView {
 
                     if let Some(ref chat) = self.chat {
                         let db = self.db.clone();
+                        let own_forms = self.own_forms.clone();
                         let chat = chat.clone();
                         let generation = self.generation;
                         sender.oneshot_command(async move {
@@ -964,7 +1143,8 @@ impl AsyncComponent for ChatView {
                                 .load_messages(&db, INITIAL_LOAD_COUNT)
                                 .await
                                 .unwrap_or_default();
-                            let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                            let identities =
+                                re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                             ChatViewCommand::JumpLoaded {
                                 generation,
@@ -1237,6 +1417,7 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
@@ -1244,7 +1425,8 @@ impl AsyncComponent for ChatView {
                             .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::OlderMessagesLoaded {
                             generation,
@@ -1260,6 +1442,7 @@ impl AsyncComponent for ChatView {
                     self.state.is_loading = true;
 
                     let db = self.db.clone();
+                    let own_forms = self.own_forms.clone();
                     let chat = chat.clone();
                     let generation = self.generation;
                     sender.oneshot_command(async move {
@@ -1267,7 +1450,8 @@ impl AsyncComponent for ChatView {
                             .load_messages_after(&db, after_ts, LOAD_MORE_COUNT)
                             .await
                             .unwrap_or_default();
-                        let identities = re_resolve_senders(&db, &chat, &mut messages).await;
+                        let identities =
+                            re_resolve_senders(&db, &own_forms, &chat, &mut messages).await;
 
                         ChatViewCommand::NewerMessagesLoaded {
                             generation,
@@ -1459,6 +1643,27 @@ impl ChatView {
         } else {
             self.state.unread_count.to_string()
         }
+    }
+
+    fn pending_quote_sender(&self) -> String {
+        let Some(quote) = &self.state.pending_quote else {
+            return String::new();
+        };
+
+        quote
+            .sender_name
+            .as_deref()
+            .map(|name| name.trim_start_matches('~').to_string())
+            .or_else(|| quote.participant.clone())
+            .unwrap_or_default()
+    }
+
+    fn pending_quote_preview(&self) -> String {
+        self.state
+            .pending_quote
+            .as_ref()
+            .and_then(|quote| quote.text())
+            .map_or_else(String::new, |text| truncate_lines(text, 2, 85))
     }
 
     fn typing_text(&self) -> String {

@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    mem,
+    iter, mem,
     time::Duration,
 };
 
@@ -38,7 +38,9 @@ use crate::{
     i18n, i18n_f,
     modals::{about::AboutDialog, shortcuts::ShortcutsDialog},
     session::{ChatsSyncedEntry, Client, ClientInput, ClientOutput, avatar},
-    state::{Chat, ChatMessage, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender},
+    state::{
+        Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MediaType, MessageStatus, TypingSender,
+    },
     utils::{
         bare_jid, cmp_chat_order, format_lid_as_number, get_first_name, is_group_jid, is_lid_jid,
         is_phone_jid, is_status_broadcast, looks_like_jid,
@@ -239,6 +241,7 @@ pub enum AppMsg {
 
     SendTextMessage {
         text: String,
+        quote: Option<ChatQuote>,
         recipient: String,
     },
 
@@ -258,6 +261,10 @@ pub enum AppMsg {
         jid: String,
         muted: Option<bool>,
         archived: Option<bool>,
+    },
+
+    ReplyRequested {
+        server_id: String,
     },
 
     FetchHistory {
@@ -929,6 +936,8 @@ relm4::new_stateless_action!(pub(super) ShortcutsAction, WindowActionGroup, "sho
 relm4::new_stateless_action!(AboutAction, WindowActionGroup, "about");
 relm4::new_stateless_action!(QuitAction, WindowActionGroup, "quit");
 
+relm4::new_stateful_action!(ReplyAction, WindowActionGroup, "reply", String, ());
+
 #[relm4::component(async, pub)]
 impl AsyncComponent for Application {
     type Init = ();
@@ -1378,9 +1387,15 @@ impl AsyncComponent for Application {
                         composing,
                     },
 
-                    ChatViewOutput::SendTextMessage { text, recipient } => {
-                        AppMsg::SendTextMessage { text, recipient }
-                    }
+                    ChatViewOutput::SendTextMessage {
+                        text,
+                        quote,
+                        recipient,
+                    } => AppMsg::SendTextMessage {
+                        text,
+                        quote,
+                        recipient,
+                    },
 
                     ChatViewOutput::FetchHistory { chat_jid, anchor } => {
                         AppMsg::FetchHistory { chat_jid, anchor }
@@ -1462,6 +1477,13 @@ impl AsyncComponent for Application {
             })
         };
 
+        let reply_action = {
+            let sender = sender.clone();
+            RelmAction::<ReplyAction>::new_with_target_value(move |_, server_id| {
+                sender.input(AppMsg::ReplyRequested { server_id });
+            })
+        };
+
         // Connect actions with hotkeys
         app.set_accelerators_for_action::<QuitAction>(&["<Control>q"]);
         // app.set_accelerators_for_action::<QuitAction>(&["<Control>w"]);
@@ -1488,6 +1510,7 @@ impl AsyncComponent for Application {
         actions.add_action(shortcuts_action);
         actions.add_action(about_action);
         actions.add_action(quit_action);
+        actions.add_action(reply_action);
         actions.register_for_widget(&widgets.main_window);
 
         widgets.load_window_size();
@@ -1523,6 +1546,12 @@ impl AsyncComponent for Application {
                         .into_iter()
                         .map(|lid| bare_jid(&lid))
                         .collect();
+
+                    let forms = iter::once(own)
+                        .chain(self.own_lid_jids.iter().cloned())
+                        .collect::<Vec<String>>();
+                    self.chat_view.emit(ChatViewInput::OwnJids(forms.clone()));
+                    self.chat_list.emit(ChatListInput::OwnJids(forms));
                 }
 
                 // Chats from the database already show for returning users;
@@ -2054,6 +2083,12 @@ impl AsyncComponent for Application {
                 lid,
                 phone,
             } => {
+                if let Some(phone) = &phone
+                    && let Err(e) = self.db.learn_lid_mapping(&lid, phone).await
+                {
+                    tracing::debug!("Failed to learn resolved LID-PN {lid}: {e}");
+                }
+
                 if let Some(phone) = phone
                     && is_group_jid(&chat_jid)
                 {
@@ -2320,7 +2355,7 @@ impl AsyncComponent for Application {
                             MessageStatus::Sent
                         };
 
-                        let chat_message = ChatMessage {
+                        let mut chat_message = ChatMessage {
                             local_id: Uuid::new_v4(),
                             server_id: info.id.to_string(),
                             chat_jid: chat_jid.clone(),
@@ -2328,6 +2363,7 @@ impl AsyncComponent for Application {
                             sender_name,
 
                             media,
+                            quote: ChatMessage::wire_quote(&message),
                             status,
                             content: content.unwrap_or_default(),
                             outgoing,
@@ -2335,6 +2371,44 @@ impl AsyncComponent for Application {
                             timestamp: Timestamp::from_second(info.timestamp.timestamp())
                                 .expect("Invalid timestamp"),
                         };
+
+                        if let Some(quote) = chat_message.quote.as_mut()
+                            && let Some(participant) = quote.participant.clone()
+                        {
+                            // Your own messages quote back as `You`.
+                            if outgoing || self.is_own_jid(&participant) {
+                                quote.sender_name = Some(i18n!("You"));
+                            } else {
+                                let chat =
+                                    self.chats.iter().find(|chat| chat.jid == chat_jid).cloned();
+
+                                let mut sender_name = self
+                                    .resolve_sender_name(&participant, None, chat.as_ref(), None)
+                                    .await;
+                                if sender_name.is_none() {
+                                    sender_name = self.resolve_sender_display(&participant).await;
+                                }
+
+                                quote.sender_name = sender_name;
+                            }
+                            if quote.sender_name.is_none() {
+                                let mapped = self.db.lid_to_pn_jid(&participant).await.is_some();
+                                tracing::debug!(
+                                    "Quote author {participant} unresolved: contact={} pn-mapping={mapped}",
+                                    !self.contacts.contains_key(&participant)
+                                );
+
+                                // Ask the phone for the pair on demand:
+                                // once the answer lands the mapping is
+                                // learned and the next load resolves.
+                                if is_lid_jid(&participant) {
+                                    self.client.emit(ClientInput::ResolveLidPn {
+                                        chat_jid: chat_jid.clone(),
+                                        lid: participant,
+                                    });
+                                }
+                            }
+                        }
                         self.add_message(&chat_jid, chat_message).await;
 
                         if !outgoing {
@@ -2372,7 +2446,11 @@ impl AsyncComponent for Application {
                 }
             }
 
-            AppMsg::SendTextMessage { text, recipient } => {
+            AppMsg::SendTextMessage {
+                text,
+                quote,
+                recipient,
+            } => {
                 if let Some(chat) = self.chats.iter().find(|c| c.jid == recipient).cloned() {
                     let timestamp = Timestamp::now();
                     let message = ChatMessage {
@@ -2383,6 +2461,7 @@ impl AsyncComponent for Application {
                         sender_name: self.user_push_name.clone(),
 
                         media: None,
+                        quote,
                         status: MessageStatus::Sending,
                         content: text,
                         outgoing: true,
@@ -2491,6 +2570,10 @@ impl AsyncComponent for Application {
                     }
                 }
             }
+
+            AppMsg::ReplyRequested { server_id } => self
+                .chat_view
+                .emit(ChatViewInput::ReplyRequested { server_id }),
 
             AppMsg::FetchHistory { chat_jid, anchor } => {
                 let chat_jid = self.resolve_jid(&chat_jid).await;
@@ -2870,18 +2953,18 @@ impl AsyncComponent for Application {
                                     .unwrap_or(Timestamp::MIN);
 
                             let message = ChatMessage {
-                                local_id: Uuid::new_v4(),
-                                server_id: synced_msg.id,
-                                chat_jid: chat_jid.clone(),
-                                sender_jid: synced_msg.sender_jid.clone(),
-                                sender_name,
-
                                 media,
+                                quote: synced_msg.quote,
                                 status: synced_msg.status,
                                 content: content.unwrap_or_default(),
+                                chat_jid: chat_jid.clone(),
+                                local_id: Uuid::new_v4(),
                                 outgoing: synced_msg.outgoing,
                                 reactions: IndexMap::new(),
+                                sender_jid: synced_msg.sender_jid.clone(),
+                                server_id: synced_msg.id,
                                 timestamp,
+                                sender_name,
                             };
 
                             // Save the message, skipping duplicates on server_id.

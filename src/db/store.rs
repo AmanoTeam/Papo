@@ -13,7 +13,7 @@ use crate::{
         media::MediaStorage,
         protocol::LidMapping,
     },
-    state::{Chat, ChatMessage, Media, MediaType, MessageStatus},
+    state::{Chat, ChatMessage, ChatQuote, Media, MediaType, MessageStatus},
     utils::cmp_chat_order,
 };
 
@@ -110,18 +110,28 @@ impl SessionStore {
             })
         };
 
+        let quote =
+            (entity.quote_body.is_some() || entity.quote_media.is_some()).then(|| ChatQuote {
+                body: entity.quote_body.clone(),
+                media: entity.quote_media.clone(),
+                stanza_id: entity.quote_stanza_id.clone(),
+                participant: entity.quote_participant.clone(),
+                sender_name: entity.quote_sender_name.clone(),
+            });
+
         ChatMessage {
-            chat_jid: entity.chat_jid,
-            content: entity.content.unwrap_or_default(),
-            local_id: Uuid::parse_str(&entity.local_id).unwrap_or_else(|_| Uuid::new_v4()),
             media,
+            quote,
+            status: MessageStatus::from(i32::try_from(entity.status).unwrap_or_default()),
+            content: entity.content.unwrap_or_default(),
+            chat_jid: entity.chat_jid,
+            local_id: Uuid::parse_str(&entity.local_id).unwrap_or_else(|_| Uuid::new_v4()),
             outgoing: entity.outgoing,
             reactions: IndexMap::new(),
             sender_jid: entity.sender_jid,
-            sender_name: entity.sender_name,
             server_id: entity.server_id.unwrap_or_default(),
-            status: MessageStatus::from(i32::try_from(entity.status).unwrap_or_default()),
             timestamp: entity.timestamp,
+            sender_name: entity.sender_name,
         }
     }
 }
@@ -308,6 +318,19 @@ impl SessionStore {
             .media_type(msg.media.as_ref().map(|m| format!("{:?}", m.r#type)))
             .media_path(self.save_media_file(chat_jid, msg))
             .media_mime(msg.media.as_ref().map(|m| m.mime_type.clone()))
+            .quote_body(msg.quote.as_ref().and_then(|quote| quote.body.clone()))
+            .quote_media(msg.quote.as_ref().and_then(|quote| quote.media.clone()))
+            .quote_stanza_id(msg.quote.as_ref().and_then(|quote| quote.stanza_id.clone()))
+            .quote_participant(
+                msg.quote
+                    .as_ref()
+                    .and_then(|quote| quote.participant.clone()),
+            )
+            .quote_sender_name(
+                msg.quote
+                    .as_ref()
+                    .and_then(|quote| quote.sender_name.clone()),
+            )
             .exec(&mut db)
             .await?;
 
@@ -377,6 +400,19 @@ impl SessionStore {
             .media_type(msg.media.as_ref().map(|m| format!("{:?}", m.r#type)))
             .media_path(self.save_media_file(chat_jid, msg))
             .media_mime(msg.media.as_ref().map(|m| m.mime_type.clone()))
+            .quote_body(msg.quote.as_ref().and_then(|quote| quote.body.clone()))
+            .quote_media(msg.quote.as_ref().and_then(|quote| quote.media.clone()))
+            .quote_stanza_id(msg.quote.as_ref().and_then(|quote| quote.stanza_id.clone()))
+            .quote_participant(
+                msg.quote
+                    .as_ref()
+                    .and_then(|quote| quote.participant.clone()),
+            )
+            .quote_sender_name(
+                msg.quote
+                    .as_ref()
+                    .and_then(|quote| quote.sender_name.clone()),
+            )
             .exec(&mut db)
             .await?;
 

@@ -23,7 +23,7 @@ use whatsapp_rust::{
     },
     wacore::store::{DevicePropsOverride, device::default_history_sync_config},
     waproto::whatsapp::{
-        Conversation, Message,
+        Conversation, Message, WebMessageInfo,
         device_props::{HistorySyncConfig, PlatformType},
         web_message_info::Status,
     },
@@ -33,7 +33,7 @@ use crate::{
     db::{protocol::backend::ProtocolBackend, store::SessionStore},
     i18n, i18n_f,
     session::avatar,
-    state::{ChatMessage, HistoryAnchor, Media, MessageStatus},
+    state::{ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus},
     utils::{bare_jid, is_broadcast_jid, is_group_jid, is_lid_jid, is_phone_jid},
 };
 
@@ -288,6 +288,7 @@ struct HistoryQueue {
 #[derive(Debug, Clone)]
 pub struct SyncedMessage {
     pub id: String,
+    pub quote: Option<ChatQuote>,
     pub status: MessageStatus,
     pub content: Option<String>,
     pub outgoing: bool,
@@ -313,6 +314,18 @@ pub struct ChatsSyncedEntry {
     pub last_message_time: Option<u64>,
 }
 
+fn synced_status(web: &WebMessageInfo, outgoing: bool) -> MessageStatus {
+    match web.status {
+        Some(Status::SERVER_ACK) => MessageStatus::Sent,
+        Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
+        Some(Status::READ) => MessageStatus::Read,
+        Some(Status::PLAYED) => MessageStatus::Played,
+        Some(Status::ERROR) => MessageStatus::Failed,
+        _ if outgoing => MessageStatus::Sent,
+        _ => MessageStatus::Delivered,
+    }
+}
+
 fn extract_synced_messages(
     conv: &Conversation,
     chat_jid: &str,
@@ -332,15 +345,7 @@ fn extract_synced_messages(
                 .unwrap_or_else(|| chat_jid.to_string());
             let outgoing = web_msg.key.from_me.unwrap_or(false);
 
-            let status = match web_msg.status {
-                Some(Status::SERVER_ACK) => MessageStatus::Sent,
-                Some(Status::DELIVERY_ACK) => MessageStatus::Delivered,
-                Some(Status::READ) => MessageStatus::Read,
-                Some(Status::PLAYED) => MessageStatus::Played,
-                Some(Status::ERROR) => MessageStatus::Failed,
-                _ if outgoing => MessageStatus::Sent,
-                _ => MessageStatus::Delivered,
-            };
+            let status = synced_status(web_msg, outgoing);
             let timestamp = web_msg.message_timestamp.unwrap_or_else(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -359,9 +364,11 @@ fn extract_synced_messages(
                         .and_then(|e| e.text.clone().filter(|t| !t.is_empty()))
                 })
                 .or_else(|| media.as_ref().and_then(|m| m.caption.clone()));
+            let quote = ChatMessage::wire_quote(msg);
 
             synced_messages.push(SyncedMessage {
                 id: msg_id,
+                quote,
                 status,
                 content,
                 outgoing,

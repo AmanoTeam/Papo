@@ -1,5 +1,5 @@
 use adw::prelude::*;
-use gtk::{gdk, glib, pango};
+use gtk::{gdk, gio, glib, pango};
 use jiff::{civil::Date, tz::TimeZone};
 use relm4::{RelmWidgetExt, gtk, typed_view::list::RelmListItem};
 
@@ -8,7 +8,7 @@ use crate::{
     i18n,
     session::avatar,
     state::{ChatMessage, MessageStatus},
-    utils::{bare_jid, format_date_label, is_group_jid},
+    utils::{bare_jid, format_date_label, is_group_jid, truncate_lines},
     widgets::{MessageTail, TailDirection},
 };
 
@@ -40,17 +40,58 @@ pub struct ChatRowWidgets {
     message_box: gtk::Box,
     status_icon: gtk::Image,
     sender_label: gtk::Label,
+    quote_box: gtk::Box,
+    quote_sender: gtk::Label,
+    quote_body: gtk::Label,
     content_label: gtk::Label,
     divider_label: gtk::Label,
     service_label: gtk::Label,
+    context_popover: gtk::PopoverMenu,
     separator_label: gtk::Label,
     timestamp_label: gtk::Label,
     divider_separator: gtk::Separator,
 }
 
 impl ChatRowWidgets {
-    pub(crate) fn set_input(&mut self, input: relm4::Sender<super::ChatViewInput>) {
-        self.input = Some(input);
+    pub(crate) fn set_input(&mut self, input: &relm4::Sender<ChatViewInput>) {
+        self.input = Some(input.clone());
+
+        let click = gtk::GestureClick::new();
+        let quote_box = self.quote_box.clone();
+        let input_clone = input.clone();
+        click.connect_pressed(move |_, _, _, _| {
+            let stanza = quote_box.widget_name();
+            if !stanza.is_empty() {
+                let _ = input_clone.send(ChatViewInput::QuoteActivated {
+                    stanza_id: stanza.to_string(),
+                });
+            }
+        });
+        self.quote_box.add_controller(click);
+
+        // Context-menu popover, parented once to the bubble.
+        if self.context_popover.parent().is_none() {
+            self.context_popover.set_parent(&self.bubble_box);
+            self.context_popover.set_has_arrow(false);
+        }
+    }
+
+    /// Attaches the row-wide right-click context-menu gesture; called
+    /// once during row setup when the root container exists.
+    pub(crate) fn add_context_gesture(&self, root: &gtk::Box) {
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(gdk::BUTTON_SECONDARY);
+
+        let popover = self.context_popover.clone();
+        right_click.connect_pressed(move |_, _, _, _| {
+            if popover
+                .menu_model()
+                .is_some_and(|model| model.n_items() > 0)
+            {
+                popover.popup();
+            }
+        });
+        root.add_controller(right_click);
     }
 }
 
@@ -126,6 +167,67 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
     }
 }
 
+/// Hides every row variant and resets per-bind state before showing
+/// the active one.
+fn hide_variants(widgets: &ChatRowWidgets, root: &gtk::Box) {
+    widgets.separator_label.set_visible(false);
+    widgets.divider_label.set_visible(false);
+    widgets.divider_separator.set_visible(false);
+    widgets.service_label.set_visible(false);
+    widgets.message_box.set_visible(false);
+    widgets.quote_box.set_visible(false);
+
+    // Message-only: keeps recycled rows from opening a stale menu.
+    widgets
+        .context_popover
+        .set_menu_model(Some(&gio::Menu::new()));
+
+    root.remove_css_class("highlight");
+    root.remove_css_class("unread-row");
+    root.remove_css_class("unread-first");
+    root.remove_css_class("unread-last");
+    root.set_margin_top(0);
+}
+
+fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool) {
+    let Some(quote) = &msg.quote else {
+        widgets.quote_box.set_widget_name("");
+        return;
+    };
+
+    widgets.quote_box.set_visible(true);
+    widgets
+        .quote_box
+        .set_margin_top(i32::from(sender_visible) * 3);
+    widgets
+        .quote_box
+        .set_widget_name(quote.stanza_id.as_deref().unwrap_or_default());
+
+    if msg.outgoing {
+        widgets.quote_box.add_css_class("outgoing");
+        widgets.quote_box.remove_css_class("incoming");
+    } else {
+        widgets.quote_box.remove_css_class("outgoing");
+        widgets.quote_box.add_css_class("incoming");
+    }
+
+    if let Some(name) = quote.sender_name.as_deref().filter(|name| !name.is_empty()) {
+        widgets.quote_sender.set_label(name.trim_start_matches('~'));
+        widgets.quote_sender.set_visible(true);
+    } else if let Some(participant) = &quote.participant {
+        widgets.quote_sender.set_label(participant);
+        widgets.quote_sender.set_visible(true);
+    } else {
+        widgets.quote_sender.set_visible(false);
+    }
+
+    // Long quotes are truncated in code: wrapping labels ignore
+    // ellipsization, so the cap must be part of the string itself.
+    widgets
+        .quote_body
+        .set_label(&truncate_lines(quote.text().unwrap_or_default(), 5, 85));
+}
+
 fn bind_content_label(widgets: &ChatRowWidgets, msg: &ChatMessage) {
     let Some(media) = &msg.media else {
         widgets.content_label.set_label(&msg.content);
@@ -196,6 +298,7 @@ impl RelmListItem for ChatRow {
         // Root container stacks all row variants vertically.
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .css_classes(["message-row"])
             .build();
 
         // Date separator (e.g. "Today").
@@ -241,6 +344,7 @@ impl RelmListItem for ChatRow {
             .spacing(0)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        root.append(&message_box);
 
         let avatar = adw::Avatar::builder()
             .size(32)
@@ -251,15 +355,17 @@ impl RelmListItem for ChatRow {
 
         let avatar_slot = gtk::Box::builder().width_request(32).build();
         avatar_slot.append(&avatar);
+        message_box.append(&avatar_slot);
 
         let tail_left = new_tail(TailDirection::Left, "incoming");
-        let tail_right = new_tail(TailDirection::Right, "outgoing");
+        message_box.append(&tail_left);
 
         let bubble_box = gtk::Box::builder()
             .spacing(2)
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["message-bubble", "card"])
             .build();
+        message_box.append(&bubble_box);
 
         let sender_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -269,10 +375,53 @@ impl RelmListItem for ChatRow {
             .build();
         bubble_box.append(&sender_label);
 
+        let quote_box = gtk::Box::builder()
+            .spacing(0)
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(["quote-box"])
+            .visible(false)
+            .build();
+        bubble_box.append(&quote_box);
+
+        let quote_bar = gtk::Box::builder()
+            .width_request(3)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Fill)
+            .css_classes(["quote-bar"])
+            .build();
+        quote_box.append(&quote_bar);
+
+        let quote_stack = gtk::Box::builder()
+            .valign(gtk::Align::Center)
+            .spacing(1)
+            .orientation(gtk::Orientation::Vertical)
+            .margin_start(6)
+            .margin_end(4)
+            .build();
+        quote_box.append(&quote_stack);
+
+        let quote_sender = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .css_classes(["quote-sender"])
+            .ellipsize(pango::EllipsizeMode::End)
+            .visible(false)
+            .build();
+        quote_stack.append(&quote_sender);
+        let quote_body = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .css_classes(["quote-text"])
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .ellipsize(pango::EllipsizeMode::End)
+            .build();
+        quote_stack.append(&quote_body);
+
         let content_box = gtk::Box::builder()
             .spacing(12)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        bubble_box.append(&content_box);
 
         let content_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -295,6 +444,7 @@ impl RelmListItem for ChatRow {
             .spacing(4)
             .orientation(gtk::Orientation::Horizontal)
             .build();
+        content_box.append(&time_status_box);
 
         let timestamp_label = gtk::Label::builder()
             .css_classes(["dimmed", "caption", "numeric"])
@@ -307,13 +457,8 @@ impl RelmListItem for ChatRow {
             .build();
         time_status_box.append(&status_icon);
 
-        content_box.append(&time_status_box);
-        bubble_box.append(&content_box);
-        message_box.append(&avatar_slot);
-        message_box.append(&tail_left);
-        message_box.append(&bubble_box);
+        let tail_right = new_tail(TailDirection::Right, "outgoing");
         message_box.append(&tail_right);
-        root.append(&message_box);
 
         let widgets = ChatRowWidgets {
             input: None,
@@ -325,29 +470,28 @@ impl RelmListItem for ChatRow {
             message_box,
             status_icon,
             sender_label,
+            quote_box,
+            quote_sender,
+            quote_body,
             content_label,
             divider_label,
             service_label,
+            context_popover: gtk::PopoverMenu::from_model(Some(&gio::Menu::new())),
             separator_label,
             timestamp_label,
             divider_separator,
         };
+        widgets.context_popover.add_css_class("context-menu");
+
+        // The context menu opens from anywhere on the row line.
+        widgets.add_context_gesture(&root);
 
         (root, widgets)
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
         // Hide all variants first, then show the active one.
-        widgets.separator_label.set_visible(false);
-        widgets.divider_label.set_visible(false);
-        widgets.divider_separator.set_visible(false);
-        widgets.service_label.set_visible(false);
-        widgets.message_box.set_visible(false);
-
-        root.remove_css_class("unread-row");
-        root.remove_css_class("unread-first");
-        root.remove_css_class("unread-last");
-        root.set_margin_top(0);
+        hide_variants(widgets, root);
 
         match self {
             Self::DateSeparator(date) => {
@@ -381,7 +525,32 @@ impl RelmListItem for ChatRow {
             } => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
+
+                bind_quote(
+                    widgets,
+                    msg,
+                    *first && msg.sender_name.is_some() && !msg.outgoing,
+                );
                 bind_content_label(widgets, msg);
+
+                widgets.context_popover.set_position(if msg.outgoing {
+                    gtk::PositionType::Left
+                } else {
+                    gtk::PositionType::Right
+                });
+
+                // The same menu drives both the native text menu and
+                // the bubble popover: win.reply with this row's id.
+                let menu = gio::Menu::new();
+                widgets.content_label.set_extra_menu(Some(&menu));
+                widgets.context_popover.set_menu_model(Some(&menu));
+
+                let item = gio::MenuItem::new(Some(&i18n!("Reply")), Some("win.reply"));
+                item.set_action_and_target_value(
+                    Some("win.reply"),
+                    Some(&msg.server_id.to_variant()),
+                );
+                menu.append_item(&item);
 
                 // Convert UTC timestamp to local time for display
                 let local_time = msg.timestamp.to_zoned(TimeZone::system());

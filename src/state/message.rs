@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use uuid::Uuid;
 use whatsapp_rust::{types::presence::ReceiptType, waproto::whatsapp as wa};
 
-use crate::{db::store::SessionStore, state::Media};
+use crate::{db::store::SessionStore, i18n, state::Media, utils::bare_jid};
 
 /// Maximum number of unique emoji reactions per message to prevent spam.
 const MAX_REACTIONS_PER_MESSAGE: usize = 50;
@@ -11,6 +11,8 @@ const MAX_REACTIONS_PER_MESSAGE: usize = 50;
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
     pub media: Option<Media>,
+    /// The reply context, if this message quotes another.
+    pub quote: Option<ChatQuote>,
     pub status: MessageStatus,
     pub content: String,
     pub chat_jid: String,
@@ -36,18 +38,120 @@ impl ChatMessage {
     pub async fn save_or_ignore(&self, store: &SessionStore) -> Result<bool, toasty::Error> {
         store.save_synced_message(&self.chat_jid, self).await
     }
+
+    /// Decodes the reply context from the wire: `contextInfo` appears
+    /// inside per-type messages rather than the shared envelope, so
+    /// every carrier we render replies on is checked.
+    pub(crate) fn wire_quote(message: &wa::Message) -> Option<ChatQuote> {
+        let context_info = message
+            .extended_text_message
+            .as_option()
+            .and_then(|ext| ext.context_info.as_option())
+            .or_else(|| {
+                message
+                    .image_message
+                    .as_option()
+                    .and_then(|img| img.context_info.as_option())
+            })
+            .or_else(|| {
+                message
+                    .video_message
+                    .as_option()
+                    .and_then(|video| video.context_info.as_option())
+            })
+            .or_else(|| {
+                message
+                    .audio_message
+                    .as_option()
+                    .and_then(|audio| audio.context_info.as_option())
+            })
+            .or_else(|| {
+                message
+                    .document_message
+                    .as_option()
+                    .and_then(|doc| doc.context_info.as_option())
+            })
+            .or_else(|| {
+                message
+                    .sticker_message
+                    .as_option()
+                    .and_then(|sticker| sticker.context_info.as_option())
+            })?;
+        let quoted = context_info.quoted_message.as_option()?;
+
+        let body = quoted
+            .conversation
+            .clone()
+            .or_else(|| {
+                quoted
+                    .extended_text_message
+                    .as_option()
+                    .and_then(|ext| ext.text.clone())
+            })
+            .filter(|text| !text.is_empty());
+        let media = (body.is_none()).then(|| {
+            if quoted.image_message.is_set() {
+                i18n!("Photo")
+            } else if quoted.video_message.is_set() {
+                i18n!("Video")
+            } else if quoted.audio_message.is_set() {
+                i18n!("Voice message")
+            } else if quoted.document_message.is_set() {
+                i18n!("Document")
+            } else if quoted.sticker_message.is_set() {
+                i18n!("Sticker")
+            } else {
+                i18n!("Message")
+            }
+        });
+        let participant = context_info
+            .participant
+            .as_deref()
+            .map(bare_jid)
+            .filter(|participant| !participant.is_empty());
+
+        Some(ChatQuote {
+            body,
+            media,
+            stanza_id: context_info.stanza_id.clone(),
+            participant,
+            sender_name: None,
+        })
+    }
 }
 
 impl From<ChatMessage> for wa::Message {
     fn from(value: ChatMessage) -> Self {
-        let conversation = if value.content.is_empty() {
+        let content = if value.content.is_empty() {
             None
         } else {
             Some(value.content)
         };
 
+        if let Some(quote) = value.quote {
+            return Self {
+                extended_text_message: wa::message::ExtendedTextMessage {
+                    text: content,
+                    context_info: wa::ContextInfo {
+                        stanza_id: quote.stanza_id,
+                        participant: quote.participant,
+                        quoted_message: Self {
+                            conversation: quote.body.filter(|body| !body.is_empty()),
+                            ..Default::default()
+                        }
+                        .into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            };
+        }
+
         Self {
-            conversation,
+            conversation: content,
             ..Default::default()
         }
     }
@@ -56,6 +160,28 @@ impl From<ChatMessage> for wa::Message {
 impl From<&ChatMessage> for wa::Message {
     fn from(value: &ChatMessage) -> Self {
         value.to_owned().into()
+    }
+}
+
+/// The quoted context of a reply, decoded from the wire. The stanza id
+/// and author survive forever.
+#[derive(Clone, Debug)]
+pub struct ChatQuote {
+    pub body: Option<String>,
+    pub media: Option<String>,
+    pub stanza_id: Option<String>,
+    pub participant: Option<String>,
+    pub sender_name: Option<String>,
+}
+
+impl ChatQuote {
+    /// Display text for the snippet: the quoted body, else the media
+    /// type label.
+    pub fn text(&self) -> Option<&str> {
+        self.body
+            .as_deref()
+            .filter(|body| !body.is_empty())
+            .or(self.media.as_deref())
     }
 }
 

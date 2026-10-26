@@ -1,7 +1,8 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt,
+    rc::Rc,
     time::Duration,
 };
 
@@ -271,7 +272,10 @@ impl TimelineModel {
 /// code behind [`RelmListItem`]. Mirrors the widget-stash pattern of
 /// `relm4`'s own typed list factory. The input channel lets row binds
 /// ask the component for lazy work such as sender avatar fetches.
-fn build_row_factory(input: Option<relm4::Sender<ChatViewInput>>) -> gtk::SignalListItemFactory {
+fn build_row_factory(
+    input: Option<relm4::Sender<ChatViewInput>>,
+    anchors: Rc<RefCell<HashMap<String, glib::WeakRef<gtk::Widget>>>>,
+) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
     factory.connect_setup(move |_, list_item| {
@@ -281,7 +285,7 @@ fn build_row_factory(input: Option<relm4::Sender<ChatViewInput>>) -> gtk::Signal
 
         let (root, mut widgets) = <ChatRow as RelmListItem>::setup(list_item);
         if let Some(input) = &input {
-            widgets.set_input(input.clone());
+            widgets.set_input(input);
         }
 
         // SAFETY: the widgets live as long as `root`, which the list
@@ -291,7 +295,7 @@ fn build_row_factory(input: Option<relm4::Sender<ChatViewInput>>) -> gtk::Signal
         list_item.set_child(Some(&root));
     });
 
-    factory.connect_bind(|_, list_item| {
+    factory.connect_bind(move |_, list_item| {
         let list_item = list_item
             .downcast_ref::<gtk::ListItem>()
             .expect("Needs to be ListItem");
@@ -315,6 +319,15 @@ fn build_row_factory(input: Option<relm4::Sender<ChatViewInput>>) -> gtk::Signal
             unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
                 .expect("row widgets stashed in setup");
         row.bind(&mut widgets, &mut root);
+
+        if let ChatRow::Message { message, .. } = &*row {
+            let anchor = glib::WeakRef::new();
+            anchor.set(Some(root.upcast_ref::<gtk::Widget>()));
+            anchors
+                .borrow_mut()
+                .insert(message.server_id.clone(), anchor);
+        }
+
         unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
     });
 
@@ -400,6 +413,7 @@ pub(crate) struct ChatHistory {
     is_group: bool,
     has_newer: bool,
     has_older: bool,
+    quote_anchors: Rc<RefCell<HashMap<String, glib::WeakRef<gtk::Widget>>>>,
     identity_lid_to_pn: HashMap<String, String>,
     oldest_loaded_timestamp: Option<Timestamp>,
     newest_loaded_timestamp: Option<Timestamp>,
@@ -417,7 +431,11 @@ impl ChatHistory {
     pub(crate) fn new(input: Option<relm4::Sender<ChatViewInput>>) -> Self {
         let timeline = TimelineModel::new();
         let selection = gtk::NoSelection::new(Some(timeline.clone()));
-        let view = gtk::ListView::new(Some(selection), Some(build_row_factory(input)));
+        let anchors = Rc::new(RefCell::new(HashMap::new()));
+        let view = gtk::ListView::new(
+            Some(selection),
+            Some(build_row_factory(input, anchors.clone())),
+        );
         setup_day_headers(&view, &timeline);
 
         Self {
@@ -426,6 +444,7 @@ impl ChatHistory {
             is_group: false,
             has_newer: false,
             has_older: false,
+            quote_anchors: anchors,
             identity_lid_to_pn: HashMap::new(),
             oldest_loaded_timestamp: None,
             newest_loaded_timestamp: None,
@@ -457,6 +476,127 @@ impl ChatHistory {
     /// as the same sender. Cleared on reset like every other cursor.
     pub(crate) fn set_identities(&mut self, identities: HashMap<String, String>) {
         self.identity_lid_to_pn = identities;
+    }
+
+    /// The row index holding the message with this wire id.
+    pub(crate) fn index_by_stanza(&self, stanza: &str) -> Option<u32> {
+        for index in 0..self.len() {
+            let Some(row) = self.get_row(index) else {
+                continue;
+            };
+
+            if let ChatRow::Message { message, .. } = row
+                && message.server_id == stanza
+            {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
+    /// Toggles the quoted-row highlight. The class goes straight onto
+    /// the row's widget — a model replace would re-anchor the view and
+    /// drag the scroll position back, so the model stays untouched.
+    pub(crate) fn set_row_highlight(&self, stanza: &str, on: bool) {
+        let weak = self.quote_anchors.borrow().get(stanza).cloned();
+        let Some(root) = weak.and_then(|anchor| anchor.upgrade()) else {
+            self.quote_anchors.borrow_mut().remove(stanza);
+            return;
+        };
+
+        if on {
+            root.add_css_class("highlight");
+        } else {
+            root.remove_css_class("highlight");
+        }
+    }
+
+    /// Reveals the row with the platform reveal scroll and glides the
+    /// viewport over the segment it traveled, with no intermediate
+    /// frame painted at the landing.
+    pub(crate) fn scroll_to_row(&self, index: u32) {
+        let Some(scroll) = self
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+        else {
+            self.view
+                .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
+            return;
+        };
+
+        // The instant reveal computes the landing spot; the animation
+        // just replays the segment from where the reader was. the
+        // settled adjustment value is the target.
+        let adj = scroll.vadjustment();
+        let start = adj.value();
+        self.view
+            .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
+
+        // Resetting to the start and gliding must happen while the
+        // layout holds the reveal, before it paints; doing it on a
+        // timer lets the landing frame flash first.
+        let glide = move |adj: gtk::Adjustment| {
+            let target = adj.value().clamp(
+                adj.lower(),
+                (adj.upper() - adj.page_size()).max(adj.lower()),
+            );
+
+            if (target - start).abs() < 1.0 {
+                return;
+            }
+
+            adj.set_value(start);
+            let value_target = adw::CallbackAnimationTarget::new(move |value| {
+                adj.set_value(value);
+            });
+
+            let animation = adw::TimedAnimation::new(&scroll, start, target, 250, value_target);
+            animation.set_easing(adw::Easing::EaseOutCubic);
+            animation.play();
+        };
+
+        if (adj.value() - start).abs() > 0.5 {
+            // The reveal applied synchronously; animate from here
+            // before the frame paints.
+            glide(adj);
+            return;
+        }
+
+        // The reveal lands with the layout pass: catch its adjustment
+        // change mid-layout, reset to the start before the paint, and
+        // glide from there. The trigger is one-shot and expires, so a
+        // reveal that never moves the viewport leaves nothing armed
+        // against the reader's next manual scroll.
+        let armed = Rc::new(Cell::new(true));
+        let trigger = Rc::new(Cell::new(None::<glib::SignalHandlerId>));
+        let armed_trigger = armed.clone();
+
+        let id_ref = trigger.clone();
+        let trigger_adj = adj.clone();
+        let conn = adj.connect_value_changed(move |adj| {
+            if !armed_trigger.replace(false) {
+                return;
+            }
+
+            if let Some(id) = id_ref.take() {
+                adj.disconnect(id);
+            }
+
+            glide(trigger_adj.clone());
+        });
+        trigger.set(Some(conn));
+
+        let expiry_adj = adj;
+        let expiry_id = trigger;
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            if armed.replace(false)
+                && let Some(id) = expiry_id.take()
+            {
+                expiry_adj.disconnect(id);
+            }
+        });
     }
 
     /// Live-updates the sender name of rows whose sender matches any
@@ -523,6 +663,7 @@ impl ChatHistory {
         self.identity_lid_to_pn = HashMap::new();
         self.oldest_loaded_timestamp = None;
         self.newest_loaded_timestamp = None;
+        self.quote_anchors.borrow_mut().clear();
     }
 
     pub(crate) fn has_older(&self) -> bool {
@@ -612,6 +753,7 @@ impl ChatHistory {
                     first,
                     unread: in_unread,
                     message: msg.clone(),
+
                     last_of_segment,
                     first_of_segment,
                 },
@@ -665,6 +807,7 @@ impl ChatHistory {
                     first,
                     unread: prev_unread,
                     message: prev,
+
                     last_of_segment: prev_last_of_segment,
                     first_of_segment: prev_first_of_segment,
                 }),
@@ -676,6 +819,7 @@ impl ChatHistory {
                 first,
                 unread: prev_unread,
                 message: prev,
+
                 last_of_segment: prev_last_of_segment,
                 first_of_segment: prev_first_of_segment,
             };
@@ -692,6 +836,7 @@ impl ChatHistory {
                 first,
                 unread,
                 message,
+
                 last_of_segment: in_unread,
                 first_of_segment,
             },
@@ -753,6 +898,7 @@ impl ChatHistory {
                     first,
                     unread: false,
                     message: msg.clone(),
+
                     last_of_segment: false,
                     first_of_segment: false,
                 },
@@ -829,6 +975,7 @@ impl ChatHistory {
                     first,
                     unread: in_unread,
                     message: msg.clone(),
+
                     last_of_segment,
                     first_of_segment,
                 },
@@ -851,6 +998,7 @@ impl ChatHistory {
                     first,
                     unread: prev_unread,
                     message: prev,
+
                     last_of_segment: prev_last_of_segment,
                     first_of_segment: prev_first_of_segment,
                 }),
@@ -861,6 +1009,7 @@ impl ChatHistory {
                 first,
                 unread: prev_unread,
                 message: prev.clone(),
+
                 last_of_segment: prev_last_of_segment,
                 first_of_segment: prev_first_of_segment,
             };
@@ -944,7 +1093,7 @@ impl ChatHistory {
                 };
                 last_value = value;
 
-                if stable || attempts >= 15 {
+                if stable || attempts >= 40 {
                     view.set_opacity(1.0);
                     glib::ControlFlow::Break
                 } else {
@@ -959,7 +1108,7 @@ impl ChatHistory {
                 };
                 last_upper = upper;
 
-                if (settled && stable) || attempts >= 15 {
+                if (settled && stable) || attempts >= 40 {
                     scroll_to_row(&view, target);
                     pivoted = true;
                     attempts = 0;
@@ -996,6 +1145,15 @@ impl ChatHistory {
         self.view
             .vadjustment()
             .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
+    }
+
+    /// Whether the viewport is truly touching the bottom edge, unlike
+    /// the generous anchor-band check used for streaming which spans
+    /// roughly two rows.
+    pub(crate) fn truly_at_bottom(&self) -> bool {
+        self.view
+            .vadjustment()
+            .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 2.0)
     }
 
     /// Scroll the list view to the bottom (last row).
@@ -1037,7 +1195,7 @@ impl ChatHistory {
             };
             last_upper = upper;
 
-            if (settled && stable) || attempts >= 15 {
+            if (settled && stable) || attempts >= 40 {
                 view.set_opacity(1.0);
 
                 if let Some(on_settled) = on_settled.take() {
@@ -1076,6 +1234,7 @@ impl ChatHistory {
             first,
             unread: true,
             message,
+
             last_of_segment: false,
             first_of_segment,
         };
@@ -1111,6 +1270,7 @@ mod timeline_tests {
         (0..count)
             .map(|i| ChatMessage {
                 media: None,
+                quote: None,
                 status: if unread && i < 6 && i % 4 == 1 {
                     MessageStatus::Delivered
                 } else {

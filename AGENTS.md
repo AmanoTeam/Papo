@@ -97,13 +97,6 @@ The project enforces **extremely strict** linting. Code will fail CI if these ar
 - **`status@broadcast` is not a chat**: it is suppressed at creation, at ingest, and in every fetch arm (`utils::is_status_broadcast`). A future status feed is the only surface for it.
 - **No queue starvation**: metadata/participant learning, avatar fetches, and bulk saves run through background spawns with collected follow-ups (see `PushNamesLearned`, `PopulateAll`/`ApplyRows`, the avatar decode semaphore). Handler arms must return within a few ms.
 
-## Reference Projects
-
-Never re-clone these — all are checked out under `~/Projects/`:
-
-- **GTK/UX questions**: `~/Projects/flare` first, `~/Projects/fractal` second (both gtk4-rust, GNOME canonical patterns). Titles follow the flare recipe (single-line, ellipsize end, `width_chars` floor, never wrap).
-- **WhatsApp protocol/design questions**: `~/Projects/whatsapp-rust-client` (oxidezap's own GUI client — the most faithful reference for history-sync semantics), `~/Projects/zapfast`, plus `~/Projects/whatsmeow`, `~/Projects/waepic`, `~/Projects/grammers`.
-
 ## Git & Commit Protocol
 
 - Commits: **English, semantic** (`fix(scope): …`, `feat(scope): …`, `chore: …`); one theme per commit; never mix unrelated hunks.

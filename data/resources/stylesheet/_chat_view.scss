@@ -31,6 +31,22 @@
   }
 }
 
+.sync-banner {
+  background-color: color-mix(in srgb,
+      var(--window-bg-color) 80%,
+      var(--card-bg-color) 20%);
+
+  progressbar {
+    trough {
+      min-height: 2px;
+    }
+
+    progress {
+      min-height: 2px;
+    }
+  }
+}
+
 .chat-history {
   background: none;
   padding-bottom: 0;
@@ -63,7 +79,6 @@
   &.loading-toast {
     background-color: var(--popover-bg-color);
   }
-
 }
 
 .unread-row {
@@ -95,6 +110,16 @@
   background-color: color-mix(in srgb,
       var(--accent-color) 20%,
       transparent);
+}
+
+.message-row {
+  transition: background-color 400ms ease;
+  background-color: transparent;
+
+  &.highlight {
+    border-radius: 3px;
+    background-color: color-mix(in srgb, var(--accent-bg-color) 18%, transparent);
+  }
 }
 
 .message-bubble {
@@ -129,13 +154,37 @@
   }
 }
 
-.message-tail {
+.quote-box {
+  padding: 2px 4px 2px 0;
+  margin-top: -3px;
+  margin-left: -7px;
+  margin-right: -7px;
+  border-radius: 8px;
+
+  .quote-bar {
+    border-radius: 10px 0 0 10px;
+    background-color: var(--accent-bg-color);
+  }
+
+  .quote-sender {
+    font-size: 1em;
+    font-weight: bold;
+  }
+
+  .quote-text {
+    font-weight: normal;
+  }
+
   &.incoming {
-    color: var(--card-bg-color);
+    background-color: color-mix(in srgb, var(--card-bg-color) 70%, var(--popover-bg-color));
   }
 
   &.outgoing {
-    color: var(--accent-bg-color);
+    background-color: color-mix(in srgb, var(--accent-bg-color) 75%, var(--popover-bg-color));
+
+    .quote-bar {
+      background-color: var(--accent-fg-color);
+    }
   }
 }
 
@@ -164,27 +213,25 @@
   }
 }
 
+.message-tail {
+  &.incoming {
+    color: var(--card-bg-color);
+  }
+
+  &.outgoing {
+    color: var(--accent-bg-color);
+  }
+}
+
+.context-menu {
+  margin: 6px;
+}
+
 .typing-avatars {
   .avatar {
     padding: 2px;
     margin-right: -8px;
     border-radius: 14px;
     background-color: var(--window-bg-color);
-  }
-}
-
-.sync-banner {
-  background-color: color-mix(in srgb,
-      var(--window-bg-color) 80%,
-      var(--card-bg-color) 20%);
-
-  progressbar {
-    trough {
-      min-height: 2px;
-    }
-
-    progress {
-      min-height: 2px;
-    }
   }
 }
