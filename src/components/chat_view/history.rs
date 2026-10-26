@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt,
     rc::Rc,
@@ -512,11 +512,91 @@ impl ChatHistory {
         }
     }
 
-    /// Reveals the row with the platform reveal scroll, which lands it
-    /// on a viewport edge.
+    /// Reveals the row with the platform reveal scroll and glides the
+    /// viewport over the segment it traveled, with no intermediate
+    /// frame painted at the landing.
     pub(crate) fn scroll_to_row(&self, index: u32) {
+        let Some(scroll) = self
+            .view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+        else {
+            self.view
+                .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
+            return;
+        };
+
+        // The instant reveal computes the landing spot; the animation
+        // just replays the segment from where the reader was. the
+        // settled adjustment value is the target.
+        let adj = scroll.vadjustment();
+        let start = adj.value();
         self.view
             .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
+
+        // Resetting to the start and gliding must happen while the
+        // layout holds the reveal, before it paints; doing it on a
+        // timer lets the landing frame flash first.
+        let glide = move |adj: gtk::Adjustment| {
+            let target = adj.value().clamp(
+                adj.lower(),
+                (adj.upper() - adj.page_size()).max(adj.lower()),
+            );
+
+            if (target - start).abs() < 1.0 {
+                return;
+            }
+
+            adj.set_value(start);
+            let value_target = adw::CallbackAnimationTarget::new(move |value| {
+                adj.set_value(value);
+            });
+
+            let animation = adw::TimedAnimation::new(&scroll, start, target, 250, value_target);
+            animation.set_easing(adw::Easing::EaseOutCubic);
+            animation.play();
+        };
+
+        if (adj.value() - start).abs() > 0.5 {
+            // The reveal applied synchronously; animate from here
+            // before the frame paints.
+            glide(adj);
+            return;
+        }
+
+        // The reveal lands with the layout pass: catch its adjustment
+        // change mid-layout, reset to the start before the paint, and
+        // glide from there. The trigger is one-shot and expires, so a
+        // reveal that never moves the viewport leaves nothing armed
+        // against the reader's next manual scroll.
+        let armed = Rc::new(Cell::new(true));
+        let trigger = Rc::new(Cell::new(None::<glib::SignalHandlerId>));
+        let armed_trigger = armed.clone();
+
+        let id_ref = trigger.clone();
+        let trigger_adj = adj.clone();
+        let conn = adj.connect_value_changed(move |adj| {
+            if !armed_trigger.replace(false) {
+                return;
+            }
+
+            if let Some(id) = id_ref.take() {
+                adj.disconnect(id);
+            }
+
+            glide(trigger_adj.clone());
+        });
+        trigger.set(Some(conn));
+
+        let expiry_adj = adj;
+        let expiry_id = trigger;
+        glib::timeout_add_local_once(Duration::from_millis(150), move || {
+            if armed.replace(false)
+                && let Some(id) = expiry_id.take()
+            {
+                expiry_adj.disconnect(id);
+            }
+        });
     }
 
     /// Live-updates the sender name of rows whose sender matches any
