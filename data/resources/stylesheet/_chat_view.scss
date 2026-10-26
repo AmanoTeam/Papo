@@ -97,6 +97,16 @@
       transparent);
 }
 
+.message-row {
+  transition: background-color 400ms ease;
+  background-color: transparent;
+
+  &.highlight {
+    border-radius: 3px;
+    background-color: color-mix(in srgb, var(--accent-bg-color) 18%, transparent);
+  }
+}
+
 .message-bubble {
   padding: 6px 10px;
   font-size: 0.85em;

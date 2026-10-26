@@ -52,8 +52,20 @@ pub struct ChatRowWidgets {
 }
 
 impl ChatRowWidgets {
-    pub(crate) fn set_input(&mut self, input: relm4::Sender<super::ChatViewInput>) {
-        self.input = Some(input);
+    pub(crate) fn set_input(&mut self, input: relm4::Sender<ChatViewInput>) {
+        self.input = Some(input.clone());
+
+        let click = gtk::GestureClick::new();
+        let quote_box = self.quote_box.clone();
+        click.connect_pressed(move |_, _, _, _| {
+            let stanza = quote_box.widget_name();
+            if !stanza.is_empty() {
+                let _ = input.send(ChatViewInput::QuoteActivated {
+                    stanza_id: stanza.to_string(),
+                });
+            }
+        });
+        self.quote_box.add_controller(click);
     }
 }
 
@@ -131,6 +143,7 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
 
 fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool) {
     let Some(quote) = &msg.quote else {
+        widgets.quote_box.set_widget_name("");
         return;
     };
 
@@ -138,6 +151,9 @@ fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool)
     widgets
         .quote_box
         .set_margin_top(i32::from(sender_visible) * 3);
+    widgets
+        .quote_box
+        .set_widget_name(quote.stanza_id.as_deref().unwrap_or_default());
 
     if msg.outgoing {
         widgets.quote_box.add_css_class("outgoing");
@@ -232,6 +248,7 @@ impl RelmListItem for ChatRow {
         // Root container stacks all row variants vertically.
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
+            .css_classes(["message-row"])
             .build();
 
         // Date separator (e.g. "Today").
@@ -427,6 +444,7 @@ impl RelmListItem for ChatRow {
         widgets.message_box.set_visible(false);
         widgets.quote_box.set_visible(false);
 
+        root.remove_css_class("highlight");
         root.remove_css_class("unread-row");
         root.remove_css_class("unread-first");
         root.remove_css_class("unread-last");
@@ -464,6 +482,7 @@ impl RelmListItem for ChatRow {
             } => {
                 widgets.message_box.set_visible(true);
                 widgets.message_box.set_focusable(false);
+
                 bind_quote(
                     widgets,
                     msg,

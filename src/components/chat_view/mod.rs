@@ -139,6 +139,13 @@ pub enum ChatViewInput {
         jid: String,
     },
 
+    QuoteActivated {
+        stanza_id: String,
+    },
+    QuoteHighlightExpired {
+        stanza_id: String,
+    },
+
     SyncProgress {
         active: bool,
         percent: Option<u32>,
@@ -858,6 +865,22 @@ impl AsyncComponent for ChatView {
                 if self.sender_avatar_requests.insert(bare.clone()) {
                     let _ = sender.output(ChatViewOutput::RequestSenderAvatar { jid: bare });
                 }
+            }
+
+            ChatViewInput::QuoteActivated { stanza_id } => {
+                self.history.set_row_highlight(&stanza_id, true);
+
+                if let Some(index) = self.history.index_by_stanza(&stanza_id) {
+                    self.history.scroll_to_row(index);
+                }
+
+                // The highlight fades after a few seconds.
+                glib::timeout_add_seconds_local_once(2, move || {
+                    sender.input(ChatViewInput::QuoteHighlightExpired { stanza_id });
+                });
+            }
+            ChatViewInput::QuoteHighlightExpired { stanza_id } => {
+                self.history.set_row_highlight(&stanza_id, false);
             }
 
             ChatViewInput::SyncProgress {
