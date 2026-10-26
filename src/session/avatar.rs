@@ -8,10 +8,11 @@
 //! changes. Decodes run in a glycin sandbox process, bounded by a
 //! global concurrency budget, an in-flight gate per file, and a
 //! backoff after failures — rebinding storms must not multiply
-//! sandbox processes.
+//! sandbox processes. Callers that find their file busy coalesce
+//! onto the in-flight decode instead of wasting the bind.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -27,7 +28,7 @@ use gtk::{
     glib,
 };
 use relm4::gtk;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 
 use crate::{CACHE_DIR, utils::bare_jid};
 
@@ -39,8 +40,8 @@ const AVATAR_MAX_EDGE: usize = 96;
 /// of them exhausts the process fd table.
 const AVATAR_MAX_CONCURRENT_DECODES: usize = 4;
 
-/// How long a failed decode suppresses retries for its file. Without
-/// this.
+/// How long a failed decode suppresses retries for its file; without
+/// it, a corrupt file would pay a sandbox spawn on every bind.
 const AVATAR_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Directory backing store for avatars downloaded from `WhatsApp`.
@@ -132,7 +133,7 @@ fn texture_cache() -> &'static Mutex<TextureCache> {
 
 #[derive(Default)]
 struct LoadGate {
-    in_flight: HashSet<PathBuf>,
+    in_flight: HashMap<PathBuf, watch::Receiver<()>>,
     failed_at: HashMap<PathBuf, Instant>,
 }
 
@@ -166,66 +167,95 @@ pub fn texture<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
 /// changes, so repeated chat list updates only bump the reference
 /// count.
 ///
-/// Loads are gated: one in-flight load per file, a small global
-/// concurrency budget, and a backoff after failures — a flurry of
-/// rebinds must not multiply sandbox decodes.
+/// Loads are bounded: one decode per file, a small global concurrency
+/// budget, and a backoff after failures — a flurry of rebinds must not
+/// multiply sandbox decodes. Callers that find their file busy coalesce
+/// onto the in-flight decode instead of wasting the bind.
 pub async fn load<P: AsRef<Path>>(path: P) -> Option<gdk::Texture> {
     let path = path.as_ref().to_path_buf();
-    let mtime = fs::metadata(&path).ok()?.modified().ok()?;
 
-    {
-        let cache = texture_cache()
-            .lock()
-            .expect("avatar texture cache poisoned");
-        if let Some((cached_mtime, texture)) = cache.get(&path)
-            && *cached_mtime == mtime
+    loop {
+        let mtime = fs::metadata(&path).ok()?.modified().ok()?;
+
         {
-            return Some(texture.clone());
+            let cache = texture_cache()
+                .lock()
+                .expect("avatar texture cache poisoned");
+            if let Some((cached_mtime, texture)) = cache.get(&path)
+                && *cached_mtime == mtime
+            {
+                return Some(texture.clone());
+            }
         }
-    }
 
-    let busy = {
-        let mut gate = load_gate().lock().expect("avatar load gate poisoned");
-        let suppressed = gate.in_flight.contains(&path)
-            || gate
+        // `Ok` carries the leader's sender, kept alive until the decode
+        // result is booked; `Err` carries a subscription to wait on.
+        let leader = {
+            let mut gate = load_gate().lock().expect("avatar load gate poisoned");
+            let backed_off = gate
                 .failed_at
                 .get(&path)
                 .is_some_and(|at| at.elapsed() < AVATAR_FAILURE_BACKOFF);
-        if !suppressed {
-            gate.in_flight.insert(path.clone());
+            if backed_off {
+                tracing::trace!("Avatar load backing off: {}", path.display());
+                return None;
+            }
+
+            match gate.in_flight.get(&path) {
+                // The leader died mid-decode (a cancelled future): take
+                // over instead of waiting on a closed channel.
+                Some(rx) if rx.has_changed().is_err() => {
+                    let (tx, rx) = watch::channel(());
+                    gate.in_flight.insert(path.clone(), rx);
+
+                    Ok(tx)
+                }
+                Some(rx) => Err(rx.clone()),
+                None => {
+                    let (tx, rx) = watch::channel(());
+                    gate.in_flight.insert(path.clone(), rx);
+
+                    Ok(tx)
+                }
+            }
+        };
+
+        let _leader = match leader {
+            Ok(tx) => tx,
+            Err(mut rx) => {
+                // Coalesce on the in-flight decode: once it lands, the
+                // next pass finds the texture, the failure backoff, or
+                // a dead leader to replace.
+                let _ = rx.changed().await;
+                continue;
+            }
+        };
+
+        let texture = decode(&path).await;
+
+        if let Some(texture) = texture.clone() {
+            texture_cache()
+                .lock()
+                .expect("avatar texture cache poisoned")
+                .insert(path.clone(), (mtime, texture));
         }
 
-        suppressed
-    };
-    if busy {
-        tracing::trace!("Avatar load in flight or backing off: {}", path.display());
-        return None;
-    }
+        {
+            let mut gate = load_gate().lock().expect("avatar load gate poisoned");
+            gate.in_flight.remove(&path);
 
-    let texture = decode(&path).await;
-
-    {
-        let mut gate = load_gate().lock().expect("avatar load gate poisoned");
-        gate.in_flight.remove(&path);
-
-        match &texture {
-            Some(_) => {
-                gate.failed_at.remove(&path);
-            }
-            None => {
-                gate.failed_at.insert(path.clone(), Instant::now());
+            match &texture {
+                Some(_) => {
+                    gate.failed_at.remove(&path);
+                }
+                None => {
+                    gate.failed_at.insert(path.clone(), Instant::now());
+                }
             }
         }
-    }
 
-    if let Some(texture) = texture.clone() {
-        texture_cache()
-            .lock()
-            .expect("avatar texture cache poisoned")
-            .insert(path, (mtime, texture));
+        return texture;
     }
-
-    texture
 }
 
 /// Reads the file and decodes it inside the sandbox, bounded by the
