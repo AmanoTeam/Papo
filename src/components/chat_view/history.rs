@@ -1093,7 +1093,7 @@ impl ChatHistory {
                 };
                 last_value = value;
 
-                if stable || attempts >= 15 {
+                if stable || attempts >= 40 {
                     view.set_opacity(1.0);
                     glib::ControlFlow::Break
                 } else {
@@ -1108,7 +1108,7 @@ impl ChatHistory {
                 };
                 last_upper = upper;
 
-                if (settled && stable) || attempts >= 15 {
+                if (settled && stable) || attempts >= 40 {
                     scroll_to_row(&view, target);
                     pivoted = true;
                     attempts = 0;
@@ -1195,7 +1195,7 @@ impl ChatHistory {
             };
             last_upper = upper;
 
-            if (settled && stable) || attempts >= 15 {
+            if (settled && stable) || attempts >= 40 {
                 view.set_opacity(1.0);
 
                 if let Some(on_settled) = on_settled.take() {
