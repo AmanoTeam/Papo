@@ -1,5 +1,5 @@
 use adw::prelude::*;
-use gtk::{gdk, glib, pango};
+use gtk::{gdk, gio, glib, pango};
 use jiff::{civil::Date, tz::TimeZone};
 use relm4::{RelmWidgetExt, gtk, typed_view::list::RelmListItem};
 
@@ -46,26 +46,52 @@ pub struct ChatRowWidgets {
     content_label: gtk::Label,
     divider_label: gtk::Label,
     service_label: gtk::Label,
+    context_popover: gtk::PopoverMenu,
     separator_label: gtk::Label,
     timestamp_label: gtk::Label,
     divider_separator: gtk::Separator,
 }
 
 impl ChatRowWidgets {
-    pub(crate) fn set_input(&mut self, input: relm4::Sender<ChatViewInput>) {
+    pub(crate) fn set_input(&mut self, input: &relm4::Sender<ChatViewInput>) {
         self.input = Some(input.clone());
 
         let click = gtk::GestureClick::new();
         let quote_box = self.quote_box.clone();
+        let input_clone = input.clone();
         click.connect_pressed(move |_, _, _, _| {
             let stanza = quote_box.widget_name();
             if !stanza.is_empty() {
-                let _ = input.send(ChatViewInput::QuoteActivated {
+                let _ = input_clone.send(ChatViewInput::QuoteActivated {
                     stanza_id: stanza.to_string(),
                 });
             }
         });
         self.quote_box.add_controller(click);
+
+        // Context-menu popover, parented once to the bubble.
+        if self.context_popover.parent().is_none() {
+            self.context_popover.set_parent(&self.bubble_box);
+            self.context_popover.set_has_arrow(false);
+        }
+    }
+
+    /// Attaches the row-wide right-click context-menu gesture; called
+    /// once during row setup when the root container exists.
+    pub(crate) fn add_context_gesture(&self, root: &gtk::Box) {
+        let right_click = gtk::GestureClick::new();
+        right_click.set_button(gdk::BUTTON_SECONDARY);
+
+        let popover = self.context_popover.clone();
+        right_click.connect_pressed(move |_, _, _, _| {
+            if popover
+                .menu_model()
+                .is_some_and(|model| model.n_items() > 0)
+            {
+                popover.popup();
+            }
+        });
+        root.add_controller(right_click);
     }
 }
 
@@ -139,6 +165,28 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
         widgets.sender_label.set_label(name);
         widgets.sender_label.set_visible(true);
     }
+}
+
+/// Hides every row variant and resets per-bind state before showing
+/// the active one.
+fn hide_variants(widgets: &ChatRowWidgets, root: &gtk::Box) {
+    widgets.separator_label.set_visible(false);
+    widgets.divider_label.set_visible(false);
+    widgets.divider_separator.set_visible(false);
+    widgets.service_label.set_visible(false);
+    widgets.message_box.set_visible(false);
+    widgets.quote_box.set_visible(false);
+
+    // Message-only: keeps recycled rows from opening a stale menu.
+    widgets
+        .context_popover
+        .set_menu_model(Some(&gio::Menu::new()));
+
+    root.remove_css_class("highlight");
+    root.remove_css_class("unread-row");
+    root.remove_css_class("unread-first");
+    root.remove_css_class("unread-last");
+    root.set_margin_top(0);
 }
 
 fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool) {
@@ -427,28 +475,21 @@ impl RelmListItem for ChatRow {
             content_label,
             divider_label,
             service_label,
+            context_popover: gtk::PopoverMenu::from_model(Some(&gio::Menu::new())),
             separator_label,
             timestamp_label,
             divider_separator,
         };
+
+        // The context menu opens from anywhere on the row line.
+        widgets.add_context_gesture(&root);
 
         (root, widgets)
     }
 
     fn bind(&mut self, widgets: &mut Self::Widgets, root: &mut Self::Root) {
         // Hide all variants first, then show the active one.
-        widgets.separator_label.set_visible(false);
-        widgets.divider_label.set_visible(false);
-        widgets.divider_separator.set_visible(false);
-        widgets.service_label.set_visible(false);
-        widgets.message_box.set_visible(false);
-        widgets.quote_box.set_visible(false);
-
-        root.remove_css_class("highlight");
-        root.remove_css_class("unread-row");
-        root.remove_css_class("unread-first");
-        root.remove_css_class("unread-last");
-        root.set_margin_top(0);
+        hide_variants(widgets, root);
 
         match self {
             Self::DateSeparator(date) => {
@@ -489,6 +530,25 @@ impl RelmListItem for ChatRow {
                     *first && msg.sender_name.is_some() && !msg.outgoing,
                 );
                 bind_content_label(widgets, msg);
+
+                widgets.context_popover.set_position(if msg.outgoing {
+                    gtk::PositionType::Left
+                } else {
+                    gtk::PositionType::Right
+                });
+
+                // The same menu drives both the native text menu and
+                // the bubble popover: win.reply with this row's id.
+                let menu = gio::Menu::new();
+                widgets.content_label.set_extra_menu(Some(&menu));
+                widgets.context_popover.set_menu_model(Some(&menu));
+
+                let item = gio::MenuItem::new(Some(&i18n!("Reply")), Some("win.reply"));
+                item.set_action_and_target_value(
+                    Some("win.reply"),
+                    Some(&msg.server_id.to_variant()),
+                );
+                menu.append_item(&item);
 
                 // Convert UTC timestamp to local time for display
                 let local_time = msg.timestamp.to_zoned(TimeZone::system());

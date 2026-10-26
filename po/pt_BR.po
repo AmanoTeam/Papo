@@ -375,3 +375,7 @@ msgid "<b>{0}</b> member"
 msgid_plural "<b>{0}</b> members"
 msgstr[0] "<b>{0}</b> membro"
 msgstr[1] "<b>{0}</b> membros"
+
+#: src/components/chat_view/rows.rs
+msgid "Reply"
+msgstr "Responder"

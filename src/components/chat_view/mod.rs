@@ -20,7 +20,7 @@ use crate::{
     db::store::SessionStore,
     i18n, i18n_f, ni18n_f,
     session::avatar,
-    state::{Chat, ChatMessage, HistoryAnchor, MessageStatus, TypingSender},
+    state::{Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus, TypingSender},
     utils::{bare_jid, is_status_broadcast, re_resolve_senders},
     widgets::TypingDots,
 };
@@ -81,6 +81,7 @@ pub struct ChatViewState {
     is_at_top: bool,
     is_at_bottom: bool,
     unread_count: usize,
+    pending_quote: Option<ChatQuote>,
     typing_generation: u64,
 }
 
@@ -96,6 +97,7 @@ impl ChatViewState {
             is_at_top: false,
             is_at_bottom: true,
             unread_count: 0,
+            pending_quote: None,
             typing_generation: 0,
         }
     }
@@ -150,6 +152,11 @@ pub enum ChatViewInput {
         stanza_id: String,
     },
 
+    ReplyRequested {
+        server_id: String,
+    },
+    CancelPendingQuote,
+
     SyncProgress {
         active: bool,
         percent: Option<u32>,
@@ -172,6 +179,7 @@ pub enum ChatViewOutput {
 
     SendTextMessage {
         text: String,
+        quote: Option<ChatQuote>,
         recipient: String,
     },
 
@@ -435,7 +443,9 @@ impl AsyncComponent for ChatView {
 
                 gtk::Revealer {
                     #[watch]
-                    set_reveal_child: model.chat.is_some() && !model.state.typing.is_empty(),
+                    set_reveal_child: model.chat.is_some()
+                        && !model.state.typing.is_empty()
+                        && model.state.pending_quote.is_none(),
                     set_transition_type: gtk::RevealerTransitionType::SlideUp,
                     set_transition_duration: 250,
 
@@ -463,6 +473,57 @@ impl AsyncComponent for ChatView {
                             set_valign: gtk::Align::Center,
                             set_css_classes: &["dimmed"],
                             set_ellipsize: pango::EllipsizeMode::End,
+                        },
+                    },
+                },
+
+                gtk::Revealer {
+                    #[watch]
+                    set_reveal_child: model.state.pending_quote.is_some(),
+                    set_transition_type: gtk::RevealerTransitionType::SlideUp,
+                    set_transition_duration: 250,
+
+                    gtk::Box {
+                        set_spacing: 6,
+                        set_margin_start: 10,
+                        set_margin_end: 10,
+                        set_margin_top: 4,
+
+                        gtk::Box {
+                            set_valign: gtk::Align::Fill,
+                            set_css_classes: &["quote-bar"],
+                            set_width_request: 3,
+                        },
+
+                        gtk::Box {
+                            set_valign: gtk::Align::Center,
+                            set_hexpand: true,
+                            set_spacing: 1,
+                            set_orientation: gtk::Orientation::Vertical,
+
+                            gtk::Label {
+                                #[watch]
+                                set_label: model.pending_quote_sender().as_str(),
+                                set_halign: gtk::Align::Start,
+                                set_css_classes: &["quote-sender"],
+                                set_ellipsize: pango::EllipsizeMode::End,
+                            },
+
+                            gtk::Label {
+                                #[watch]
+                                set_label: model.pending_quote_preview().as_str(),
+                                set_halign: gtk::Align::Start,
+                                set_css_classes: &["quote-text", "dimmed"],
+                                set_ellipsize: pango::EllipsizeMode::End,
+                            },
+                        },
+
+                        gtk::Button {
+                            set_valign: gtk::Align::Center,
+                            set_icon_name: "x-symbolic",
+                            set_css_classes: &["flat", "circular"],
+
+                            connect_clicked => ChatViewInput::CancelPendingQuote,
                         },
                     },
                 },
@@ -649,6 +710,7 @@ impl AsyncComponent for ChatView {
                 self.state.is_at_top = false;
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
+                self.state.pending_quote = None;
                 self.state.typing_generation += 1;
 
                 self.history_fetch_at = None;
@@ -725,9 +787,11 @@ impl AsyncComponent for ChatView {
                     let text = self.message_entry.text().to_string();
                     self.message_entry.set_text("");
 
-                    // Send a plain text message.
+                    // Send a plain text message, or a reply with the
+                    // quote bar's pending context attached.
                     let _ = sender.output(ChatViewOutput::SendTextMessage {
                         text,
+                        quote: self.state.pending_quote.take(),
                         recipient: chat.jid.clone(),
                     });
 
@@ -892,6 +956,30 @@ impl AsyncComponent for ChatView {
             }
             ChatViewInput::QuoteHighlightExpired { stanza_id } => {
                 self.history.set_row_highlight(&stanza_id, false);
+            }
+
+            ChatViewInput::ReplyRequested { server_id } => {
+                let Some(index) = self.history.index_by_stanza(&server_id) else {
+                    return;
+                };
+                let Some(ChatRow::Message { message, .. }) = self.history.get_row(index) else {
+                    return;
+                };
+
+                self.state.pending_quote = Some(ChatQuote {
+                    body: (!message.content.is_empty()).then_some(message.content.clone()),
+                    media: message.media.as_ref().map(Media::preview_label),
+                    stanza_id: Some(message.server_id.clone()),
+                    participant: Some(bare_jid(&message.sender_jid)),
+                    sender_name: message.sender_name.clone(),
+                });
+
+                if self.history.truly_at_bottom() {
+                    self.scroll_to_bottom(|| {});
+                }
+            }
+            ChatViewInput::CancelPendingQuote => {
+                self.state.pending_quote = None;
             }
 
             ChatViewInput::SyncProgress {
@@ -1503,6 +1591,27 @@ impl ChatView {
         } else {
             self.state.unread_count.to_string()
         }
+    }
+
+    fn pending_quote_sender(&self) -> String {
+        let Some(quote) = &self.state.pending_quote else {
+            return String::new();
+        };
+
+        quote
+            .sender_name
+            .as_deref()
+            .map(|name| name.trim_start_matches('~').to_string())
+            .or_else(|| quote.participant.clone())
+            .unwrap_or_default()
+    }
+
+    fn pending_quote_preview(&self) -> String {
+        self.state
+            .pending_quote
+            .as_ref()
+            .and_then(|quote| quote.text().map(ToString::to_string))
+            .unwrap_or_default()
     }
 
     fn typing_text(&self) -> String {

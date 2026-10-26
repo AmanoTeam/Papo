@@ -285,7 +285,7 @@ fn build_row_factory(
 
         let (root, mut widgets) = <ChatRow as RelmListItem>::setup(list_item);
         if let Some(input) = &input {
-            widgets.set_input(input.clone());
+            widgets.set_input(input);
         }
 
         // SAFETY: the widgets live as long as `root`, which the list
@@ -1145,6 +1145,15 @@ impl ChatHistory {
         self.view
             .vadjustment()
             .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
+    }
+
+    /// Whether the viewport is truly touching the bottom edge, unlike
+    /// the generous anchor-band check used for streaming which spans
+    /// roughly two rows.
+    pub(crate) fn truly_at_bottom(&self) -> bool {
+        self.view
+            .vadjustment()
+            .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 2.0)
     }
 
     /// Scroll the list view to the bottom (last row).

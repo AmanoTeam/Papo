@@ -33,6 +33,15 @@ impl Media {
         self.downloadable.is_some()
     }
 
+    /// The short label used in quote previews ("Photo", "Photo: caption").
+    pub(crate) fn preview_label(&self) -> String {
+        let kind = self.r#type.display_label();
+        self.caption
+            .as_ref()
+            .filter(|caption| !caption.is_empty())
+            .map_or(kind.clone(), |caption| format!("{kind}: {caption}"))
+    }
+
     pub(crate) fn from_wa_message(msg: &wa::Message) -> Option<Self> {
         msg.image_message
             .as_option()

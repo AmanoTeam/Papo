@@ -122,14 +122,36 @@ impl ChatMessage {
 
 impl From<ChatMessage> for wa::Message {
     fn from(value: ChatMessage) -> Self {
-        let conversation = if value.content.is_empty() {
+        let content = if value.content.is_empty() {
             None
         } else {
             Some(value.content)
         };
 
+        if let Some(quote) = value.quote {
+            return Self {
+                extended_text_message: wa::message::ExtendedTextMessage {
+                    text: content,
+                    context_info: wa::ContextInfo {
+                        stanza_id: quote.stanza_id,
+                        participant: quote.participant,
+                        quoted_message: Self {
+                            conversation: quote.body.filter(|body| !body.is_empty()),
+                            ..Default::default()
+                        }
+                        .into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            };
+        }
+
         Self {
-            conversation,
+            conversation: content,
             ..Default::default()
         }
     }

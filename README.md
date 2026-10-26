@@ -71,7 +71,7 @@ meson install -C build
 - [ ] Chat admin functions (ban, change info/settings)
 - [ ] Message search
 - [ ] Message reactions
-- [ ] Reply/quote messages
+- [x] Reply/quote messages
 - [x] Database encryption
 - [x] Unread messages divider
 - [ ] Message draft persistence
