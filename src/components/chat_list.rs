@@ -1050,8 +1050,9 @@ impl RelmListItem for ChatRow {
                     content = format!("{}: {content}", i18n!("You"));
                     first_line = format!("{}: {first_line}", i18n!("You"));
                 } else {
-                    content = format!("{name}: {content}");
-                    first_line = format!("{}: {first_line}", get_first_name(name));
+                    let mark = if msg.sender_push { "~" } else { "" };
+                    content = format!("{mark}{name}: {content}");
+                    first_line = format!("{mark}{}: {first_line}", get_first_name(name));
                 }
             }
 

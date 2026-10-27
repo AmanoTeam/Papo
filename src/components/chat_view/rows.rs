@@ -156,13 +156,19 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
     }
 
     if first && let Some(name) = &msg.sender_name {
-        if name.starts_with('~') {
+        // The tilde is minted here, at paint time, exclusively: it
+        // never lives in the database or on the wire.
+        if msg.sender_push {
             widgets.sender_label.add_css_class("push-name");
         } else {
             widgets.sender_label.remove_css_class("push-name");
         }
 
-        widgets.sender_label.set_label(name);
+        widgets.sender_label.set_label(&if msg.sender_push {
+            format!("~{name}")
+        } else {
+            name.clone()
+        });
         widgets.sender_label.set_visible(true);
     }
 }
