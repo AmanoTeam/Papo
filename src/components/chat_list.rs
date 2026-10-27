@@ -289,13 +289,25 @@ impl SimpleAsyncComponent for ChatList {
                     .vadjustment()
                     .is_some_and(|adj| adj.value() <= adj.lower() + 72.0);
 
-                let last_message = match chat.get_last_message(&self.db).await {
+                let mut last_message = match chat.get_last_message(&self.db).await {
                     Ok(message) => message,
                     Err(e) => {
                         tracing::error!("Failed to get chat last message: {e}");
                         None
                     }
                 };
+
+                // Previews follow the chat view: never reuse a stored
+                // name the live resolution would correct.
+                if let Some(message) = last_message.as_mut() {
+                    let mut resolution =
+                        SenderResolution::new(&self.db, self.own_forms.clone()).await;
+                    resolution
+                        .learn_identity_pairs(&self.db, &chat, slice::from_ref(message))
+                        .await;
+                    resolution.resolve_message(&chat, message);
+                }
+
                 let unread_count = chat
                     .get_unread_count(&self.db)
                     .await
@@ -742,9 +754,16 @@ impl ChatList {
                 row.avatar_texture.clone(),
             )
         };
-
         if let Ok(fresh) = chat.get_last_message(&self.db).await {
             last_message = fresh;
+        }
+
+        if let Some(message) = last_message.as_mut() {
+            let mut resolution = SenderResolution::new(&self.db, self.own_forms.clone()).await;
+            resolution
+                .learn_identity_pairs(&self.db, &chat, slice::from_ref(message))
+                .await;
+            resolution.resolve_message(&chat, message);
         }
 
         let (is_typing, typing_senders) = self.typing_row_data(jid);
