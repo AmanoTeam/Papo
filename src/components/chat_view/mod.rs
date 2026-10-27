@@ -511,7 +511,7 @@ impl AsyncComponent for ChatView {
 
                         gtk::Button {
                             set_hexpand: true,
-                            set_css_classes: &["flat", "quote-box"],
+                            set_css_classes: &["flat", "quote-box", "composer"],
 
                             connect_clicked => ChatViewInput::QuoteBarClicked,
 

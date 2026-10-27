@@ -175,6 +175,10 @@
     font-weight: normal;
   }
 
+  &.composer {
+    font-size: 0.85em;
+  }
+
   &.incoming {
     background-color: color-mix(in srgb, var(--card-bg-color) 70%, var(--popover-bg-color));
   }
