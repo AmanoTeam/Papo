@@ -303,12 +303,35 @@ impl SimpleAsyncComponent for ChatList {
                     unread_count,
                 });
 
+                // A row that does not move is replaced in one splice:
+                // remove+insert bounces everything below it twice per
+                // update, which is the flash a busy list shows.
+                let key_at = |i: u32| {
+                    self.list_view_wrapper.iter().nth(i as usize).map(|item| {
+                        let row = item.borrow();
+                        (
+                            row.data.chat.pinned,
+                            row.data.chat.pinned_at,
+                            row.data.chat.last_message_time,
+                        )
+                    })
+                };
+                let keeps_position = (index == 0
+                    || key_at(index - 1)
+                        .is_none_or(|k| cmp_chat_order(&key, &k) != Ordering::Less))
+                    && (key_at(index + 1)
+                        .is_none_or(|k| cmp_chat_order(&k, &key) != Ordering::Less));
+
                 let store = self.store();
                 let object = glib::BoxedAnyObject::new(updated_row);
 
-                store.splice(index, 1, &[] as &[glib::Object]);
-                let target = self.sorted_index(key);
-                store.splice(target, 0, &[object]);
+                if keeps_position {
+                    store.splice(index, 1, &[object]);
+                } else {
+                    store.splice(index, 1, &[] as &[glib::Object]);
+                    let target = self.sorted_index(key);
+                    store.splice(target, 0, &[object]);
+                }
 
                 // Re-select the row if it is the selected chat.
                 if self.chat_jid.as_deref() == Some(&chat_jid)
