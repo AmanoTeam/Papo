@@ -88,6 +88,8 @@ pub struct Application {
     pending_read_chats: HashSet<String>,
     /// Avatar fetches queued while the client was not connected yet.
     pending_avatar_fetches: Vec<String>,
+    /// Group metadata fetches queued while the client was not connected.
+    pending_group_metadata: Vec<String>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -422,6 +424,16 @@ impl Application {
     fn is_own_jid(&self, bare: &str) -> bool {
         self.user_jid.as_deref().is_some_and(|own| own == bare)
             || self.own_lid_jids.iter().any(|lid| lid == bare)
+    }
+
+    /// Whether a group chat still shows a stand-in title: no name at
+    /// all, or the `Group XXXXXXXX` placeholder assigned before its
+    /// metadata was ever fetched.
+    fn needs_group_metadata(chat: &Chat) -> bool {
+        is_group_jid(&chat.jid)
+            && (chat.name.is_empty()
+                || chat.name
+                    == format!("{} {}", i18n!("Group"), &chat.jid[..8.min(chat.jid.len())]))
     }
 
     /// The title of the account's own chat, so the me-chat row reads
@@ -838,6 +850,12 @@ impl Application {
             self.client.emit(ClientInput::FetchAvatar {
                 jid: chat_jid.to_string(),
             });
+
+            if is_group {
+                self.client.emit(ClientInput::FetchGroupMetadata {
+                    chat_jid: chat_jid.to_string(),
+                });
+            }
         }
 
         let typing_cleared = !message.outgoing
@@ -1436,6 +1454,7 @@ impl AsyncComponent for Application {
             pending_receipts: HashMap::new(),
             pending_read_chats: HashSet::new(),
             pending_avatar_fetches: Vec::new(),
+            pending_group_metadata: Vec::new(),
 
             toaster: Toaster::default(),
             user_jid: None,
@@ -1571,6 +1590,10 @@ impl AsyncComponent for Application {
 
                 for jid in mem::take(&mut self.pending_avatar_fetches) {
                     self.client.emit(ClientInput::FetchAvatar { jid });
+                }
+                for jid in mem::take(&mut self.pending_group_metadata) {
+                    self.client
+                        .emit(ClientInput::FetchGroupMetadata { chat_jid: jid });
                 }
 
                 self.sweep_own_chat();
@@ -2652,6 +2675,7 @@ impl AsyncComponent for Application {
             AppCmd::LoadCache => {
                 self.state = AppState::Syncing;
                 let mut chats_needing_avatars = Vec::new();
+                let mut chats_needing_metadata = Vec::new();
 
                 match self.db.load_chats().await {
                     Ok(mut chats) => {
@@ -2680,6 +2704,12 @@ impl AsyncComponent for Application {
                                     );
                                 }
                                 _ => chats_needing_avatars.push(chat.jid.clone()),
+                            }
+
+                            // A stand-in group title only resolves
+                            // through the group's metadata; ask for it.
+                            if Self::needs_group_metadata(chat) {
+                                chats_needing_metadata.push(chat.jid.clone());
                             }
                         }
 
@@ -2714,9 +2744,14 @@ impl AsyncComponent for Application {
                     for jid in chats_needing_avatars {
                         self.client.emit(ClientInput::FetchAvatar { jid });
                     }
+                    for jid in chats_needing_metadata {
+                        self.client
+                            .emit(ClientInput::FetchGroupMetadata { chat_jid: jid });
+                    }
                 } else {
                     // The client is still connecting; fetch once it is up.
                     self.pending_avatar_fetches.extend(chats_needing_avatars);
+                    self.pending_group_metadata.extend(chats_needing_metadata);
                 }
             }
             AppCmd::SwitchSession { db, session } => {
@@ -2796,6 +2831,9 @@ impl AsyncComponent for Application {
                             chat_name = self.resolve_name(&jid).await;
                         }
 
+                        // A nameless group keeps a stand-in title until
+                        // its metadata is fetched; ask for it now.
+                        let needs_metadata = chat_name.is_none() && is_group_jid(&jid);
                         let chat_name = chat_name.unwrap_or_else(|| {
                             if is_group_jid(&jid) {
                                 format!("{} {}", i18n!("Group"), &jid[..8.min(jid.len())])
@@ -2841,6 +2879,12 @@ impl AsyncComponent for Application {
                             )
                         });
                         spine_new.push(chat.clone());
+
+                        if needs_metadata {
+                            self.client.emit(ClientInput::FetchGroupMetadata {
+                                chat_jid: chat_jid.clone(),
+                            });
+                        }
 
                         // Save the chat to database.
                         let db = self.db.clone();

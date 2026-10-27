@@ -57,6 +57,7 @@ pub struct Client {
 
     history_queue: HistoryQueue,
     inflight_avatars: Arc<Mutex<HashSet<String>>>,
+    inflight_metadata: Arc<Mutex<HashSet<String>>>,
     read_sync_in_flight: Arc<Mutex<Option<String>>>,
 }
 
@@ -683,6 +684,7 @@ impl AsyncComponent for Client {
             os_type,
             history_queue: HistoryQueue::default(),
             inflight_avatars: Arc::new(Mutex::new(HashSet::new())),
+            inflight_metadata: Arc::new(Mutex::new(HashSet::new())),
             read_sync_in_flight: Arc::new(Mutex::new(None)),
         };
 
@@ -1566,114 +1568,130 @@ impl AsyncComponent for Client {
                     return;
                 }
 
+                // The sync spine, the database load, and chat opens all
+                // ask for the same group on their own: one IQ in flight
+                // per group.
+                let inserted = self.inflight_metadata.lock().await.insert(chat_jid.clone());
+                if !inserted {
+                    return;
+                }
+
+                let inflight = Arc::clone(&self.inflight_metadata);
                 let sender_clone = sender.clone();
                 let client_handle = Arc::clone(&self.handle);
                 relm4::spawn(async move {
-                    let client = {
-                        let handle = client_handle.lock().await;
+                    async {
+                        let client = {
+                            let handle = client_handle.lock().await;
 
-                        match handle.as_ref() {
-                            Some(client) => Arc::clone(client),
-                            None => return,
-                        }
-                    };
+                            match handle.as_ref() {
+                                Some(client) => Arc::clone(client),
+                                None => return,
+                            }
+                        };
 
-                    let Ok(jid) = chat_jid.parse::<Jid>() else {
-                        tracing::debug!("Invalid group jid: {chat_jid}");
-                        return;
-                    };
-
-                    let mut metadata = match client.groups().fetch_metadata(&jid).await {
-                        Ok(metadata) => metadata,
-                        Err(error) => {
-                            // The phone may be asleep; the next open retries.
-                            tracing::debug!("Group metadata fetch failed for {chat_jid}: {error}");
+                        let Ok(jid) = chat_jid.parse::<Jid>() else {
+                            tracing::debug!("Invalid group jid: {chat_jid}");
                             return;
+                        };
+
+                        let mut metadata = match client.groups().fetch_metadata(&jid).await {
+                            Ok(metadata) => metadata,
+                            Err(error) => {
+                                // The phone may be asleep; the next open retries.
+                                tracing::debug!(
+                                    "Group metadata fetch failed for {chat_jid}: {error}"
+                                );
+                                return;
+                            }
+                        };
+                        client
+                            .groups()
+                            .resolve_participant_addresses(&mut metadata)
+                            .await;
+
+                        let participants_count = metadata.participants.len();
+
+                        // Participant display names as the server renders
+                        // them, falling back to the `WhatsApp` username
+                        // when the rendered name is omitted.
+                        let entries = metadata
+                            .participants
+                            .iter()
+                            .filter_map(|participant| {
+                                let name = participant
+                                    .details
+                                    .as_ref()
+                                    .and_then(|details| details.display_name.as_deref())
+                                    .or(participant.username.as_deref())
+                                    .filter(|name| !name.is_empty())?;
+
+                                Some((participant.jid.to_string(), name.to_string()))
+                            })
+                            .collect::<Vec<(String, String)>>();
+
+                        // Each participant row carries both identities;
+                        // learning the pairs lets contact and push-name
+                        // lookups cross between LID and phone jids.
+                        let pairs = metadata
+                            .participants
+                            .iter()
+                            .filter_map(|participant| {
+                                let jid = bare_jid(&participant.jid.to_string());
+                                let (lid, phone) = if is_lid_jid(&jid) {
+                                    let phone = participant.phone_number.as_ref()?;
+                                    (jid, bare_jid(&phone.to_string()))
+                                } else {
+                                    let lid = participant.lid.as_ref()?;
+                                    (bare_jid(&lid.to_string()), jid)
+                                };
+
+                                (lid != phone).then_some((lid, phone))
+                            })
+                            .collect::<Vec<(String, String)>>();
+
+                        tracing::debug!(
+                            "Group metadata for {chat_jid}: {participants_count} participants, \
+                             {} display names, {} lid-pn pairs",
+                            entries.len(),
+                            pairs.len()
+                        );
+
+                        // The subject is the group's true title; conversations
+                        // arrive without names on some pairs.
+                        if let Some(subject) = metadata
+                            .subject
+                            .as_deref()
+                            .filter(|subject| !subject.is_empty())
+                        {
+                            let _ = sender_clone.output(ClientOutput::ChatSubject {
+                                chat_jid: chat_jid.clone(),
+                                subject: subject.to_string(),
+                            });
                         }
-                    };
-                    client
-                        .groups()
-                        .resolve_participant_addresses(&mut metadata)
-                        .await;
 
-                    let participants_count = metadata.participants.len();
+                        if !pairs.is_empty() {
+                            let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
+                        }
 
-                    // Participant display names as the server renders
-                    // them, falling back to the `WhatsApp` username
-                    // when the rendered name is omitted.
-                    let entries = metadata
-                        .participants
-                        .iter()
-                        .filter_map(|participant| {
-                            let name = participant
-                                .details
-                                .as_ref()
-                                .and_then(|details| details.display_name.as_deref())
-                                .or(participant.username.as_deref())
-                                .filter(|name| !name.is_empty())?;
+                        // Always tell the app how big the group is, along
+                        // with every participant jid.
+                        let participants = metadata
+                            .participants
+                            .iter()
+                            .map(|participant| participant.jid.to_string())
+                            .collect::<Vec<String>>();
 
-                            Some((participant.jid.to_string(), name.to_string()))
-                        })
-                        .collect::<Vec<(String, String)>>();
-
-                    // Each participant row carries both identities;
-                    // learning the pairs lets contact and push-name
-                    // lookups cross between LID and phone jids.
-                    let pairs = metadata
-                        .participants
-                        .iter()
-                        .filter_map(|participant| {
-                            let jid = bare_jid(&participant.jid.to_string());
-                            let (lid, phone) = if is_lid_jid(&jid) {
-                                let phone = participant.phone_number.as_ref()?;
-                                (jid, bare_jid(&phone.to_string()))
-                            } else {
-                                let lid = participant.lid.as_ref()?;
-                                (bare_jid(&lid.to_string()), jid)
-                            };
-
-                            (lid != phone).then_some((lid, phone))
-                        })
-                        .collect::<Vec<(String, String)>>();
-
-                    tracing::debug!(
-                        "Group metadata for {chat_jid}: {participants_count} participants, \
-                         {} display names, {} lid-pn pairs",
-                        entries.len(),
-                        pairs.len()
-                    );
-
-                    // The subject is the group's true title; conversations
-                    // arrive without names on some pairs.
-                    if let Some(subject) = metadata
-                        .subject
-                        .as_deref()
-                        .filter(|subject| !subject.is_empty())
-                    {
-                        let _ = sender_clone.output(ClientOutput::ChatSubject {
+                        let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
                             chat_jid: chat_jid.clone(),
-                            subject: subject.to_string(),
+                            total: participants_count,
+                            entries,
+                            participants,
                         });
                     }
+                    .await;
 
-                    if !pairs.is_empty() {
-                        let _ = sender_clone.output(ClientOutput::LidMappingsLearned { pairs });
-                    }
-
-                    // Always tell the app how big the group is, along
-                    // with every participant jid.
-                    let participants = metadata
-                        .participants
-                        .iter()
-                        .map(|participant| participant.jid.to_string())
-                        .collect::<Vec<String>>();
-
-                    let _ = sender_clone.output(ClientOutput::GroupParticipantsLearned {
-                        chat_jid: chat_jid.clone(),
-                        total: participants_count,
-                        entries,
-                        participants,
-                    });
+                    inflight.lock().await.remove(&chat_jid);
                 });
             }
             ClientCommand::HistoryFetchTimeout { seq } => {
