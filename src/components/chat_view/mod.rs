@@ -1126,9 +1126,7 @@ impl AsyncComponent for ChatView {
             }
 
             ChatViewInput::ScrollToBottom => {
-                // If either end has been trimmed, the view is a "window" into the
-                // message history — reload from scratch to jump to the real latest.
-                if self.history.has_newer() || self.history.has_older() {
+                if self.history.has_newer() {
                     self.generation += 1;
                     self.history.reset();
                     self.state.is_loading = true;

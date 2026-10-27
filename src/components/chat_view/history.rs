@@ -1188,7 +1188,41 @@ impl ChatHistory {
             .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 2.0)
     }
 
-    /// Scroll the list view to the bottom (last row).
+    /// Reset the adjustment to `start` and replay the landing the
+    /// jump already computed, as a short ease-out glide. The shared
+    /// cell holds off any settling until the animation hands it back.
+    fn play_glide(
+        view: &gtk::ListView,
+        adj: &gtk::Adjustment,
+        start: f64,
+        gliding: Rc<Cell<bool>>,
+    ) {
+        let target = adj.value().clamp(
+            adj.lower(),
+            (adj.upper() - adj.page_size()).max(adj.lower()),
+        );
+
+        adj.set_value(start);
+        gliding.set(true);
+
+        let animation = adw::TimedAnimation::new(
+            view,
+            start,
+            target,
+            250,
+            adw::CallbackAnimationTarget::new({
+                let adj = adj.clone();
+                move |value| adj.set_value(value)
+            }),
+        );
+        animation.set_easing(adw::Easing::EaseOutCubic);
+        animation.connect_done(move |_| gliding.set(false));
+        animation.play();
+    }
+
+    /// Scroll the list view to the bottom (last row). Landings within
+    /// a couple of screens replay as a short ease-out glide; longer
+    /// ones snap instantly.
     pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
         fn scroll(view: &gtk::ListView) -> bool {
             let count = view.model().map_or(0, |model| model.n_items());
@@ -1204,30 +1238,103 @@ impl ChatHistory {
                 .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
         }
 
+        /// Longer travels (past a couple of screens) snap instantly:
+        /// easing across many rows reads as a zoom, not as a landing.
+        fn glide_budget(adj: &gtk::Adjustment) -> f64 {
+            2.5 * adj.page_size()
+        }
+
         let view = self.view.clone();
         let mut attempts = 0;
         let mut last_upper: Option<f64> = None;
 
+        let gliding = Rc::new(Cell::new(false));
+        let glide_trigger = Rc::new(Cell::new(None));
+
+        // The first jump measures the landing. When the new row is
+        // not laid out yet the adjustment only moves with the layout
+        // pass, so the check runs there too: catch the landing as it
+        // applies, reset to the start, and replay it as a glide.
         glib::idle_add_local_once({
             let view = view.clone();
+            let gliding = gliding.clone();
+            let glide_trigger = glide_trigger.clone();
+
             move || {
+                let Some(adj) = view.vadjustment() else {
+                    return;
+                };
+
+                let start = adj.value();
                 scroll(&view);
+                let travel = adj.value() - start;
+
+                if travel > 2.0 && travel <= glide_budget(&adj) {
+                    Self::play_glide(&view, &adj, start, gliding.clone());
+                } else {
+                    let handler = {
+                        let view = view.clone();
+                        let gliding = gliding.clone();
+                        let glide_trigger = glide_trigger.clone();
+
+                        adj.connect_value_changed(move |adj| {
+                            let landed = adj.value() + adj.page_size() >= adj.upper() - 25.0;
+                            let travel = adj.value() - start;
+
+                            if !landed || travel <= 2.0 || glide_trigger.take().is_none() {
+                                return;
+                            }
+
+                            if travel <= glide_budget(adj) {
+                                Self::play_glide(&view, adj, start, gliding.clone());
+                            }
+                        })
+                    };
+
+                    glide_trigger.set(Some(handler));
+                }
             }
         });
 
         let mut on_settled = Some(on_settled);
         glib::timeout_add_local(Duration::from_millis(16), move || {
+            // The glide owns the adjustment while it runs; settling
+            // resumes as soon as the animation hands it back.
+            if gliding.get() {
+                return glib::ControlFlow::Continue;
+            }
+
             attempts += 1;
 
-            let upper = view.vadjustment().map(|adj| adj.upper());
-            let settled = scroll(&view);
-            let stable = match (upper, last_upper) {
-                (Some(a), Some(b)) => a.to_bits() == b.to_bits(),
-                _ => false,
-            };
-            last_upper = upper;
+            let Some(adj) = view.vadjustment() else {
+                if attempts >= 40 {
+                    view.set_opacity(1.0);
+                    if let Some(on_settled) = on_settled.take() {
+                        on_settled();
+                    }
+                    return glib::ControlFlow::Break;
+                }
 
-            if (settled && stable) || attempts >= 40 {
+                return glib::ControlFlow::Continue;
+            };
+
+            // Re-anchor only when the content actually grew: re-jumping
+            // to the last row on every tick fights the layout and is
+            // what the scrollbar shows as a fast up-and-down dance.
+            let upper_now = adj.upper();
+            let moved = last_upper.is_none_or(|last| last.to_bits() != upper_now.to_bits());
+            let settled = if moved {
+                scroll(&view)
+            } else {
+                adj.value() + adj.page_size() >= upper_now - 25.0
+            };
+            last_upper = Some(upper_now);
+
+            if (settled && !moved) || attempts >= 40 {
+                if let Some(trigger) = glide_trigger.take() {
+                    adj.disconnect(trigger);
+                }
+
                 view.set_opacity(1.0);
 
                 if let Some(on_settled) = on_settled.take() {
