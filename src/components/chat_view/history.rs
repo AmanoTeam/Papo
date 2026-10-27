@@ -1250,7 +1250,7 @@ impl ChatHistory {
         /// Longer travels (past a couple of screens) snap instantly:
         /// easing across many rows reads as a zoom, not as a landing.
         fn glide_budget(adj: &gtk::Adjustment) -> f64 {
-            2.5 * adj.page_size()
+            6.0 * adj.page_size()
         }
 
         let view = self.view.clone();
