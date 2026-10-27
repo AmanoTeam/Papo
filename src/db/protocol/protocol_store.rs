@@ -147,8 +147,8 @@ impl ProtocolStore for ProtocolBackend {
         let mut db = self.store.db().clone();
 
         let mut sql = String::from(
-            "INSERT INTO \"lid_mappings\" \
-             (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") VALUES ",
+            r#"INSERT INTO "lid_mappings"
+             ("lid", "created_at", "updated_at", "phone_number", "learning_source") VALUES "#,
         );
         let mut params = Vec::with_capacity(entries.len() * 5);
 
@@ -182,11 +182,11 @@ impl ProtocolStore for ProtocolBackend {
         }
 
         sql.push_str(
-            " ON CONFLICT(\"lid\") DO UPDATE SET \
-             \"created_at\" = excluded.\"created_at\", \
-             \"updated_at\" = excluded.\"updated_at\", \
-             \"phone_number\" = excluded.\"phone_number\", \
-             \"learning_source\" = excluded.\"learning_source\"",
+            r#" ON CONFLICT("lid") DO UPDATE SET
+             "created_at" = excluded."created_at",
+             "updated_at" = excluded."updated_at",
+             "phone_number" = excluded."phone_number",
+             "learning_source" = excluded."learning_source""#,
         );
 
         db.exec_raw_sql(RawSql {

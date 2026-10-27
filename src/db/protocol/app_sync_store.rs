@@ -172,7 +172,7 @@ impl AppSyncStore for ProtocolBackend {
         for chunk in mutations.chunks(CHUNK) {
             let mut sql = String::with_capacity(chunk.len() * 48);
             sql.push_str(
-                "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") VALUES ",
+                r#"INSERT INTO "mutation_macs" ("name", "index_mac", "value_mac") VALUES "#,
             );
 
             let mut params = Vec::with_capacity(chunk.len() * 3);
@@ -195,7 +195,7 @@ impl AppSyncStore for ProtocolBackend {
                 });
             }
 
-            sql.push_str(" ON CONFLICT(\"name\", \"index_mac\") DO UPDATE SET \"value_mac\" = excluded.\"value_mac\"");
+            sql.push_str(r#" ON CONFLICT("name", "index_mac") DO UPDATE SET "value_mac" = excluded."value_mac""#);
 
             db.exec_raw_sql(RawSql {
                 sql,
@@ -265,7 +265,7 @@ impl AppSyncStore for ProtocolBackend {
         for chunk in index_macs.chunks(CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
             let sql = format!(
-                "DELETE FROM \"mutation_macs\" WHERE \"name\" = ? AND \"index_mac\" IN ({placeholders})"
+                r#"DELETE FROM "mutation_macs" WHERE "name" = ? AND "index_mac" IN ({placeholders})"#
             );
 
             let mut params = Vec::with_capacity(chunk.len() + 1);
@@ -297,7 +297,7 @@ impl AppSyncStore for ProtocolBackend {
         let mut db = self.store.db().clone();
 
         db.exec_raw_sql(RawSql {
-            sql: "DELETE FROM \"mutation_macs\" WHERE \"name\" = ?".to_owned(),
+            sql: r#"DELETE FROM "mutation_macs" WHERE "name" = ?"#.to_owned(),
             params: vec![TypedValue {
                 value: SqlValue::String(name.to_owned()),
                 ty: Type::Text,

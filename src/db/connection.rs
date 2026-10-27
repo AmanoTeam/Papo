@@ -95,7 +95,7 @@ async fn recreate_encrypted_db(
 /// the statement row-free.
 async fn db_is_readable(db: &mut Db) -> bool {
     db.exec_raw_sql(RawSql {
-        sql: "SELECT * FROM sqlite_master LIMIT 0".to_owned(),
+        sql: r"SELECT * FROM sqlite_master LIMIT 0".to_owned(),
         ret: RawSqlRet::None,
         params: Vec::new(),
     })
@@ -111,7 +111,7 @@ async fn db_is_readable(db: &mut Db) -> bool {
 async fn set_sync_mode(db: &mut Db) {
     let result = db
         .exec_raw_sql(RawSql {
-            sql: "PRAGMA synchronous = NORMAL".to_owned(),
+            sql: r"PRAGMA synchronous = NORMAL".to_owned(),
             ret: RawSqlRet::None,
             params: Vec::new(),
         })
@@ -124,13 +124,13 @@ async fn set_sync_mode(db: &mut Db) {
 
 /// Creates schema tables that are missing from an existing database.
 async fn ensure_tables(db: &mut Db) {
-    const CREATE_TABLES: &[&str] = &["CREATE TABLE IF NOT EXISTS \"pending_read_marks\" (
-        \"chat_jid\" TEXT NOT NULL,
-        \"position\" INTEGER NOT NULL,
-        \"attempts\" INTEGER NOT NULL,
-        \"next_retry_at\" INTEGER NOT NULL,
-        PRIMARY KEY (\"chat_jid\")
-    )"];
+    const CREATE_TABLES: &[&str] = &[r#"CREATE TABLE IF NOT EXISTS "pending_read_marks" (
+        "chat_jid" TEXT NOT NULL,
+        "position" INTEGER NOT NULL,
+        "attempts" INTEGER NOT NULL,
+        "next_retry_at" INTEGER NOT NULL,
+        PRIMARY KEY ("chat_jid")
+    )"#];
 
     for sql in CREATE_TABLES {
         let result = db
@@ -173,7 +173,7 @@ async fn ensure_indices(db: &mut Db) {
                 .join(", ");
 
             let sql = format!(
-                "CREATE {unique}INDEX IF NOT EXISTS \"{}\" ON \"{}\" ({columns})",
+                r#"CREATE {unique}INDEX IF NOT EXISTS "{}" ON "{}" ({columns})"#,
                 index.name, table.name
             );
 
@@ -283,8 +283,8 @@ mod tests {
             let entries = vec![row("lid-1", "111"), row("lid-2", "222")];
 
             let mut sql = String::from(
-                "INSERT INTO \"lid_mappings\" \
-                 (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") VALUES ",
+                r#"INSERT INTO "lid_mappings"
+                 ("lid", "created_at", "updated_at", "phone_number", "learning_source") VALUES "#,
             );
             let mut params = Vec::new();
             for (index, entry) in entries.iter().enumerate() {
@@ -316,11 +316,11 @@ mod tests {
                 ]);
             }
             sql.push_str(
-                " ON CONFLICT(\"lid\") DO UPDATE SET \
-                 \"created_at\" = excluded.\"created_at\", \
-                 \"updated_at\" = excluded.\"updated_at\", \
-                 \"phone_number\" = excluded.\"phone_number\", \
-                 \"learning_source\" = excluded.\"learning_source\"",
+                r#" ON CONFLICT("lid") DO UPDATE SET
+                 "created_at" = excluded."created_at",
+                 "updated_at" = excluded."updated_at",
+                 "phone_number" = excluded."phone_number",
+                 "learning_source" = excluded."learning_source""#,
             );
 
             db.exec_raw_sql(RawSql {
@@ -340,13 +340,13 @@ mod tests {
             let conflict_row = &updated[1];
 
             db.exec_raw_sql(RawSql {
-                sql: "INSERT INTO \"lid_mappings\" (\"lid\", \"created_at\", \"updated_at\", \"phone_number\", \"learning_source\") \
-                      VALUES (?, ?, ?, ?, ?) \
-                      ON CONFLICT(\"lid\") DO UPDATE SET \
-                      \"created_at\" = excluded.\"created_at\", \
-                      \"updated_at\" = excluded.\"updated_at\", \
-                      \"phone_number\" = excluded.\"phone_number\", \
-                      \"learning_source\" = excluded.\"learning_source\""
+                sql: r#"INSERT INTO "lid_mappings" ("lid", "created_at", "updated_at", "phone_number", "learning_source")
+                      VALUES (?, ?, ?, ?, ?)
+                      ON CONFLICT("lid") DO UPDATE SET
+                      "created_at" = excluded."created_at",
+                      "updated_at" = excluded."updated_at",
+                      "phone_number" = excluded."phone_number",
+                      "learning_source" = excluded."learning_source""#
                     .to_string(),
                 params: vec![
                     TypedValue {
@@ -407,7 +407,7 @@ mod tests {
             let mutations = vec![row(&[1, 2, 3], &[9]), row(&[4, 5, 6], &[8])];
 
             let mut sql = String::from(
-                "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") VALUES ",
+                r#"INSERT INTO "mutation_macs" ("name", "index_mac", "value_mac") VALUES "#,
             );
             let mut params = Vec::new();
             for (index, mutation) in mutations.iter().enumerate() {
@@ -431,8 +431,8 @@ mod tests {
                 ]);
             }
             sql.push_str(
-                " ON CONFLICT(\"name\", \"index_mac\") \
-                 DO UPDATE SET \"value_mac\" = excluded.\"value_mac\"",
+                r#" ON CONFLICT("name", "index_mac")
+                 DO UPDATE SET "value_mac" = excluded."value_mac""#,
             );
 
             db.exec_raw_sql(RawSql {
@@ -448,10 +448,10 @@ mod tests {
 
             // Upserting the same (name, index_mac) must overwrite the value.
             db.exec_raw_sql(RawSql {
-                sql: "INSERT INTO \"mutation_macs\" (\"name\", \"index_mac\", \"value_mac\") \
-                      VALUES (?, ?, ?) \
-                      ON CONFLICT(\"name\", \"index_mac\") DO UPDATE SET \
-                      \"value_mac\" = excluded.\"value_mac\""
+                sql: r#"INSERT INTO "mutation_macs" ("name", "index_mac", "value_mac")
+                      VALUES (?, ?, ?)
+                      ON CONFLICT("name", "index_mac") DO UPDATE SET
+                      "value_mac" = excluded."value_mac""#
                     .to_string(),
                 params: vec![
                     TypedValue {
