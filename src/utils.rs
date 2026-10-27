@@ -519,14 +519,42 @@ pub(crate) async fn re_resolve_senders(
 
     // Resolve every row, recording the first outcome per sender so
     // the stats reflect what the rows actually show, number
-    // fallbacks included.
+    // fallbacks included. Rows whose resolution beats what was saved
+    // get persisted back at once — the stored name stops being the
+    // pre-contact rendering it was ingested with.
     let mut outcomes = HashMap::<String, Option<String>>::new();
     for message in messages.iter_mut() {
+        let sender_before = message.sender_name.clone();
+        let quote_before = message
+            .quote
+            .as_ref()
+            .and_then(|quote| quote.sender_name.clone());
+
         let outcome = resolution.resolve_message(chat, message);
         if !message.outgoing && !message.sender_jid.is_empty() {
             outcomes
                 .entry(bare_jid(&message.sender_jid))
                 .or_insert(outcome);
+        }
+
+        let quote_after = message
+            .quote
+            .as_ref()
+            .and_then(|quote| quote.sender_name.clone());
+        let sender_changed = message.sender_name != sender_before;
+        let quote_changed = quote_after != quote_before;
+        if sender_changed || quote_changed {
+            let local_id = message.local_id.to_string();
+            if let Err(e) = db
+                .update_message_names(
+                    &local_id,
+                    message.sender_name.as_deref(),
+                    quote_after.as_deref(),
+                )
+                .await
+            {
+                tracing::debug!("Failed to write back resolved sender names for {local_id}: {e}");
+            }
         }
     }
 

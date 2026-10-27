@@ -472,6 +472,35 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Persists freshly resolved names back onto a stored message,
+    /// sender and quoted-sender alike. Callers write only when the
+    /// resolution beat the saved value, so each row converges to its
+    /// best known name instead of being re-derived on every load.
+    pub async fn update_message_names(
+        &self,
+        local_id: &str,
+        sender_name: Option<&str>,
+        quote_sender_name: Option<&str>,
+    ) -> Result<(), toasty::Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        if let Some(mut message) = MessageEntity::filter_by_local_id(local_id.to_owned())
+            .first()
+            .exec(&mut db)
+            .await?
+        {
+            message
+                .update()
+                .sender_name(sender_name.map(str::to_owned))
+                .quote_sender_name(quote_sender_name.map(str::to_owned))
+                .exec(&mut db)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     /// Inserts a message if its `server_id` does not already exist.
     /// Returns `true` if a new row was inserted, `false` if it was a duplicate.
     pub async fn save_synced_message(
@@ -818,9 +847,29 @@ impl SessionStore {
     pub async fn save_contact(&self, contact: &Contact) -> Result<(), toasty::Error> {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
+
+        let existing = Contact::filter_by_jid(contact.jid.clone())
+            .first()
+            .exec(&mut db)
+            .await?;
+        let (existing_name, existing_push) = existing
+            .map(|row| (row.name, row.push_name))
+            .unwrap_or_default();
+
+        let name = contact
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .or(existing_name);
+        let push_name = contact
+            .push_name
+            .clone()
+            .filter(|push| !push.is_empty())
+            .or(existing_push);
+
         Contact::upsert_by_jid(contact.jid.clone())
-            .name(contact.name.clone())
-            .push_name(contact.push_name.clone())
+            .name(name)
+            .push_name(push_name)
             .phone_number(contact.phone_number.clone())
             .is_registered(contact.is_registered)
             .last_updated(Timestamp::now().as_second())
