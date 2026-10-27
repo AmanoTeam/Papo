@@ -378,6 +378,38 @@ impl SenderResolution {
     /// order: real name, then the wire-sourced chain marked the
     /// `WhatsApp` way.
     pub(crate) fn resolve_message(&self, chat: &Chat, message: &mut ChatMessage) -> Option<String> {
+        // The quoted author is anonymous to the wire: resolve like any
+        // other sender, with the number fallback; the display survives
+        // across rebinds via the stored name.
+        if let Some(quote) = &mut message.quote {
+            quote.sender_name = quote.participant.as_deref().and_then(|bare| {
+                if !self.own_forms.is_empty() && self.own_forms.contains(&bare.to_string()) {
+                    return Some(i18n!("You"));
+                }
+
+                let resolved =
+                    resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
+                        .or_else(|| {
+                            if is_lid_jid(bare) {
+                                self.lid_to_pn.get(bare).map(|pn| format_lid_as_number(pn))
+                            } else if is_phone_jid(bare) {
+                                Some(format_lid_as_number(bare))
+                            } else {
+                                None
+                            }
+                        });
+                if resolved.is_none() {
+                    tracing::debug!(
+                        "Quote author {bare} unresolved: contact={} pn-mapping={}",
+                        self.contacts.contains_key(bare),
+                        is_lid_jid(bare).then(|| self.lid_to_pn.get(bare)).is_some()
+                    );
+                }
+
+                resolved
+            });
+        }
+
         if message.outgoing || message.sender_jid.is_empty() {
             return None;
         }
@@ -434,40 +466,6 @@ impl SenderResolution {
                 }
             }
         };
-
-        // The quoted author is anonymous to the wire: resolve like any
-        // other sender, with the number fallback; the display survives
-        // across rebinds via the stored name.
-        if let Some(quote) = &mut message.quote {
-            quote.sender_name = quote.participant.as_deref().and_then(|bare| {
-                if message.outgoing
-                    || (!self.own_forms.is_empty() && self.own_forms.contains(&bare.to_string()))
-                {
-                    return Some(i18n!("You"));
-                }
-
-                let resolved =
-                    resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
-                        .or_else(|| {
-                            if is_lid_jid(bare) {
-                                self.lid_to_pn.get(bare).map(|pn| format_lid_as_number(pn))
-                            } else if is_phone_jid(bare) {
-                                Some(format_lid_as_number(bare))
-                            } else {
-                                None
-                            }
-                        });
-                if resolved.is_none() {
-                    tracing::debug!(
-                        "Quote author {bare} unresolved: contact={} pn-mapping={}",
-                        self.contacts.contains_key(bare),
-                        is_lid_jid(bare).then(|| self.lid_to_pn.get(bare)).is_some()
-                    );
-                }
-
-                resolved
-            });
-        }
 
         if let Some(name) = name {
             message.sender_name = Some(name.clone());

@@ -2403,8 +2403,9 @@ impl AsyncComponent for Application {
                         if let Some(quote) = chat_message.quote.as_mut()
                             && let Some(participant) = quote.participant.clone()
                         {
-                            // Your own messages quote back as `You`.
-                            if outgoing || self.is_own_jid(&participant) {
+                            // Only your own identities quote back as
+                            // `You`; the carrier's direction is not.
+                            if self.is_own_jid(&participant) {
                                 quote.sender_name = Some(i18n!("You"));
                             } else {
                                 let chat =
