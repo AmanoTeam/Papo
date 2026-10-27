@@ -266,6 +266,32 @@ impl TimelineModel {
                 .items_changed(index, 1, 1);
         }
     }
+
+    /// Removes the row at `index` in one splice, settling pending
+    /// section tiles around the shift first.
+    fn remove(&self, index: u32) {
+        let stale_len = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
+        if stale_len == 0 {
+            return;
+        }
+
+        self.sections_changed(0, stale_len);
+
+        let removed = {
+            let mut rows = self.imp().rows.borrow_mut();
+            usize::try_from(index)
+                .ok()
+                .filter(|slot| *slot < rows.len())
+                .map(|slot| rows.remove(slot))
+                .is_some()
+        };
+
+        if removed {
+            self.upcast_ref::<gio::ListModel>()
+                .items_changed(index, 1, 0);
+            self.sections_changed(0, stale_len - 1);
+        }
+    }
 }
 
 /// Builds the message row factory, reusing the row widgets and binding
@@ -774,6 +800,12 @@ impl ChatHistory {
     /// messages, in which case an arrival is seen live and never counts
     /// as unread.
     pub(crate) fn append_live(&mut self, message: ChatMessage, at_bottom: bool) {
+        // A reply drains the band: the divider demotes before the
+        // message appends below where it sat.
+        if message.outgoing {
+            self.demote_unread_band();
+        }
+
         let msg_date = message_day(&message);
         let in_unread = self
             .timeline
@@ -1207,6 +1239,47 @@ impl ChatHistory {
                 glib::ControlFlow::Continue
             }
         });
+    }
+
+    /// A sent message drains the band: the unread divider goes away
+    /// and rows built as unread stop rendering the band styling.
+    fn demote_unread_band(&self) {
+        let Some(divider) = self
+            .timeline
+            .position_row(|row| matches!(row, ChatRow::UnreadDivider))
+        else {
+            return;
+        };
+
+        for idx in (divider + 1)..self.timeline.len() {
+            let Some(ChatRow::Message {
+                last,
+                first,
+                unread: true,
+                message,
+                last_of_segment,
+                first_of_segment,
+            }) = self.timeline.row(idx)
+            else {
+                continue;
+            };
+
+            let day = message_day(&message);
+            self.timeline.replace(
+                idx,
+                ChatRow::Message {
+                    last,
+                    first,
+                    unread: false,
+                    message,
+                    last_of_segment,
+                    first_of_segment,
+                },
+                day,
+            );
+        }
+
+        self.timeline.remove(divider);
     }
 
     /// The last unread message stops being the band tail once more of
