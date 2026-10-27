@@ -5,6 +5,7 @@ use std::{
     mem,
     rc::Rc,
     slice,
+    time::Duration,
 };
 
 use adw::prelude::*;
@@ -29,6 +30,7 @@ pub struct ChatList {
     db: SessionStore,
     typing: HashMap<String, Vec<TypingSender>>,
     pending_rows: VecDeque<ChatRowData>,
+    populate_cycle: bool,
     pending_avatars: HashMap<String, String>,
 
     chat_jid: Option<String>,
@@ -180,6 +182,7 @@ impl SimpleAsyncComponent for ChatList {
             db,
             typing: HashMap::new(),
             pending_rows: VecDeque::new(),
+            populate_cycle: false,
             pending_avatars: HashMap::new(),
 
             chat_jid: None,
@@ -282,7 +285,7 @@ impl SimpleAsyncComponent for ChatList {
                     .list_view_wrapper
                     .view
                     .vadjustment()
-                    .is_some_and(|adj| adj.value() <= adj.lower() + 0.5);
+                    .is_some_and(|adj| adj.value() <= adj.lower() + 72.0);
 
                 let last_message = match chat.get_last_message(&self.db).await {
                     Ok(message) => message,
@@ -348,7 +351,16 @@ impl SimpleAsyncComponent for ChatList {
                 if (old_pins != (pinned, pinned_at) || was_at_top)
                     && let Some(adj) = self.list_view_wrapper.view.vadjustment()
                 {
-                    glib::idle_add_local_once(move || adj.set_value(adj.lower()));
+                    glib::idle_add_local_once({
+                        let adj = adj.clone();
+                        move || adj.set_value(adj.lower())
+                    });
+
+                    // The idle shot can land before the list lays out
+                    // the spliced row; a second pins the settled bounds.
+                    glib::timeout_add_local_once(Duration::from_millis(120), move || {
+                        adj.set_value(adj.lower());
+                    });
                 }
             }
             ChatListInput::RemoveChat { jid } => {
@@ -360,6 +372,11 @@ impl SimpleAsyncComponent for ChatList {
                 }
             }
             ChatListInput::PopulateAll(chats) => {
+                // A populate cycle re-opens the list: its rows land in
+                // slices, and the frame stays pinned at the top through
+                // every one of them (and past later live arrivals).
+                self.populate_cycle = true;
+
                 let db = self.db.clone();
                 let sender = sender.clone();
                 let own_forms = self.own_forms.clone();
@@ -587,7 +604,29 @@ impl SimpleAsyncComponent for ChatList {
                     built += 1;
                 }
 
-                if !self.pending_rows.is_empty() {
+                // Every populate slice re-pins the top: on fast-sync
+                // starts, live rows from the stream can land before the
+                // first batch, so gating on an empty list strands the
+                // frame wherever the storm left it.
+                if self.populate_cycle
+                    && built > 0
+                    && let Some(adj) = self.list_view_wrapper.view.vadjustment()
+                {
+                    glib::idle_add_local_once({
+                        let adj = adj.clone();
+                        move || adj.set_value(adj.lower())
+                    });
+
+                    // The idle shot can land before the list lays out
+                    // the fresh rows; a second pins the settled bounds.
+                    glib::timeout_add_local_once(Duration::from_millis(120), move || {
+                        adj.set_value(adj.lower());
+                    });
+                }
+
+                if self.pending_rows.is_empty() {
+                    self.populate_cycle = false;
+                } else {
                     sender.input(ChatListInput::PumpPending);
                 }
             }
