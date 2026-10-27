@@ -1197,9 +1197,20 @@ impl ChatHistory {
     fn play_glide(view: &gtk::ListView, adj: &gtk::Adjustment, gliding: Rc<Cell<bool>>) {
         let start = adj.value();
         let target = (adj.upper() - adj.page_size()).max(adj.lower());
-        if (target - start).abs() < 2.0 {
+        let travel = (target - start).abs();
+        if travel < 2.0 {
             return;
         }
+
+        // Duration follows the distance: a row of travel is a snap,
+        // a couple of screens plays out fully without ever feeling
+        // like a page-turn.
+        // Clamped into a millisecond domain where truncation is
+        // provably value-less.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let truncated = (travel as i64).max(0) as u64;
+        let duration = (120u64 + truncated.saturating_mul(8) / 100).min(260);
+        let duration = u32::try_from(duration).unwrap_or(260);
 
         gliding.set(true);
 
@@ -1207,7 +1218,7 @@ impl ChatHistory {
             view,
             start,
             target,
-            250,
+            duration,
             adw::CallbackAnimationTarget::new({
                 let adj = adj.clone();
                 move |value| adj.set_value(value)
