@@ -15,7 +15,7 @@ application_id = base_id
 dependency('glib-2.0', version: '>= 2.82')
 dependency('gio-2.0', version: '>= 2.82')
 dependency('gtk4', version: '>= 4.20.2')
-dependency('libadwaita-1', version: '>= 1.8.0')
+dependency('libadwaita-1', version: '>= 1.9.0')
 
 # Please keep these dependencies sorted.
 dependency('glycin-2', version: '>= 2.0.0')

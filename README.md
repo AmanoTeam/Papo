@@ -36,7 +36,7 @@ flatpak-builder --install --user --install-deps-from=flathub build build-aux/com
 
 ### Build from source
 
-Requires Rust nightly, GTK4 (>= 4.20), libadwaita (>= 1.8), and Meson.
+Requires Rust nightly, GTK4 (>= 4.20), libadwaita (>= 1.9), and Meson.
 
 ```sh
 meson setup build
