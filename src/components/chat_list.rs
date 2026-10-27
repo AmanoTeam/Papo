@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     cmp::Ordering,
     collections::{HashMap, VecDeque},
-    mem,
+    iter, mem,
     rc::Rc,
     slice,
     time::Duration,
@@ -432,43 +432,8 @@ impl SimpleAsyncComponent for ChatList {
                     self.typing.insert(chat_jid.clone(), senders);
                 }
 
-                let index = self.get_index_by_jid(&chat_jid);
-                let row_data = index.and_then(|index| {
-                    self.list_view_wrapper
-                        .iter()
-                        .nth(index as usize)
-                        .map(|item| {
-                            let row = item.borrow();
-                            (
-                                row.data.chat.clone(),
-                                row.data.last_message.clone(),
-                                row.data.unread_count,
-                                row.avatar_texture.clone(),
-                            )
-                        })
-                });
-
-                if let (Some(index), Some((chat, mut last_message, unread_count, avatar_texture))) =
-                    (index, row_data)
-                {
-                    if let Ok(fresh) = chat.get_last_message(&self.db).await {
-                        last_message = fresh;
-                    }
-
-                    let (is_typing, typing_senders) = self.typing_row_data(&chat_jid);
-                    let updated_row = ChatRow {
-                        data: ChatRowData {
-                            chat,
-                            last_message,
-                            unread_count,
-                        },
-                        is_typing,
-                        typing_senders,
-                        avatar_texture,
-                    };
-
-                    let object = glib::BoxedAnyObject::new(updated_row);
-                    self.store().splice(index, 1, &[object]);
+                if let Some(index) = self.get_index_by_jid(&chat_jid) {
+                    self.rebind_typing_row(&chat_jid, index).await;
 
                     // Re-select the row.
                     if self.chat_jid.as_deref() == Some(&chat_jid)
@@ -540,7 +505,23 @@ impl SimpleAsyncComponent for ChatList {
 
             ChatListInput::Select(jid) => {
                 if self.chat_jid.as_deref() != Some(&jid) {
-                    self.chat_jid = Some(jid.clone());
+                    // The open chat hides its typing line, and the chat
+                    // that just stopped being open shows it again.
+                    let previous = self.chat_jid.replace(jid.clone());
+                    for touched in previous.into_iter().chain(iter::once(jid.clone())) {
+                        if let Some(index) = self.get_index_by_jid(&touched) {
+                            self.rebind_typing_row(&touched, index).await;
+
+                            if touched == jid
+                                && let Some(position) = self.get_visible_index_by_jid(&jid)
+                            {
+                                self.list_view_wrapper
+                                    .selection_model
+                                    .select_item(position, true);
+                            }
+                        }
+                    }
+
                     let _ = sender.output(ChatListOutput::ChatSelected(jid));
                 }
             }
@@ -714,10 +695,52 @@ impl ChatList {
     }
 
     fn typing_row_data(&self, jid: &str) -> (bool, Vec<TypingSender>) {
+        // The open chat already renders its typists above the message
+        // composer; its list row stays on the message preview.
+        if self.chat_jid.as_deref() == Some(jid) {
+            return (false, Vec::new());
+        }
+
         match self.typing.get(jid) {
             Some(senders) if !senders.is_empty() => (true, senders.clone()),
             _ => (false, Vec::new()),
         }
+    }
+
+    /// Rebuilds the row at `index` from its stored data and the
+    /// current typing state, splicing it back in place.
+    async fn rebind_typing_row(&self, jid: &str, index: u32) {
+        let Some(item) = self.list_view_wrapper.iter().nth(index as usize) else {
+            return;
+        };
+        let (chat, mut last_message, unread_count, avatar_texture) = {
+            let row = item.borrow();
+            (
+                row.data.chat.clone(),
+                row.data.last_message.clone(),
+                row.data.unread_count,
+                row.avatar_texture.clone(),
+            )
+        };
+
+        if let Ok(fresh) = chat.get_last_message(&self.db).await {
+            last_message = fresh;
+        }
+
+        let (is_typing, typing_senders) = self.typing_row_data(jid);
+        let updated_row = ChatRow {
+            data: ChatRowData {
+                chat,
+                last_message,
+                unread_count,
+            },
+            is_typing,
+            typing_senders,
+            avatar_texture,
+        };
+
+        let object = glib::BoxedAnyObject::new(updated_row);
+        self.store().splice(index, 1, &[object]);
     }
 
     /// Builds a row from precomputed data; no database access, so it is
