@@ -38,7 +38,7 @@ resources = gnome.compile_resources(
   gresource_bundle: true,
   source_dir: [
     meson.current_build_dir(),
-    meson.source_root() / 'data' / 'icons',
+    meson.project_source_root() / 'data' / 'icons',
   ],
   install: true,
   install_dir: pkgdatadir,
