@@ -909,14 +909,13 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
-                let was_typing = !self.state.typing.is_empty();
                 self.state.typing = senders;
                 self.rebuild_typing_avatars();
 
                 // The indicator expands below the timeline: when it first
                 // appears, keep the bottom-most message fully visible for
                 // readers parked at the bottom.
-                if !was_typing && !self.state.typing.is_empty() && self.state.is_at_bottom {
+                if self.state.is_at_bottom {
                     self.scroll_to_bottom(|| {});
                 }
             }
