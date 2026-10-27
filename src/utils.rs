@@ -420,7 +420,10 @@ impl SenderResolution {
                     );
                 }
 
-                resolved.map(|(name, _)| name)
+                resolved.map(|(name, push)| {
+                    quote.sender_push = push;
+                    name
+                })
             });
         }
 

@@ -31,6 +31,18 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    /// The sender's name as it should paint: contact-resolved names
+    /// plain, push-sourced names carrying the tilde marker.
+    pub fn display_sender_name(&self) -> Option<String> {
+        self.sender_name.as_deref().map(|name| {
+            if self.sender_push {
+                format!("~{name}")
+            } else {
+                name.to_owned()
+            }
+        })
+    }
+
     pub async fn upsert(&self, store: &SessionStore) -> Result<(), toasty::Error> {
         store.save_message(&self.chat_jid, self).await
     }
@@ -119,6 +131,7 @@ impl ChatMessage {
             stanza_id: context_info.stanza_id.clone(),
             participant,
             sender_name: None,
+            sender_push: false,
         })
     }
 }
@@ -175,9 +188,22 @@ pub struct ChatQuote {
     pub stanza_id: Option<String>,
     pub participant: Option<String>,
     pub sender_name: Option<String>,
+    /// Whether `sender_name` is push-sourced.
+    pub sender_push: bool,
 }
 
 impl ChatQuote {
+    /// The quoted author's name as it should paint.
+    pub fn display_sender_name(&self) -> Option<String> {
+        self.sender_name.as_deref().map(|name| {
+            if self.sender_push {
+                format!("~{name}")
+            } else {
+                name.to_owned()
+            }
+        })
+    }
+
     /// Display text for the snippet: the quoted body, else the media
     /// type label.
     pub fn text(&self) -> Option<&str> {

@@ -2428,15 +2428,16 @@ impl AsyncComponent for Application {
                                 let chat =
                                     self.chats.iter().find(|chat| chat.jid == chat_jid).cloned();
 
-                                let mut sender_name = self
+                                let (mut sender_name, sender_push) = self
                                     .resolve_sender_name(&participant, None, chat.as_ref(), None)
                                     .await
-                                    .map(|(name, _)| name);
+                                    .map_or((None, false), |(name, push)| (Some(name), push));
                                 if sender_name.is_none() {
                                     sender_name = self.resolve_sender_display(&participant).await;
                                 }
 
                                 quote.sender_name = sender_name;
+                                quote.sender_push = sender_push;
                             }
                             if quote.sender_name.is_none() {
                                 let mapped = self.db.lid_to_pn_jid(&participant).await.is_some();

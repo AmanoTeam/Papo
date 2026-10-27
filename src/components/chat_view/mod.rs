@@ -1027,6 +1027,7 @@ impl AsyncComponent for ChatView {
                     } else {
                         message.sender_name.clone()
                     },
+                    sender_push: message.sender_push,
                 });
 
                 if self.history.truly_at_bottom() {
@@ -1680,9 +1681,7 @@ impl ChatView {
         };
 
         quote
-            .sender_name
-            .as_deref()
-            .map(|name| name.trim_start_matches('~').to_string())
+            .display_sender_name()
             .or_else(|| quote.participant.clone())
             .unwrap_or_default()
     }

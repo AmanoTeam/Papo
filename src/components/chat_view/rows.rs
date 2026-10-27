@@ -155,20 +155,16 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
         }
     }
 
-    if first && let Some(name) = &msg.sender_name {
-        // The tilde is minted here, at paint time, exclusively: it
-        // never lives in the database or on the wire.
+    if first && let Some(label) = msg.display_sender_name() {
+        // The tilde is minted by the row itself: canonical data in,
+        // provenance-marked name out.
         if msg.sender_push {
             widgets.sender_label.add_css_class("push-name");
         } else {
             widgets.sender_label.remove_css_class("push-name");
         }
 
-        widgets.sender_label.set_label(&if msg.sender_push {
-            format!("~{name}")
-        } else {
-            name.clone()
-        });
+        widgets.sender_label.set_label(&label);
         widgets.sender_label.set_visible(true);
     }
 }
@@ -217,8 +213,10 @@ fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool)
         widgets.quote_box.add_css_class("incoming");
     }
 
-    if let Some(name) = quote.sender_name.as_deref().filter(|name| !name.is_empty()) {
-        widgets.quote_sender.set_label(name.trim_start_matches('~'));
+    if let Some(label) = quote.display_sender_name()
+        && !label.is_empty()
+    {
+        widgets.quote_sender.set_label(&label);
         widgets.quote_sender.set_visible(true);
     } else if let Some(participant) = &quote.participant {
         widgets.quote_sender.set_label(participant);

@@ -118,6 +118,7 @@ impl SessionStore {
                 stanza_id: entity.quote_stanza_id.clone(),
                 participant: entity.quote_participant.clone(),
                 sender_name: entity.quote_sender_name.clone(),
+                sender_push: false,
             });
 
         ChatMessage {
