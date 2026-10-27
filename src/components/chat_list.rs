@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     collections::{HashMap, VecDeque},
     iter, mem,
@@ -36,6 +36,7 @@ pub struct ChatList {
     chat_jid: Option<String>,
     own_forms: Vec<String>,
     filter_state: Rc<RefCell<ChatListFilter>>,
+    select_guard: Cell<bool>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
@@ -188,6 +189,7 @@ impl SimpleAsyncComponent for ChatList {
             chat_jid: None,
             own_forms: Vec::new(),
             filter_state: Rc::new(RefCell::new(ChatListFilter::All)),
+            select_guard: Cell::new(false),
             list_view_wrapper: TypedListView::new(),
         };
 
@@ -328,6 +330,12 @@ impl SimpleAsyncComponent for ChatList {
                 let store = self.store();
                 let object = glib::BoxedAnyObject::new(updated_row);
 
+                // Selection notifications are suppressed while our own
+                // maintenance mutates the store: the model tracks rows
+                // by index, so a moving splice would otherwise slide
+                // the selection onto a neighbor chat as if clicked.
+                self.select_guard.set(true);
+
                 if keeps_position {
                     store.splice(index, 1, &[object]);
                 } else {
@@ -344,6 +352,8 @@ impl SimpleAsyncComponent for ChatList {
                         .selection_model
                         .select_item(position, true);
                 }
+
+                self.select_guard.set(false);
 
                 // A deliberate pin change deserves to be seen; a reader
                 // parked at the top stays anchored there through the
@@ -505,6 +515,8 @@ impl SimpleAsyncComponent for ChatList {
 
             ChatListInput::Select(jid) => {
                 if self.chat_jid.as_deref() != Some(&jid) {
+                    self.select_guard.set(true);
+
                     // The open chat hides its typing line, and the chat
                     // that just stopped being open shows it again.
                     let previous = self.chat_jid.replace(jid.clone());
@@ -522,10 +534,18 @@ impl SimpleAsyncComponent for ChatList {
                         }
                     }
 
+                    self.select_guard.set(false);
+
                     let _ = sender.output(ChatListOutput::ChatSelected(jid));
                 }
             }
             ChatListInput::SelectPosition(position) => {
+                // Selection changes set off by our own splices land
+                // here too; only gestures from real users may re-open.
+                if self.select_guard.get() {
+                    return;
+                }
+
                 if let Some(item) = self.list_view_wrapper.get_visible(position) {
                     let row = item.borrow();
 
