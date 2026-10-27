@@ -1188,21 +1188,17 @@ impl ChatHistory {
             .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 2.0)
     }
 
-    /// Reset the adjustment to `start` and replay the landing the
-    /// jump already computed, as a short ease-out glide. The shared
-    /// cell holds off any settling until the animation hands it back.
-    fn play_glide(
-        view: &gtk::ListView,
-        adj: &gtk::Adjustment,
-        start: f64,
-        gliding: Rc<Cell<bool>>,
-    ) {
-        let target = adj.value().clamp(
-            adj.lower(),
-            (adj.upper() - adj.page_size()).max(adj.lower()),
-        );
+    /// Play the landing as a short ease-out glide from the current
+    /// scroll position to the bottom of the content. Never rewinds:
+    /// the value only moves toward the target, so the destination can
+    /// never flash before the slide.
+    fn play_glide(view: &gtk::ListView, adj: &gtk::Adjustment, gliding: Rc<Cell<bool>>) {
+        let start = adj.value();
+        let target = (adj.upper() - adj.page_size()).max(adj.lower());
+        if (target - start).abs() < 2.0 {
+            return;
+        }
 
-        adj.set_value(start);
         gliding.set(true);
 
         let animation = adw::TimedAnimation::new(
@@ -1250,59 +1246,62 @@ impl ChatHistory {
 
         let gliding = Rc::new(Cell::new(false));
         let glide_trigger = Rc::new(Cell::new(None));
+        let trigger_armed = Rc::new(Cell::new(false));
 
-        // The first jump measures the landing. When the new row is
-        // not laid out yet the adjustment only moves with the layout
-        // pass, so the check runs there too: catch the landing as it
-        // applies, reset to the start, and replay it as a glide.
+        // Compose the landing on idle, past the model's own mutation
+        // pass, and measure it from the adjustment alone.
         glib::idle_add_local_once({
             let view = view.clone();
             let gliding = gliding.clone();
             let glide_trigger = glide_trigger.clone();
+            let trigger_armed = trigger_armed.clone();
 
             move || {
                 let Some(adj) = view.vadjustment() else {
                     return;
                 };
 
-                let start = adj.value();
-                scroll(&view);
-                let travel = adj.value() - start;
-
-                if travel > 2.0 && travel <= glide_budget(&adj) {
-                    Self::play_glide(&view, &adj, start, gliding.clone());
-                } else {
-                    let handler = {
-                        let view = view.clone();
-                        let gliding = gliding.clone();
-                        let glide_trigger = glide_trigger.clone();
-
-                        adj.connect_value_changed(move |adj| {
-                            let landed = adj.value() + adj.page_size() >= adj.upper() - 25.0;
-                            let travel = adj.value() - start;
-
-                            if !landed || travel <= 2.0 || glide_trigger.take().is_none() {
-                                return;
-                            }
-
-                            if travel <= glide_budget(adj) {
-                                Self::play_glide(&view, adj, start, gliding.clone());
-                            }
-                        })
-                    };
-
-                    glide_trigger.set(Some(handler));
+                let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
+                if travel > glide_budget(&adj) {
+                    scroll(&view);
+                    return;
                 }
+
+                if travel > 2.0 {
+                    Self::play_glide(&view, &adj, gliding.clone());
+                    return;
+                }
+
+                // Essentially at the bottom, or the new row is not laid
+                // out yet: wait for the growth that brings it, and let
+                // the trigger — not the loop — drive that landing.
+                let handler = {
+                    let view = view.clone();
+                    let gliding = gliding.clone();
+                    let glide_trigger = glide_trigger.clone();
+                    let trigger_armed = trigger_armed.clone();
+
+                    adj.connect_value_changed(move |adj| {
+                        if glide_trigger.take().is_none() {
+                            return;
+                        }
+                        trigger_armed.set(false);
+
+                        let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
+                        if travel > 2.0 && travel <= glide_budget(adj) {
+                            Self::play_glide(&view, adj, gliding.clone());
+                        }
+                    })
+                };
+
+                trigger_armed.set(true);
+                glide_trigger.set(Some(handler));
             }
         });
 
         let mut on_settled = Some(on_settled);
         glib::timeout_add_local(Duration::from_millis(16), move || {
-            // The glide owns the adjustment while it runs; settling
-            // resumes as soon as the animation hands it back.
-            if gliding.get() {
-                return glib::ControlFlow::Continue;
-            }
+            let armed = gliding.get() || trigger_armed.get();
 
             attempts += 1;
 
@@ -1320,10 +1319,11 @@ impl ChatHistory {
 
             // Re-anchor only when the content actually grew: re-jumping
             // to the last row on every tick fights the layout and is
-            // what the scrollbar shows as a fast up-and-down dance.
+            // what the scrollbar shows as a fast up-and-down dance. A
+            // playing or armed glide owns the growth instead.
             let upper_now = adj.upper();
             let moved = last_upper.is_none_or(|last| last.to_bits() != upper_now.to_bits());
-            let settled = if moved {
+            let settled = if moved && !armed {
                 scroll(&view)
             } else {
                 adj.value() + adj.page_size() >= upper_now - 25.0
@@ -1333,6 +1333,13 @@ impl ChatHistory {
             if (settled && !moved) || attempts >= 40 {
                 if let Some(trigger) = glide_trigger.take() {
                     adj.disconnect(trigger);
+                }
+                trigger_armed.set(false);
+
+                // A landing that never materialized still owes the
+                // bottom one instant hop.
+                if !settled {
+                    scroll(&view);
                 }
 
                 view.set_opacity(1.0);
