@@ -86,6 +86,8 @@ pub struct Application {
     pending_receipts: HashMap<String, VecDeque<(String, MessageStatus, bool)>>,
     /// Read marks that arrived while the chats were not loaded yet.
     pending_read_chats: HashSet<String>,
+    /// LIDs already asked of the wire resolver this session.
+    lid_resolve_attempted: HashSet<String>,
     /// Avatar fetches queued while the client was not connected yet.
     pending_avatar_fetches: Vec<String>,
     /// Group metadata fetches queued while the client was not connected.
@@ -280,6 +282,10 @@ pub enum AppMsg {
     HistorySyncCompleted,
     OfflineSyncCompleted,
 
+    ResolveLidSenders {
+        chat_jid: String,
+        lids: Vec<String>,
+    },
     RequestSenderAvatar {
         jid: String,
     },
@@ -1424,6 +1430,9 @@ impl AsyncComponent for Application {
                         AppMsg::FetchHistory { chat_jid, anchor }
                     }
 
+                    ChatViewOutput::ResolveLidSenders { chat_jid, lids } => {
+                        AppMsg::ResolveLidSenders { chat_jid, lids }
+                    }
                     ChatViewOutput::RequestSenderAvatar { jid } => {
                         AppMsg::RequestSenderAvatar { jid }
                     }
@@ -1453,6 +1462,7 @@ impl AsyncComponent for Application {
             pending_pins: Vec::new(),
             pending_receipts: HashMap::new(),
             pending_read_chats: HashSet::new(),
+            lid_resolve_attempted: HashSet::new(),
             pending_avatar_fetches: Vec::new(),
             pending_group_metadata: Vec::new(),
 
@@ -2638,6 +2648,21 @@ impl AsyncComponent for Application {
                 }
             }
 
+            AppMsg::ResolveLidSenders { chat_jid, lids } => {
+                // LID-keyed group senders with no known phone pair sit
+                // forever behind push names; the wire's resolver answers
+                // the pair on demand, exactly like the web client.
+                for lid in lids {
+                    if !self.lid_resolve_attempted.insert(lid.clone()) {
+                        continue;
+                    }
+
+                    self.client.emit(ClientInput::ResolveLidPn {
+                        chat_jid: chat_jid.clone(),
+                        lid,
+                    });
+                }
+            }
             AppMsg::RequestSenderAvatar { jid } => {
                 if self
                     .user_jid

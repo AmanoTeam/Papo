@@ -21,7 +21,7 @@ use crate::{
     i18n, i18n_f, ni18n_f,
     session::avatar,
     state::{Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus, TypingSender},
-    utils::{bare_jid, is_status_broadcast, re_resolve_senders, truncate_lines},
+    utils::{bare_jid, is_lid_jid, is_status_broadcast, re_resolve_senders, truncate_lines},
     widgets::TypingDots,
 };
 
@@ -197,6 +197,10 @@ pub enum ChatViewOutput {
         anchor: Option<HistoryAnchor>,
     },
 
+    ResolveLidSenders {
+        chat_jid: String,
+        lids: Vec<String>,
+    },
     RequestSenderAvatar {
         jid: String,
     },
@@ -1179,6 +1183,34 @@ impl AsyncComponent for ChatView {
                 }
 
                 self.history.set_identities(identities.clone());
+
+                // LID-keyed group senders with no known phone pair
+                // only ever render as push names; ask the wire's LID
+                // resolver for the pair exactly like the web client.
+                if let Some(chat) = self.chat.as_ref().filter(|chat| chat.is_group()) {
+                    let mut unknown = Vec::new();
+                    let mut seen = HashSet::new();
+                    for message in &messages {
+                        let bare = bare_jid(&message.sender_jid);
+                        if is_lid_jid(&bare) && seen.insert(bare.clone()) {
+                            unknown.push(bare);
+                        }
+                    }
+
+                    let mut lids = Vec::new();
+                    for bare in unknown {
+                        if self.db.lid_to_pn_jid(&bare).await.is_none() {
+                            lids.push(bare);
+                        }
+                    }
+
+                    if !lids.is_empty() {
+                        let _ = sender.output(ChatViewOutput::ResolveLidSenders {
+                            chat_jid: chat.jid.clone(),
+                            lids,
+                        });
+                    }
+                }
 
                 let full_len = messages.len();
                 let tail = if !had_unread && full_len > FILL_STREAM_CHUNK {
