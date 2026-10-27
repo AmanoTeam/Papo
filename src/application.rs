@@ -492,13 +492,13 @@ impl Application {
         alt_jid: Option<&str>,
         chat: Option<&Chat>,
         stored: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<(String, bool)> {
         if let Some(name) = self.resolve_name(jid).await {
-            return Some(name);
+            return Some((name, false));
         } else if let Some(alt) = alt_jid
             && let Some(name) = self.resolve_name(alt).await
         {
-            return Some(name);
+            return Some((name, false));
         }
 
         // Everything past the real-name chain is wire-sourced: the
@@ -520,8 +520,11 @@ impl Application {
             });
 
         match push_name {
-            Some(name) if !looks_like_jid(&name, &bare) => Some(format!("~{name}")),
-            _ => self.resolve_sender_display(jid).await,
+            Some(name) if !looks_like_jid(&name, &bare) => Some((name, true)),
+            _ => self
+                .resolve_sender_display(jid)
+                .await
+                .map(|display| (display, false)),
         }
     }
 
@@ -594,7 +597,8 @@ impl Application {
         let bare = bare_jid(sender_jid);
         let name = self
             .resolve_sender_name(&bare, None, Some(chat), None)
-            .await;
+            .await
+            .map(|(name, _)| name);
 
         let mut forms = vec![bare.clone()];
         if let Some(pn) = self.db.lid_to_pn_jid(&bare).await {
@@ -1212,6 +1216,7 @@ impl AsyncComponent for Application {
             .await
             .expect("Failed to open session database");
         let db = SessionStore::new(db, &session.uuid);
+        db.strip_tilde_markers().await;
 
         let login =
             Login::builder()
@@ -2377,14 +2382,15 @@ impl AsyncComponent for Application {
                                 .await;
                         }
 
-                        let sender_name = self
+                        let (sender_name, sender_push) = self
                             .resolve_sender_name(
                                 &sender_jid,
                                 Some(&info.source.sender.to_string()),
                                 self.chats.iter().find(|c| c.jid == chat_jid),
                                 Some(info.push_name.as_str()),
                             )
-                            .await;
+                            .await
+                            .map_or((None, false), |(name, push)| (Some(name), push));
 
                         let own_chat = self.user_jid.as_ref().is_some_and(|u| *u == chat_jid);
                         let status = if outgoing && own_chat {
@@ -2399,6 +2405,7 @@ impl AsyncComponent for Application {
                             chat_jid: chat_jid.clone(),
                             sender_jid: sender_jid.clone(),
                             sender_name,
+                            sender_push,
 
                             media,
                             quote: ChatMessage::wire_quote(&message),
@@ -2423,7 +2430,8 @@ impl AsyncComponent for Application {
 
                                 let mut sender_name = self
                                     .resolve_sender_name(&participant, None, chat.as_ref(), None)
-                                    .await;
+                                    .await
+                                    .map(|(name, _)| name);
                                 if sender_name.is_none() {
                                     sender_name = self.resolve_sender_display(&participant).await;
                                 }
@@ -2501,6 +2509,7 @@ impl AsyncComponent for Application {
                         chat_jid: recipient,
                         sender_jid: self.user_jid.clone().unwrap_or_default(),
                         sender_name: self.user_push_name.clone(),
+                        sender_push: false,
 
                         media: None,
                         quote,
@@ -2986,7 +2995,8 @@ impl AsyncComponent for Application {
                                 chat_ref,
                                 message.sender_name.as_deref(),
                             )
-                            .await,
+                            .await
+                            .map(|(name, _)| name),
                         );
 
                         task::yield_now().await;
@@ -3043,6 +3053,7 @@ impl AsyncComponent for Application {
                                 server_id: synced_msg.id,
                                 timestamp,
                                 sender_name,
+                                sender_push: false,
                             };
 
                             // Save the message, skipping duplicates on server_id.

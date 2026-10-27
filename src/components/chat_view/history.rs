@@ -645,7 +645,9 @@ impl ChatHistory {
                 continue;
             }
 
+            // This channel only ever carries contact-resolved names.
             message.sender_name = name.map(ToString::to_string);
+            message.sender_push = false;
             self.replace_row(index, row, false);
         }
     }
@@ -1473,6 +1475,7 @@ mod timeline_tests {
                 timestamp: Timestamp::from_second(now - (i as i64) * spacing)
                     .expect("timestamp fits"),
                 sender_name: None,
+                sender_push: false,
             })
             .collect::<Vec<_>>()
     }

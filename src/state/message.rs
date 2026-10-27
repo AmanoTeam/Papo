@@ -25,6 +25,9 @@ pub struct ChatMessage {
     pub timestamp: Timestamp,
     /// Sender's display name (push name, for group chats).
     pub sender_name: Option<String>,
+    /// Whether `sender_name` came from a push source rather than a
+    /// saved contact.
+    pub sender_push: bool,
 }
 
 impl ChatMessage {

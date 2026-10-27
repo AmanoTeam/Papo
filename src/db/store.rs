@@ -3,7 +3,8 @@ use std::{collections::HashMap, fmt, fs, sync::Arc};
 use indexmap::IndexMap;
 
 use jiff::Timestamp;
-use toasty::Db;
+use toasty::{Db, Executor};
+use toasty_core::driver::operation::{RawSql, RawSqlRet};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -132,6 +133,7 @@ impl SessionStore {
             server_id: entity.server_id.unwrap_or_default(),
             timestamp: entity.timestamp,
             sender_name: entity.sender_name,
+            sender_push: false,
         }
     }
 }
@@ -499,6 +501,30 @@ impl SessionStore {
         }
 
         Ok(())
+    }
+
+    /// Clears the push-name marker older builds baked into stored
+    /// sender columns: the tilde is painted at render time and data
+    /// stays canonical.
+    pub async fn strip_tilde_markers(&self) {
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        for column in ["sender_name", "quote_sender_name"] {
+            let result = db
+                .exec_raw_sql(RawSql {
+                    sql: format!(
+                        r#"UPDATE "messages" SET "{column}" = SUBSTR("{column}", 2) WHERE "{column}" LIKE '~%'"#
+                    ),
+                    ret: RawSqlRet::None,
+                    params: Vec::new(),
+                })
+                .await;
+
+            if let Err(e) = result {
+                tracing::warn!("Failed to strip tilde markers from {column}: {e}");
+            }
+        }
     }
 
     /// Inserts a message if its `server_id` does not already exist.

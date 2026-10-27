@@ -201,48 +201,60 @@ pub(crate) fn looks_like_jid(candidate: &str, sender_bare: &str) -> bool {
 
 /// One sender's best stored name: a real contact name plain, or a
 /// learned push name tilde-prefixed.
-/// A contact's display name: the real name, or the learned push
-/// name marked the `WhatsApp` way.
-fn contact_display_name(contact: &Contact) -> Option<String> {
-    if let Some(name) = contact.name.as_deref().filter(|name| !name.is_empty()) {
-        return Some(name.to_string());
-    }
-
-    contact
-        .push_name
-        .as_deref()
-        .filter(|name| !name.is_empty())
-        .map(|name| format!("~{name}"))
-}
-
 /// One sender's resolved name across both of their jid identities,
 /// resolved against a snapshot of the contacts table.
+///
+/// A real contact name beats a push-name marker **regardless of which
+/// identity form holds the record** — the phone-number row, the LID
+/// row, or a form linked to either. Push names come out only when
+/// every reachable record is nameless.
 fn resolve_stored_name(
     contacts: &HashMap<String, Contact>,
     lid_to_pn: &HashMap<String, String>,
     pn_to_lids: &HashMap<String, Vec<String>>,
     bare: &str,
-) -> Option<String> {
-    if let Some(contact) = contacts.get(bare)
-        && let Some(name) = contact_display_name(contact)
-    {
-        return Some(name);
+) -> Option<(String, bool)> {
+    let named_contact = |jid: &str| {
+        contacts
+            .get(jid)
+            .and_then(|contact| contact.name.clone())
+            .filter(|name| !name.is_empty())
+    };
+
+    if let Some(name) = named_contact(bare) {
+        return Some((name, false));
     } else if is_lid_jid(bare)
         && let Some(phone) = lid_to_pn.get(bare)
-        && let Some(contact) = contacts.get(phone)
-        && let Some(name) = contact_display_name(contact)
+        && let Some(name) = named_contact(phone)
     {
-        return Some(name);
+        return Some((name, false));
     } else if is_phone_jid(bare)
         && let Some(lids) = pn_to_lids.get(bare)
     {
         for lid in lids {
-            if let Some(contact) = contacts.get(lid)
-                && let Some(name) = contact_display_name(contact)
-            {
-                return Some(name);
+            if let Some(name) = named_contact(lid) {
+                return Some((name, false));
             }
         }
+    }
+
+    // No name-bearing record under any identity: the push name is the
+    // best rendering the table can offer — canonical and marker-free;
+    // the flag tells the paint layer to mint the tilde itself.
+    let push_of = |jid: &str| {
+        contacts
+            .get(jid)
+            .and_then(|contact| contact.push_name.clone())
+            .filter(|push| !push.is_empty())
+    };
+
+    if let Some(push) = push_of(bare) {
+        return Some((push, true));
+    } else if is_lid_jid(bare)
+        && let Some(phone) = lid_to_pn.get(bare)
+        && let Some(push) = push_of(phone)
+    {
+        return Some((push, true));
     }
 
     None
@@ -391,9 +403,11 @@ impl SenderResolution {
                     resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, bare)
                         .or_else(|| {
                             if is_lid_jid(bare) {
-                                self.lid_to_pn.get(bare).map(|pn| format_lid_as_number(pn))
+                                self.lid_to_pn
+                                    .get(bare)
+                                    .map(|pn| (format_lid_as_number(pn), false))
                             } else if is_phone_jid(bare) {
-                                Some(format_lid_as_number(bare))
+                                Some((format_lid_as_number(bare), false))
                             } else {
                                 None
                             }
@@ -406,7 +420,7 @@ impl SenderResolution {
                     );
                 }
 
-                resolved
+                resolved.map(|(name, _)| name)
             });
         }
 
@@ -423,15 +437,16 @@ impl SenderResolution {
                 .take()
                 .map(|name| name.trim_start_matches('~').to_string())
                 .filter(|name| !looks_like_jid(name, &bare))?;
-            let display = format!("~{stored}");
-            message.sender_name = Some(display.clone());
+            message.sender_push = true;
+            message.sender_name = Some(stored.clone());
 
-            return Some(display);
+            return Some(stored);
         }
 
-        let name = if let Some(name) =
+        let name = if let Some((name, push)) =
             resolve_stored_name(&self.contacts, &self.lid_to_pn, &self.pn_to_lids, &bare)
         {
+            message.sender_push = push;
             Some(name)
         } else {
             // Wire-sourced fallbacks.
@@ -451,7 +466,10 @@ impl SenderResolution {
                 });
 
             match wire {
-                Some(name) if !looks_like_jid(&name, &bare) => Some(format!("~{name}")),
+                Some(name) if !looks_like_jid(&name, &bare) => {
+                    message.sender_push = true;
+                    Some(name)
+                }
                 // Junk "names" — ids posing as names in old rows or
                 // participants entries — fall to the number
                 // fallbacks, same as having no name at all.
@@ -522,7 +540,10 @@ pub(crate) async fn re_resolve_senders(
     // fallbacks included. Rows whose resolution beats what was saved
     // get persisted back at once — the stored name stops being the
     // pre-contact rendering it was ingested with.
-    let mut outcomes = HashMap::<String, Option<String>>::new();
+    let mut named = 0;
+    let mut push_sourced = 0;
+    let mut unresolved_sample = Vec::new();
+
     for message in messages.iter_mut() {
         let sender_before = message.sender_name.clone();
         let quote_before = message
@@ -532,9 +553,14 @@ pub(crate) async fn re_resolve_senders(
 
         let outcome = resolution.resolve_message(chat, message);
         if !message.outgoing && !message.sender_jid.is_empty() {
-            outcomes
-                .entry(bare_jid(&message.sender_jid))
-                .or_insert(outcome);
+            if outcome.is_some() {
+                named += 1;
+                push_sourced += usize::from(message.sender_push);
+            } else if unresolved_sample.len() < 3 {
+                unresolved_sample.push(bare_jid(&message.sender_jid));
+            }
+
+            let _ = outcome;
         }
 
         let quote_after = message
@@ -558,22 +584,6 @@ pub(crate) async fn re_resolve_senders(
         }
     }
 
-    let mut named = 0;
-    let mut push_sourced = 0;
-    let mut unresolved_sample = Vec::new();
-    for bare in &senders {
-        match outcomes.get(bare) {
-            Some(Some(name)) if name.starts_with('~') => {
-                named += 1;
-                push_sourced += 1;
-            }
-            Some(Some(_)) => named += 1,
-            Some(None) | None if unresolved_sample.len() < 3 => {
-                unresolved_sample.push(bare.clone());
-            }
-            Some(None) | None => {}
-        }
-    }
     tracing::trace!(
         "Re-resolved senders for {}: {total} seen, {named} named, {push_sourced} push-sourced, \
          {} unresolved ({unresolved_sample:?})",
