@@ -1512,6 +1512,22 @@ impl AsyncComponent for ChatView {
 
                 self.state.is_loading = false;
             }
+            ChatViewCommand::FetchRetryTimeout { generation } => {
+                // Give up on this attempt: the phone did not answer and
+                // the queue slot has moved on. Release the marker so the
+                // loading feedback goes away; scrolling back to the edge
+                // re-requests, and a late answer still lands on its own.
+                if generation != self.generation
+                    || self.history_exhausted
+                    || self
+                        .history_fetch_at
+                        .is_none_or(|armed| armed.elapsed() < HISTORY_FETCH_TIMEOUT)
+                {
+                    return;
+                }
+
+                self.history_fetch_at = None;
+            }
             ChatViewCommand::ScrollPositionChanged { at_top, at_bottom } => {
                 self.state.is_at_top = at_top;
 
