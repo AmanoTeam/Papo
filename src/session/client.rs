@@ -11,7 +11,7 @@ use relm4::prelude::*;
 use tokio::{sync::Mutex, time};
 use uuid::Uuid;
 use whatsapp_rust::{
-    Jid, TokioRuntime,
+    AppStateResyncMode, Jid, TokioRuntime, WAPatchName,
     bot::Bot,
     http::{HttpRequest, UreqHttpClient},
     message_range,
@@ -1177,7 +1177,39 @@ impl AsyncComponent for Client {
                     || (None, i18n!("You!")),
                     |client| (client.pn().map(|j| j.to_string()), client.push_name()),
                 );
+
+                // Bootstrap the app-state collection hold-all: without an
+                // explicit resync kick at connect, regular_low never
+                // completes its bootstrap, and every read mark stays
+                // queued behind "bootstrap has not completed" forever.
+                let client = handle.as_ref().map(Arc::clone);
                 drop(handle);
+
+                if let Some(client) = client {
+                    let sender_clone = sender.clone();
+                    relm4::spawn(async move {
+                        match client
+                            .resync_app_state(
+                                [WAPatchName::RegularLow],
+                                AppStateResyncMode::Snapshot,
+                            )
+                            .await
+                        {
+                            Ok(report) => {
+                                tracing::debug!(
+                                    "Appstate regular_low resync: synced={} fatal={:?}",
+                                    report.all_synced(),
+                                    report.fatal
+                                );
+                                sender_clone
+                                    .oneshot_command(async { ClientCommand::PumpReadMarks });
+                            }
+                            Err(e) => {
+                                tracing::warn!("Appstate regular_low resync failed: {e}");
+                            }
+                        }
+                    });
+                }
 
                 sender.oneshot_command(async { ClientCommand::PumpReadMarks });
 

@@ -823,8 +823,6 @@ impl Application {
                 }
             }
         }
-
-        );
     }
 
     /// Marks a chat as read because the user read it on the phone. Chats
@@ -1896,8 +1894,6 @@ impl AsyncComponent for Application {
                     time::sleep(Duration::from_millis(400)).await;
                     AppCmd::FlushContactUpdates { seq }
                 });
-
-                }
             }
             AppMsg::ContactRemoved { jid } => {
                 let removed_name = self.contacts.remove(&jid);

@@ -112,14 +112,7 @@ impl AppSyncStore for ProtocolBackend {
                 .index_value_map
                 .and_then(|map| serde_json::from_str(&map).ok())
                 .unwrap_or_default(),
-            // `bootstrapped` and `mac_mismatch_fatal` have no entity columns, so
-            // a restart resets them. A collection whose bootstrap finished with
-            // a version past zero proves its baseline through the version
-            // alone; one that legitimately finished empty would otherwise sit
-            // at version zero with an ltHash no patch can extend, so letting it
-            // re-bootstrap is the safe direction. The next snapshot-MAC failure
-            // re-arms the fatal flag.
-            bootstrapped: false,
+            bootstrapped: entity.bootstrapped,
             mac_mismatch_fatal: false,
         }))
     }
@@ -148,6 +141,7 @@ impl AppSyncStore for ProtocolBackend {
         AppVersion::upsert_by_name(name)
             .hash(Some(state.hash.to_vec()))
             .version(version)
+            .bootstrapped(state.bootstrapped)
             .index_value_map(Some(index_value_map))
             .exec(&mut db)
             .await

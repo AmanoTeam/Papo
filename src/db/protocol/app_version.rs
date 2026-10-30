@@ -6,5 +6,6 @@ pub struct AppVersion {
     #[key]
     pub name: String,
     pub version: i64,
+    pub bootstrapped: bool,
     pub index_value_map: Option<String>,
 }

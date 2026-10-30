@@ -56,6 +56,7 @@ pub(crate) async fn open_encrypted_db(
             db.push_schema().await?;
         } else if db_is_readable(&mut db).await {
             ensure_tables(&mut db).await;
+            migrate_schema(&mut db).await;
             ensure_indices(&mut db).await;
         } else {
             quarantine_file(path);
@@ -144,6 +145,30 @@ async fn ensure_tables(db: &mut Db) {
         if let Err(e) = result {
             tracing::warn!("Failed to ensure schema table: {e}");
         }
+    }
+}
+
+/// Evolves tables that already exist but predate a column the schema
+/// now needs. `push_schema` only builds fresh databases and toasty
+/// cannot alter existing tables, so late additive columns land here.
+async fn migrate_schema(db: &mut Db) {
+    // Databases created before the flag: add the column in place, so
+    // completed bootstraps survive restarts instead of re-arming the
+    // mutation guard forever.
+    let result = db
+        .exec_raw_sql(RawSql {
+            sql: r#"ALTER TABLE "app_versions"
+                   ADD COLUMN "bootstrapped" INTEGER NOT NULL DEFAULT 0"#
+                .to_owned(),
+            ret: RawSqlRet::None,
+            params: Vec::new(),
+        })
+        .await;
+
+    if let Err(e) = result
+        && !e.to_string().contains("duplicate column name")
+    {
+        tracing::warn!("Failed to add the app-version bootstrap column: {e}");
     }
 }
 
