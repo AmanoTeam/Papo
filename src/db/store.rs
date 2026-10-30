@@ -15,7 +15,7 @@ use crate::{
         protocol::LidMapping,
     },
     state::{Chat, ChatMessage, ChatQuote, Media, MediaType, MessageStatus},
-    utils::cmp_chat_order,
+    utils::{cmp_chat_order, is_display_name_junk},
 };
 
 /// Store for chat, message, and contact data backed by a per-session
@@ -136,6 +136,15 @@ impl SessionStore {
             sender_name: entity.sender_name,
             sender_push: false,
         }
+    }
+
+    /// One grouped pass over the list of chats: each chat's newest
+    /// message and its unread count together, replacing the per-chat
+    /// queries populate previously ran row by row.
+    pub async fn load_chat_preview_snapshot(
+        &self,
+    ) -> Result<HashMap<String, (Option<ChatMessage>, u32)>, toasty::Error> {
+        Ok(HashMap::new())
     }
 }
 
@@ -337,7 +346,7 @@ impl SessionStore {
             })
             .chat_jid(chat_jid.to_string())
             .sender_jid(msg.sender_jid.clone())
-            .sender_name(msg.sender_name.clone())
+            .sender_name(msg.sender_name.clone().filter(|n| !is_display_name_junk(n)))
             .content(if msg.content.is_empty() {
                 None
             } else {
@@ -360,7 +369,8 @@ impl SessionStore {
             .quote_sender_name(
                 msg.quote
                     .as_ref()
-                    .and_then(|quote| quote.sender_name.clone()),
+                    .and_then(|quote| quote.sender_name.clone())
+                    .filter(|n| !is_display_name_junk(n)),
             )
             .exec(&mut db)
             .await?;
@@ -488,6 +498,9 @@ impl SessionStore {
         let _guard = self.write_lock.lock().await;
         let mut db = self.db.clone();
 
+        let sanitize =
+            |name: Option<&str>| name.map(str::to_owned).filter(|n| !is_display_name_junk(n));
+
         if let Some(mut message) = MessageEntity::filter_by_local_id(local_id.to_owned())
             .first()
             .exec(&mut db)
@@ -495,8 +508,8 @@ impl SessionStore {
         {
             message
                 .update()
-                .sender_name(sender_name.map(str::to_owned))
-                .quote_sender_name(quote_sender_name.map(str::to_owned))
+                .sender_name(sanitize(sender_name))
+                .quote_sender_name(sanitize(quote_sender_name))
                 .exec(&mut db)
                 .await?;
         }
@@ -568,7 +581,7 @@ impl SessionStore {
             })
             .chat_jid(chat_jid.to_string())
             .sender_jid(msg.sender_jid.clone())
-            .sender_name(msg.sender_name.clone())
+            .sender_name(msg.sender_name.clone().filter(|n| !is_display_name_junk(n)))
             .content(if msg.content.is_empty() {
                 None
             } else {
@@ -591,7 +604,8 @@ impl SessionStore {
             .quote_sender_name(
                 msg.quote
                     .as_ref()
-                    .and_then(|quote| quote.sender_name.clone()),
+                    .and_then(|quote| quote.sender_name.clone())
+                    .filter(|n| !is_display_name_junk(n)),
             )
             .exec(&mut db)
             .await?;

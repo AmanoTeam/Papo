@@ -199,6 +199,17 @@ pub(crate) fn looks_like_jid(candidate: &str, sender_bare: &str) -> bool {
             && candidate.chars().any(|c| c.is_ascii_digit()))
 }
 
+/// Whether a display-name candidate is a junk placeholder: a number
+/// or LID pattern rendered as name, not a human name. Neither wire
+/// data nor row updates may persist one.
+pub(crate) fn is_display_name_junk(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.is_empty()
+        || trimmed.contains('@')
+        || (trimmed.chars().filter(char::is_ascii_digit).count() >= 5
+            && !trimmed.chars().any(char::is_alphabetic))
+}
+
 /// One sender's best stored name: a real contact name plain, or a
 /// learned push name tilde-prefixed.
 /// One sender's resolved name across both of their jid identities,
@@ -432,6 +443,14 @@ impl SenderResolution {
         }
 
         let bare = bare_jid(&message.sender_jid);
+
+        // Your own identity never renders as a stranger's fallback.
+        if self.own_forms.contains(&bare) {
+            message.sender_name = None;
+            message.sender_push = false;
+            return None;
+        }
+
         let unknown = i18n!("Unknown");
         let chat_bare = bare_jid(&chat.jid);
         if chat.is_group() && bare == chat_bare {
