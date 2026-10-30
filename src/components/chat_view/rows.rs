@@ -533,7 +533,10 @@ impl RelmListItem for ChatRow {
                 bind_quote(
                     widgets,
                     msg,
-                    *first && msg.sender_name.is_some() && !msg.outgoing,
+                    *first
+                        && is_group_jid(&msg.chat_jid)
+                        && msg.sender_name.is_some()
+                        && !msg.outgoing,
                 );
                 bind_content_label(widgets, msg);
 
