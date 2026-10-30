@@ -292,6 +292,35 @@ fn setup_focus_on_click(scroll_window: &gtk::ScrolledWindow) {
     scroll_window.add_controller(click_gesture);
 }
 
+/// Typing with the history focused moves straight into the composer:
+/// the first character focuses the entry and lands in it.
+fn setup_type_to_focus(scroll_window: &gtk::ScrolledWindow, entry: &gtk::Entry) {
+    let entry = entry.clone();
+    let key_event_controller = gtk::EventControllerKey::new();
+    key_event_controller.connect_key_pressed(move |_, key, _, mods| match key.to_unicode() {
+        Some(ch)
+            if !ch.is_control()
+                && !mods.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::META_MASK,
+                ) =>
+        {
+            entry.grab_focus();
+
+            let text = ch.to_string();
+            let mut position = i32::from(entry.text_length());
+            entry.insert_text(&text, &mut position);
+            entry.select_region(-1, -1);
+            entry.set_position(i32::from(entry.text_length()));
+
+            glib::Propagation::Stop
+        }
+        _ => glib::Propagation::Proceed,
+    });
+    scroll_window.add_controller(key_event_controller);
+}
+
 /// Wires the composer quote preview's line-count lifecycle: it clamps
 /// tight once the reader scrolls, and relaxes again while they type.
 
@@ -658,6 +687,11 @@ impl AsyncComponent for ChatView {
             _ => glib::Propagation::Proceed,
         });
         scroll_window.add_controller(key_event_controller);
+
+        // Typing with the history focused moves straight into the
+        // composer: the first character focuses the entry and lands in
+        // it.
+        setup_type_to_focus(&scroll_window, message_entry);
 
         // Cancel a drafted reply when `Esc` is pressed on the entry;
         // without one, it keeps closing the chat.
