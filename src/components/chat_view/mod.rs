@@ -152,10 +152,17 @@ pub enum ChatViewInput {
     },
 
     OwnJids(Vec<String>),
+    PumpQuoteJump {
+        stanza_id: String,
+        tries: u8,
+    },
     QuoteActivated {
         stanza_id: String,
     },
     QuoteBarClicked,
+    QuoteHighlightStart {
+        stanza_id: String,
+    },
     QuoteHighlightExpired {
         stanza_id: String,
     },
@@ -241,14 +248,20 @@ pub enum ChatViewCommand {
         messages: Vec<ChatMessage>,
         identities: HashMap<String, String>,
     },
-    FetchRetryTimeout {
-        generation: u64,
-    },
     BackfillLoaded {
         generation: u64,
         older: Vec<ChatMessage>,
         newer: Vec<ChatMessage>,
         identities: HashMap<String, String>,
+    },
+    QuoteOlderLoaded {
+        generation: u64,
+        stanza_id: String,
+        tries: u8,
+        older: Vec<ChatMessage>,
+    },
+    FetchRetryTimeout {
+        generation: u64,
     },
 
     ScrollPositionChanged {
@@ -1008,16 +1021,57 @@ impl AsyncComponent for ChatView {
             ChatViewInput::OwnJids(forms) => {
                 self.own_forms = forms;
             }
-            ChatViewInput::QuoteActivated { stanza_id } => {
-                self.history.set_row_highlight(&stanza_id, true);
+            ChatViewInput::PumpQuoteJump { stanza_id, tries } => {
+                const QUOTE_JUMP_MAX_TRIES: u8 = 50;
 
                 if let Some(index) = self.history.index_by_stanza(&stanza_id) {
                     self.history.scroll_to_row(index);
+
+                    // The glow reads as arriving with the row, never
+                    // as the tail end of a timer that started before
+                    // the viewport caught up: arm it once the landing
+                    // has painted.
+                    glib::timeout_add_local_once(Duration::from_millis(300), move || {
+                        sender.input(ChatViewInput::QuoteHighlightStart { stanza_id });
+                    });
+                    return;
                 }
 
-                // The highlight fades after a few seconds.
-                glib::timeout_add_seconds_local_once(2, move || {
-                    sender.input(ChatViewInput::QuoteHighlightExpired { stanza_id });
+                let Some(chat) = self.chat.clone() else {
+                    return;
+                };
+                let Some(before_ts) = self.history.oldest_timestamp() else {
+                    tracing::debug!("quote-probe: no loaded window to page below for {stanza_id}");
+                    return;
+                };
+
+                if tries >= QUOTE_JUMP_MAX_TRIES {
+                    tracing::debug!(
+                        "quote-probe: gave up paging to {stanza_id} after {tries} rounds"
+                    );
+                    return;
+                }
+
+                let db = self.db.clone();
+                let generation = self.generation;
+                sender.oneshot_command(async move {
+                    let older = chat
+                        .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
+                        .await
+                        .unwrap_or_default();
+
+                    ChatViewCommand::QuoteOlderLoaded {
+                        generation,
+                        stanza_id,
+                        tries,
+                        older,
+                    }
+                });
+            }
+            ChatViewInput::QuoteActivated { stanza_id } => {
+                sender.input(ChatViewInput::PumpQuoteJump {
+                    stanza_id,
+                    tries: 0,
                 });
             }
             ChatViewInput::QuoteBarClicked => {
@@ -1029,6 +1083,14 @@ impl AsyncComponent for ChatView {
                 {
                     sender.input(ChatViewInput::QuoteActivated { stanza_id });
                 }
+            }
+            ChatViewInput::QuoteHighlightStart { stanza_id } => {
+                self.history.set_row_highlight(&stanza_id, false);
+                self.history.set_row_highlight(&stanza_id, true);
+
+                glib::timeout_add_seconds_local_once(2, move || {
+                    sender.input(ChatViewInput::QuoteHighlightExpired { stanza_id });
+                });
             }
             ChatViewInput::QuoteHighlightExpired { stanza_id } => {
                 self.history.set_row_highlight(&stanza_id, false);
@@ -1391,21 +1453,30 @@ impl AsyncComponent for ChatView {
                 self.state.is_at_bottom = true;
                 self.state.unread_count = 0;
             }
-            ChatViewCommand::FetchRetryTimeout { generation } => {
-                // Give up on this attempt: the phone did not answer and
-                // the queue slot has moved on. Release the marker so the
-                // loading feedback goes away; scrolling back to the edge
-                // re-requests, and a late answer still lands on its own.
-                if generation != self.generation
-                    || self.history_exhausted
-                    || self
-                        .history_fetch_at
-                        .is_none_or(|armed| armed.elapsed() < HISTORY_FETCH_TIMEOUT)
-                {
+            ChatViewCommand::QuoteOlderLoaded {
+                generation,
+                stanza_id,
+                tries,
+                older,
+            } => {
+                if generation != self.generation {
                     return;
                 }
 
-                self.history_fetch_at = None;
+                // Local history has nothing older: the quoted row lives
+                // before the phone answered anything papo stored.
+                if older.is_empty() {
+                    tracing::debug!("quote-probe: {stanza_id} lies beyond local history");
+                    return;
+                }
+
+                self.history.set_has_older(older.len() == LOAD_MORE_COUNT);
+                self.history.prepend_messages(&older);
+
+                sender.input(ChatViewInput::PumpQuoteJump {
+                    stanza_id,
+                    tries: tries + 1,
+                });
             }
             ChatViewCommand::BackfillLoaded {
                 generation,

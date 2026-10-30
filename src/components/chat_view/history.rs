@@ -301,6 +301,7 @@ impl TimelineModel {
 fn build_row_factory(
     input: Option<relm4::Sender<ChatViewInput>>,
     anchors: Rc<RefCell<HashMap<String, glib::WeakRef<gtk::Widget>>>>,
+    pending_highlight: Rc<RefCell<Option<String>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
@@ -352,6 +353,12 @@ fn build_row_factory(
             anchors
                 .borrow_mut()
                 .insert(message.server_id.clone(), anchor);
+
+            // The row just paged in for a quote-jump binds after the
+            // highlight was armed: pick the glow up at bind time.
+            if pending_highlight.borrow().as_deref() == Some(message.server_id.as_str()) {
+                root.add_css_class("highlight");
+            }
         }
 
         unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
@@ -443,6 +450,8 @@ pub(crate) struct ChatHistory {
     identity_lid_to_pn: HashMap<String, String>,
     oldest_loaded_timestamp: Option<Timestamp>,
     newest_loaded_timestamp: Option<Timestamp>,
+
+    pending_highlight: Rc<RefCell<Option<String>>>,
 }
 
 impl fmt::Debug for ChatHistory {
@@ -455,12 +464,18 @@ impl fmt::Debug for ChatHistory {
 
 impl ChatHistory {
     pub(crate) fn new(input: Option<relm4::Sender<ChatViewInput>>) -> Self {
+        let anchors = Rc::new(RefCell::new(HashMap::new()));
         let timeline = TimelineModel::new();
         let selection = gtk::NoSelection::new(Some(timeline.clone()));
-        let anchors = Rc::new(RefCell::new(HashMap::new()));
+        let pending_highlight = Rc::new(RefCell::new(None::<String>));
+
         let view = gtk::ListView::new(
             Some(selection),
-            Some(build_row_factory(input, anchors.clone())),
+            Some(build_row_factory(
+                input,
+                anchors.clone(),
+                pending_highlight.clone(),
+            )),
         );
         setup_day_headers(&view, &timeline);
 
@@ -474,6 +489,8 @@ impl ChatHistory {
             identity_lid_to_pn: HashMap::new(),
             oldest_loaded_timestamp: None,
             newest_loaded_timestamp: None,
+
+            pending_highlight,
         }
     }
 
@@ -529,7 +546,15 @@ impl ChatHistory {
     /// Toggles the quoted-row highlight. The class goes straight onto
     /// the row's widget — a model replace would re-anchor the view and
     /// drag the scroll position back, so the model stays untouched.
+    /// Rows still being paged in pick the class up at bind time
+    /// through the pending stanza.
     pub(crate) fn set_row_highlight(&self, stanza: &str, on: bool) {
+        if on {
+            *self.pending_highlight.borrow_mut() = Some(stanza.to_string());
+        } else if self.pending_highlight.borrow().as_deref() == Some(stanza) {
+            self.pending_highlight.borrow_mut().take();
+        }
+
         let weak = self.quote_anchors.borrow().get(stanza).cloned();
         let Some(root) = weak.and_then(|anchor| anchor.upgrade()) else {
             self.quote_anchors.borrow_mut().remove(stanza);
@@ -565,6 +590,14 @@ impl ChatHistory {
         self.view
             .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
 
+        // Far landings already read as their own reveal — resetting
+        // to the start to replay the segment only churns the viewport
+        // twice.
+        let page = adj.page_size();
+        if (adj.value() - start).abs() > page {
+            return;
+        }
+
         // Resetting to the start and gliding must happen while the
         // layout holds the reveal, before it paints; doing it on a
         // timer lets the landing frame flash first.
@@ -575,6 +608,10 @@ impl ChatHistory {
             );
 
             if (target - start).abs() < 1.0 {
+                return;
+            } else if (target - start).abs() > adj.page_size() {
+                // Far landings already read as their own reveal — replaying
+                // the segment only churns the viewport a second time.
                 return;
             }
 
