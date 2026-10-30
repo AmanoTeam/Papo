@@ -4,7 +4,11 @@ use indexmap::IndexMap;
 
 use jiff::Timestamp;
 use toasty::{Db, Executor};
-use toasty_core::driver::operation::{RawSql, RawSqlRet};
+use toasty_core::driver::{
+    Rows,
+    operation::{RawSql, RawSqlRet},
+};
+use toasty_core::stmt::Value as StmtValue;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -144,8 +148,184 @@ impl SessionStore {
     pub async fn load_chat_preview_snapshot(
         &self,
     ) -> Result<HashMap<String, (Option<ChatMessage>, u32)>, toasty::Error> {
-        Ok(HashMap::new())
+        let _guard = self.write_lock.lock().await;
+        let mut db = self.db.clone();
+
+        let response = db
+            .exec_raw_sql(RawSql {
+                sql: r#"SELECT
+                    m."status",
+                    m."content",
+                    m."chat_jid",
+                    m."local_id",
+                    m."outgoing",
+                    m."server_id",
+                    m."timestamp",
+                    m."sender_jid",
+                    m."sender_name",
+                    m."media_mime",
+                    m."media_path",
+                    m."media_type",
+                    m."quote_body",
+                    m."quote_media",
+                    m."quote_stanza_id",
+                    m."quote_participant",
+                    m."quote_sender_name"
+                  FROM "messages" m
+                  JOIN (
+                    SELECT "chat_jid" AS cj, MAX("timestamp") AS mt
+                    FROM "messages"
+                    GROUP BY "chat_jid"
+                  ) mx ON m."chat_jid" = mx.cj AND m."timestamp" = mx.mt"#
+                    .to_owned(),
+                ret: RawSqlRet::Infer,
+                params: Vec::new(),
+            })
+            .await?;
+
+        let mut snapshots: HashMap<String, (Option<ChatMessage>, u32)> = HashMap::new();
+
+        if let Rows::Stream(mut stream) = response.values {
+            while let Some(record) = stream.next().await {
+                let StmtValue::Record(record) = record? else {
+                    continue;
+                };
+                let fields = record.fields;
+
+                let Some(chat_jid) = fields.get(2).and_then(opt_stmtext) else {
+                    continue;
+                };
+
+                let timestamp = fields.get(6).and_then(opt_stmi64).unwrap_or(0);
+                let Some(message) = preview_message_from_fields(&fields) else {
+                    continue;
+                };
+
+                snapshots
+                    .entry(chat_jid)
+                    .and_modify(|(last, _)| {
+                        if timestamp >= last.as_ref().map_or(i64::MIN, |m| m.timestamp.as_second())
+                        {
+                            *last = Some(message.clone());
+                        }
+                    })
+                    .or_insert((Some(message), 0));
+            }
+        }
+
+        let unread_response = db
+            .exec_raw_sql(RawSql {
+                sql: r#"SELECT "chat_jid", COUNT(*) FROM "messages"
+                        WHERE "outgoing" = 0 AND "status" != 1
+                        GROUP BY "chat_jid""#
+                    .to_owned(),
+                ret: RawSqlRet::Infer,
+                params: Vec::new(),
+            })
+            .await?;
+
+        if let Rows::Stream(mut stream) = unread_response.values {
+            while let Some(record) = stream.next().await {
+                let StmtValue::Record(record) = record? else {
+                    continue;
+                };
+                let fields = record.fields;
+                let Some(chat_jid) = fields.first().and_then(opt_stmtext) else {
+                    continue;
+                };
+                let unread = fields
+                    .get(1)
+                    .and_then(opt_stmi64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or(0);
+                snapshots.entry(chat_jid).or_insert((None, 0)).1 = unread;
+            }
+        }
+
+        Ok(snapshots)
     }
+}
+
+fn opt_stmtext(value: &StmtValue) -> Option<String> {
+    match value {
+        StmtValue::Null => None,
+        other => String::try_from(other.clone()).ok(),
+    }
+}
+
+fn opt_stmi64(value: &StmtValue) -> Option<i64> {
+    match value {
+        StmtValue::I32(n) => Some(i64::from(*n)),
+        StmtValue::I64(n) => Some(*n),
+        _ => None,
+    }
+}
+
+fn preview_message_from_fields(fields: &[StmtValue]) -> Option<ChatMessage> {
+    let media_mime = fields.get(9).and_then(opt_stmtext);
+    let media_path = fields.get(10).and_then(opt_stmtext);
+    let media_type = fields.get(11).and_then(opt_stmtext);
+
+    let media = media_path
+        .as_ref()
+        .and_then(|path| MediaStorage::load_media(path).ok())
+        .map(|data| Media {
+            data: Arc::new(data),
+            mime_type: media_mime.clone().unwrap_or_default(),
+            r#type: media_type
+                .as_deref()
+                .map_or(MediaType::Image, MediaType::from),
+            ..Media::default()
+        })
+        .or_else(|| {
+            media_type.as_ref().map(|t| Media {
+                r#type: MediaType::from(t.clone()),
+                mime_type: media_mime.unwrap_or_default(),
+                ..Media::default()
+            })
+        });
+
+    let quote_body = fields.get(12).and_then(opt_stmtext);
+    let quote_media = fields.get(13).and_then(opt_stmtext);
+    let quote = (quote_body.is_some() || quote_media.is_some()).then(|| ChatQuote {
+        body: quote_body,
+        media: quote_media,
+        stanza_id: fields.get(14).and_then(opt_stmtext),
+        participant: fields.get(15).and_then(opt_stmtext),
+        sender_name: fields.get(16).and_then(opt_stmtext),
+        sender_push: false,
+    });
+
+    let timestamp = fields.get(6).and_then(opt_stmi64).unwrap_or(0);
+
+    Some(ChatMessage {
+        media,
+        quote,
+        status: MessageStatus::from(
+            fields
+                .first()
+                .and_then(opt_stmi64)
+                .and_then(|n| i32::try_from(n).ok())
+                .unwrap_or_default(),
+        ),
+        content: fields.get(1).and_then(opt_stmtext).unwrap_or_default(),
+        chat_jid: fields.get(2).and_then(opt_stmtext)?,
+        local_id: fields
+            .get(3)
+            .and_then(opt_stmtext)
+            .and_then(|s| Uuid::parse_str(s.as_str()).ok())
+            .unwrap_or_else(Uuid::new_v4),
+        outgoing: fields
+            .get(4)
+            .and_then(|v| bool::try_from(v.clone()).ok())
+            .unwrap_or(false),
+        reactions: IndexMap::new(),
+        sender_jid: fields.get(7).and_then(opt_stmtext).unwrap_or_default(),
+        server_id: fields.get(5).and_then(opt_stmtext).unwrap_or_default(),
+        timestamp: Timestamp::from_second(timestamp).unwrap_or(Timestamp::UNIX_EPOCH),
+        sender_name: fields.get(8).and_then(opt_stmtext),
+        sender_push: false,
+    })
 }
 
 // ── Chat operations ───────────────────────────────────────────

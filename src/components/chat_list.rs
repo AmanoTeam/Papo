@@ -408,17 +408,20 @@ impl SimpleAsyncComponent for ChatList {
 
                     // One snapshot for every preview: old rows carry
                     // stale stored names, and the list must match
-                    // what the chat view would render on open.
+                    // what the chat view would render on open. Newest
+                    // message + unread count land once, grouped, not
+                    // per chat.
                     let mut resolution = SenderResolution::new(&db, own_forms).await;
+                    let previews = db.load_chat_preview_snapshot().await.unwrap_or_else(|e| {
+                        tracing::warn!("Chat preview snapshot failed: {e}");
+                        HashMap::new()
+                    });
 
                     for chat in chats {
-                        let mut last_message = match chat.get_last_message(&db).await {
-                            Ok(message) => message,
-                            Err(e) => {
-                                tracing::error!("Failed to get chat last message: {e}");
-                                None
-                            }
-                        };
+                        let mut last_message = previews
+                            .get(&chat.jid)
+                            .and_then(|(message, _)| message.clone());
+                        let unread_count = previews.get(&chat.jid).map_or(0, |(_, unread)| *unread);
 
                         if let Some(message) = last_message.as_mut() {
                             resolution
@@ -426,11 +429,6 @@ impl SimpleAsyncComponent for ChatList {
                                 .await;
                             resolution.resolve_message(&chat, message);
                         }
-
-                        let unread_count = chat
-                            .get_unread_count(&db)
-                            .await
-                            .map_or(0, |c| u32::try_from(c).unwrap());
                         batch.push(ChatRowData {
                             chat,
                             last_message,
