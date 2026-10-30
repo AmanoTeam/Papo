@@ -911,7 +911,9 @@ impl AsyncComponent for ChatView {
                 let outgoing = message.outgoing;
                 self.history.append_live(*message, self.state.is_at_bottom);
 
-                if self.state.is_at_bottom {
+                // Own sends always land at the bottom.
+                if self.state.is_at_bottom || outgoing {
+                    self.state.is_at_bottom = true;
                     self.scroll_to_bottom(|| {});
                 } else if !outgoing {
                     self.state.unread_count += 1;
@@ -1117,7 +1119,7 @@ impl AsyncComponent for ChatView {
                     sender_push: message.sender_push,
                 });
 
-                if self.history.truly_at_bottom() {
+                if self.history.live_at_bottom() {
                     self.scroll_to_bottom(|| {});
                 }
             }

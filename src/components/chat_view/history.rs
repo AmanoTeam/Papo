@@ -568,6 +568,14 @@ impl ChatHistory {
         }
     }
 
+    /// Whether the viewport is parked at the bottom right now — live
+    /// from the adjustment, not the band state cached in the model.
+    pub(crate) fn live_at_bottom(&self) -> bool {
+        self.view
+            .vadjustment()
+            .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
+    }
+
     /// Reveals the row with the platform reveal scroll and glides the
     /// viewport over the segment it traveled, with no intermediate
     /// frame painted at the landing.
@@ -1223,15 +1231,6 @@ impl ChatHistory {
             .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
     }
 
-    /// Whether the viewport is truly touching the bottom edge, unlike
-    /// the generous anchor-band check used for streaming which spans
-    /// roughly two rows.
-    pub(crate) fn truly_at_bottom(&self) -> bool {
-        self.view
-            .vadjustment()
-            .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 2.0)
-    }
-
     /// Play the landing as a short ease-out glide from the current
     /// scroll position to the bottom of the content. Never rewinds:
     /// the value only moves toward the target, so the destination can
@@ -1271,24 +1270,107 @@ impl ChatHistory {
         animation.play();
     }
 
+    /// Reveal the newest row: the shared FOCUS hop both the prologue
+    /// and the settle loop use. `true` when the viewport is inside the
+    /// bottom band afterwards.
+    fn reveal_bottom(view: &gtk::ListView) -> bool {
+        let count = view.model().map_or(0, |model| model.n_items());
+        if count == 0 {
+            return true;
+        }
+
+        let info = gtk::ScrollInfo::new();
+        info.set_enable_vertical(true);
+        view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
+
+        view.vadjustment()
+            .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
+    }
+
+    /// The settle loop behind [`Self::scroll_to_bottom`]: re-anchors
+    /// only on real viewport changes and ends the moment the bottom is
+    /// verified against the edge.
+    fn settle_bottom(
+        view: gtk::ListView,
+        gliding: Rc<Cell<bool>>,
+        glide_trigger: Rc<Cell<Option<glib::SignalHandlerId>>>,
+        trigger_armed: Rc<Cell<bool>>,
+        on_settled: impl FnOnce() + 'static,
+    ) {
+        let mut attempts = 0;
+        let (mut last_upper, mut last_page) = (None::<f64>, None::<f64>);
+        let mut on_settled = Some(on_settled);
+
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            attempts += 1;
+
+            let Some(adj) = view.vadjustment() else {
+                if attempts >= 40 {
+                    view.set_opacity(1.0);
+                    if let Some(on_settled) = on_settled.take() {
+                        on_settled();
+                    }
+                    return glib::ControlFlow::Break;
+                }
+
+                return glib::ControlFlow::Continue;
+            };
+
+            // Re-anchor only when the viewport actually changed.
+            let upper_now = adj.upper();
+            let page_now = adj.page_size();
+            let upper_moved = last_upper.is_none_or(|last| last.to_bits() != upper_now.to_bits());
+            let page_moved = last_page.is_none_or(|last| last.to_bits() != page_now.to_bits());
+
+            if page_moved
+                && trigger_armed.get()
+                && let Some(trigger) = glide_trigger.take()
+            {
+                adj.disconnect(trigger);
+                trigger_armed.set(false);
+            }
+
+            let armed = gliding.get() || trigger_armed.get();
+            let moved = upper_moved || page_moved;
+            let settled = if moved && !armed {
+                Self::reveal_bottom(&view)
+            } else {
+                adj.value() + page_now >= upper_now - 25.0
+            };
+            last_upper = Some(upper_now);
+            last_page = Some(page_now);
+
+            if (settled && !moved) || attempts >= 40 {
+                if let Some(trigger) = glide_trigger.take() {
+                    adj.disconnect(trigger);
+                }
+                trigger_armed.set(false);
+
+                // A landing that never materialized still owes the
+                // bottom one instant hop — verified against the edge,
+                // not the band, so no sliver of the last row stays
+                // hidden behind the bar.
+                if adj.value() + adj.page_size() < adj.upper() - 2.0 {
+                    Self::reveal_bottom(&view);
+                }
+
+                view.set_opacity(1.0);
+
+                if let Some(on_settled) = on_settled.take() {
+                    on_settled();
+                }
+
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
     /// Scroll the list view to the bottom (last row). Landings within
     /// a couple of screens replay as a short ease-out glide; longer
     /// ones snap instantly.
     pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
-        fn scroll(view: &gtk::ListView) -> bool {
-            let count = view.model().map_or(0, |model| model.n_items());
-            if count == 0 {
-                return true;
-            }
-
-            let info = gtk::ScrollInfo::new();
-            info.set_enable_vertical(true);
-            view.scroll_to(count - 1, gtk::ListScrollFlags::FOCUS, Some(info));
-
-            view.vadjustment()
-                .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
-        }
-
         /// Longer travels (past a couple of screens) snap instantly:
         /// easing across many rows reads as a zoom, not as a landing.
         fn glide_budget(adj: &gtk::Adjustment) -> f64 {
@@ -1296,9 +1378,6 @@ impl ChatHistory {
         }
 
         let view = self.view.clone();
-        let mut attempts = 0;
-        let mut last_upper: Option<f64> = None;
-
         let gliding = Rc::new(Cell::new(false));
         let glide_trigger = Rc::new(Cell::new(None));
         let trigger_armed = Rc::new(Cell::new(false));
@@ -1318,7 +1397,7 @@ impl ChatHistory {
 
                 let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
                 if travel > glide_budget(&adj) {
-                    scroll(&view);
+                    Self::reveal_bottom(&view);
                     return;
                 }
 
@@ -1354,60 +1433,7 @@ impl ChatHistory {
             }
         });
 
-        let mut on_settled = Some(on_settled);
-        glib::timeout_add_local(Duration::from_millis(16), move || {
-            let armed = gliding.get() || trigger_armed.get();
-
-            attempts += 1;
-
-            let Some(adj) = view.vadjustment() else {
-                if attempts >= 40 {
-                    view.set_opacity(1.0);
-                    if let Some(on_settled) = on_settled.take() {
-                        on_settled();
-                    }
-                    return glib::ControlFlow::Break;
-                }
-
-                return glib::ControlFlow::Continue;
-            };
-
-            // Re-anchor only when the content actually grew: re-jumping
-            // to the last row on every tick fights the layout and is
-            // what the scrollbar shows as a fast up-and-down dance. A
-            // playing or armed glide owns the growth instead.
-            let upper_now = adj.upper();
-            let moved = last_upper.is_none_or(|last| last.to_bits() != upper_now.to_bits());
-            let settled = if moved && !armed {
-                scroll(&view)
-            } else {
-                adj.value() + adj.page_size() >= upper_now - 25.0
-            };
-            last_upper = Some(upper_now);
-
-            if (settled && !moved) || attempts >= 40 {
-                if let Some(trigger) = glide_trigger.take() {
-                    adj.disconnect(trigger);
-                }
-                trigger_armed.set(false);
-
-                // A landing that never materialized still owes the
-                // bottom one instant hop.
-                if !settled {
-                    scroll(&view);
-                }
-
-                view.set_opacity(1.0);
-
-                if let Some(on_settled) = on_settled.take() {
-                    on_settled();
-                }
-
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
+        Self::settle_bottom(view, gliding, glide_trigger, trigger_armed, on_settled);
     }
 
     /// A sent message drains the band: the unread divider goes away
