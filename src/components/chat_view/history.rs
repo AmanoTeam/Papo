@@ -506,6 +506,11 @@ impl ChatHistory {
 
     /// The row index holding the message with this wire id.
     pub(crate) fn index_by_stanza(&self, stanza: &str) -> Option<u32> {
+        // Blank stanzas belong to pre-acknowledgment sends.
+        if stanza.is_empty() {
+            return None;
+        }
+
         for index in 0..self.len() {
             let Some(row) = self.get_row(index) else {
                 continue;

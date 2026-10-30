@@ -222,6 +222,11 @@ pub enum AppMsg {
         chat_jid: Option<String>,
         entries: Vec<(String, String)>,
     },
+    MessageIdAssigned {
+        chat_jid: String,
+        msg_id: Uuid,
+        server_id: String,
+    },
     LidMappingsLearned {
         pairs: Vec<(String, String)>,
     },
@@ -1372,14 +1377,18 @@ impl AsyncComponent for Application {
                         sender_alt,
                     },
 
+                    ClientOutput::MessageSent {
+                        chat_jid,
+                        msg_id,
+                        server_id,
+                    } => AppMsg::MessageIdAssigned {
+                        chat_jid,
+                        msg_id,
+                        server_id,
+                    },
                     ClientOutput::MessageReceived { info, message } => {
                         AppMsg::MessageReceived { info, message }
                     }
-                    ClientOutput::MessageSent { chat_jid, msg_id } => AppMsg::MessageStatusUpdate {
-                        chat_jid,
-                        msg_id,
-                        status: MessageStatus::Sent,
-                    },
                     ClientOutput::MessageFailed { chat_jid, msg_id } => {
                         AppMsg::MessageStatusUpdate {
                             chat_jid,
@@ -2210,6 +2219,16 @@ impl AsyncComponent for Application {
                 {
                     self.chat_view.emit(ChatViewInput::ChatUpdated { chat });
                 }
+            }
+            AppMsg::MessageIdAssigned {
+                chat_jid: _,
+                msg_id,
+                server_id,
+            } => {
+                self.chat_view.emit(ChatViewInput::MessageIdAssigned {
+                    local_id: msg_id,
+                    server_id,
+                });
             }
             AppMsg::LidMappingsLearned { pairs } => {
                 for (lid, phone) in pairs {

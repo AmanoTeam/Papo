@@ -208,6 +208,7 @@ pub enum ClientOutput {
     MessageSent {
         chat_jid: String,
         msg_id: Uuid,
+        server_id: String,
     },
     MessageFailed {
         chat_jid: String,
@@ -824,7 +825,9 @@ impl AsyncComponent for Client {
                         .await
                     {
                         Ok(result) => {
+                            message.status = MessageStatus::Sent;
                             message.server_id = result.message_id;
+
                             if let Err(e) = message.upsert(&self.store).await {
                                 tracing::error!("Failed to update message: {}", e);
                             }
@@ -846,6 +849,7 @@ impl AsyncComponent for Client {
                             let _ = sender.output(ClientOutput::MessageSent {
                                 chat_jid: message.chat_jid,
                                 msg_id: message.local_id,
+                                server_id: message.server_id,
                             });
                         }
                         Err(e) => {

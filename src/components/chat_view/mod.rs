@@ -124,6 +124,10 @@ pub enum ChatViewInput {
         available: bool,
         last_seen: Option<Timestamp>,
     },
+    MessageIdAssigned {
+        local_id: Uuid,
+        server_id: String,
+    },
     SenderAvatarUpdated {
         jid: String,
     },
@@ -938,6 +942,27 @@ impl AsyncComponent for ChatView {
 
                     // Update the user presence label.
                     self.update_presence();
+                }
+            }
+            ChatViewInput::MessageIdAssigned {
+                local_id,
+                server_id,
+            } => {
+                // The optimistic send appended a blank wire id; the
+                // acknowledgment names the row in place so quotes always
+                // target the real stanza.
+                if let Some(index) = self
+                    .history
+                    .find_message_index(|message| message.local_id == local_id)
+                    && let Some(mut row) = self.history.get_row(index)
+                {
+                    if let ChatRow::Message { message, .. } = &mut row {
+                        message.server_id = server_id;
+                        message.status = MessageStatus::Sent;
+                    }
+
+                    self.history
+                        .replace_row(index, row, self.state.is_at_bottom);
                 }
             }
             ChatViewInput::SenderAvatarUpdated { jid } => {
