@@ -3,7 +3,12 @@ use jiff::Timestamp;
 use uuid::Uuid;
 use whatsapp_rust::{types::presence::ReceiptType, waproto::whatsapp as wa};
 
-use crate::{db::store::SessionStore, i18n, state::Media, utils::bare_jid};
+use crate::{
+    db::store::SessionStore,
+    i18n,
+    state::Media,
+    utils::{bare_jid, is_group_jid},
+};
 
 /// Maximum number of unique emoji reactions per message to prevent spam.
 const MAX_REACTIONS_PER_MESSAGE: usize = 50;
@@ -123,7 +128,7 @@ impl ChatMessage {
             .participant
             .as_deref()
             .map(bare_jid)
-            .filter(|participant| !participant.is_empty());
+            .filter(|participant| !participant.is_empty() && !is_group_jid(participant));
 
         Some(ChatQuote {
             body,

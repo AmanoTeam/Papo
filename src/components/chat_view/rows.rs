@@ -218,7 +218,11 @@ fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool)
     {
         widgets.quote_sender.set_label(&label);
         widgets.quote_sender.set_visible(true);
-    } else if let Some(participant) = &quote.participant {
+    } else if let Some(participant) = quote
+        .participant
+        .as_deref()
+        .filter(|participant| !is_group_jid(participant))
+    {
         widgets.quote_sender.set_label(participant);
         widgets.quote_sender.set_visible(true);
     } else {

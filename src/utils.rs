@@ -406,6 +406,13 @@ impl SenderResolution {
         // across rebinds via the stored name.
         if let Some(quote) = &mut message.quote {
             quote.sender_name = quote.participant.as_deref().and_then(|bare| {
+                // A group jid in the participant slot is not an author;
+                // nothing can ever resolve for it, and logging every
+                // pass is noise.
+                if is_group_jid(bare) {
+                    return None;
+                }
+
                 if !self.own_forms.is_empty() && self.own_forms.contains(&bare.to_string()) {
                     return Some(i18n!("You"));
                 }
