@@ -1887,7 +1887,7 @@ impl AsyncComponent for Application {
                 self.pending_contact_updates.insert(
                     jid.clone(),
                     Contact {
-                        jid: jid.clone(),
+                        jid,
                         name,
                         push_name,
                         last_updated: 0,
@@ -3192,7 +3192,6 @@ impl AsyncComponent for Application {
                 let pending = mem::take(&mut self.pending_contact_updates)
                     .into_values()
                     .collect::<Vec<Contact>>();
-                let count = pending.len();
 
                 let db = self.db.clone();
                 let sender = sender.clone();
