@@ -598,14 +598,6 @@ impl ChatHistory {
         self.view
             .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
 
-        // Far landings already read as their own reveal — resetting
-        // to the start to replay the segment only churns the viewport
-        // twice.
-        let page = adj.page_size();
-        if (adj.value() - start).abs() > page {
-            return;
-        }
-
         // Resetting to the start and gliding must happen while the
         // layout holds the reveal, before it paints; doing it on a
         // timer lets the landing frame flash first.
@@ -615,20 +607,37 @@ impl ChatHistory {
                 (adj.upper() - adj.page_size()).max(adj.lower()),
             );
 
-            if (target - start).abs() < 1.0 {
-                return;
-            } else if (target - start).abs() > adj.page_size() {
-                // Far landings already read as their own reveal — replaying
-                // the segment only churns the viewport a second time.
+            let travel = (target - start).abs();
+            if travel < 1.0 {
                 return;
             }
 
-            adj.set_value(start);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let corridor = travel.min(0.3 * adj.page_size());
+            let approach = if start < target {
+                target - corridor
+            } else {
+                target + corridor
+            };
+            let approach = approach.clamp(
+                adj.lower(),
+                (adj.upper() - adj.page_size()).max(adj.lower()),
+            );
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let duration = 120u64 + (corridor as u64).saturating_mul(8) / 100;
+
+            adj.set_value(approach);
             let value_target = adw::CallbackAnimationTarget::new(move |value| {
                 adj.set_value(value);
             });
 
-            let animation = adw::TimedAnimation::new(&scroll, start, target, 250, value_target);
+            let animation = adw::TimedAnimation::new(
+                &scroll,
+                approach,
+                target,
+                u32::try_from(duration).unwrap_or(200),
+                value_target,
+            );
             animation.set_easing(adw::Easing::EaseOutCubic);
             animation.play();
         };

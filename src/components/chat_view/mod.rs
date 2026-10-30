@@ -35,6 +35,8 @@ const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
 /// How long to wait for a phone answer before asking again. Requests
 /// made while the phone app is asleep are dropped rather than queued.
 const HISTORY_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+/// Rows fetched per round when a quote jump pages toward an old row.
+const QUOTE_JUMP_PAGE_COUNT: usize = 100;
 /// Read-message rows kept visible above the unread divider at open.
 const UNREAD_BAND_CONTEXT_ROWS: u32 = 4;
 
@@ -152,6 +154,9 @@ pub enum ChatViewInput {
     },
 
     OwnJids(Vec<String>),
+    QuoteLanded {
+        stanza_id: String,
+    },
     PumpQuoteJump {
         stanza_id: String,
         tries: u8,
@@ -1023,19 +1028,26 @@ impl AsyncComponent for ChatView {
             ChatViewInput::OwnJids(forms) => {
                 self.own_forms = forms;
             }
+            ChatViewInput::QuoteLanded { stanza_id } => {
+                let Some(index) = self.history.index_by_stanza(&stanza_id) else {
+                    return;
+                };
+
+                self.history.scroll_to_row(index);
+
+                // The glow reads as arriving with the row, never
+                // as the tail end of a timer that started before
+                // the viewport caught up: arm it once the landing
+                // has painted.
+                glib::timeout_add_local_once(Duration::from_millis(300), move || {
+                    sender.input(ChatViewInput::QuoteHighlightStart { stanza_id });
+                });
+            }
             ChatViewInput::PumpQuoteJump { stanza_id, tries } => {
                 const QUOTE_JUMP_MAX_TRIES: u8 = 50;
 
-                if let Some(index) = self.history.index_by_stanza(&stanza_id) {
-                    self.history.scroll_to_row(index);
-
-                    // The glow reads as arriving with the row, never
-                    // as the tail end of a timer that started before
-                    // the viewport caught up: arm it once the landing
-                    // has painted.
-                    glib::timeout_add_local_once(Duration::from_millis(300), move || {
-                        sender.input(ChatViewInput::QuoteHighlightStart { stanza_id });
-                    });
+                if self.history.index_by_stanza(&stanza_id).is_some() {
+                    sender.input(ChatViewInput::QuoteLanded { stanza_id });
                     return;
                 }
 
@@ -1058,7 +1070,7 @@ impl AsyncComponent for ChatView {
                 let generation = self.generation;
                 sender.oneshot_command(async move {
                     let older = chat
-                        .load_messages_before(&db, before_ts, LOAD_MORE_COUNT)
+                        .load_messages_before(&db, before_ts, QUOTE_JUMP_PAGE_COUNT)
                         .await
                         .unwrap_or_default();
 
@@ -1472,7 +1484,8 @@ impl AsyncComponent for ChatView {
                     return;
                 }
 
-                self.history.set_has_older(older.len() == LOAD_MORE_COUNT);
+                self.history
+                    .set_has_older(older.len() == QUOTE_JUMP_PAGE_COUNT);
                 self.history.prepend_messages(&older);
 
                 sender.input(ChatViewInput::PumpQuoteJump {
