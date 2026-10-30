@@ -708,7 +708,7 @@ impl AsyncComponent for ChatView {
                     at_top: true,
                     at_bottom: false,
                 });
-            } else if !moving_up {
+            } else {
                 let left_top = was_at_top.replace(false);
                 let bottom_toggled = at_bottom != was_at_bottom.get();
 
