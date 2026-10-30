@@ -773,7 +773,7 @@ impl Application {
     }
 
     async fn handle_contact_batch_refreshed(&mut self, jids: Vec<String>) {
-        let mut title_touched: Vec<String> = Vec::new();
+        let mut title_touched = Vec::new();
 
         for jid in &jids {
             self.refresh_open_chat_sender(jid).await;

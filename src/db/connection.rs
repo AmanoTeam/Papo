@@ -152,6 +152,10 @@ async fn ensure_tables(db: &mut Db) {
 /// now needs. `push_schema` only builds fresh databases and toasty
 /// cannot alter existing tables, so late additive columns land here.
 async fn migrate_schema(db: &mut Db) {
+    let benign = |message: &str| {
+        message.contains("duplicate column name") || message.contains("no such table")
+    };
+
     // Databases created before the flag: add the column in place, so
     // completed bootstraps survive restarts instead of re-arming the
     // mutation guard forever.
@@ -166,7 +170,7 @@ async fn migrate_schema(db: &mut Db) {
         .await;
 
     if let Err(e) = result
-        && !e.to_string().contains("duplicate column name")
+        && !benign(&e.to_string())
     {
         tracing::warn!("Failed to add the app-version bootstrap column: {e}");
     }
