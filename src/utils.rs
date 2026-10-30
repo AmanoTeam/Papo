@@ -589,8 +589,10 @@ pub(crate) async fn re_resolve_senders(
             .quote
             .as_ref()
             .and_then(|quote| quote.sender_name.clone());
-        let sender_changed = message.sender_name != sender_before;
-        let quote_changed = quote_after != quote_before;
+        let sender_changed = message.sender_name != sender_before
+            || sender_before.as_deref().is_some_and(is_display_name_junk);
+        let quote_changed = quote_after != quote_before
+            || quote_before.as_deref().is_some_and(is_display_name_junk);
         if sender_changed || quote_changed {
             let local_id = message.local_id.to_string();
             if let Err(e) = db
