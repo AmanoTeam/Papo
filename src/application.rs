@@ -92,6 +92,8 @@ pub struct Application {
     pending_avatar_fetches: Vec<String>,
     /// Group metadata fetches queued while the client was not connected.
     pending_group_metadata: Vec<String>,
+    /// Contact updates collected into a debounced storm flush.
+    pending_contact_updates: HashMap<String, Contact>,
 
     toaster: Toaster,
     user_jid: Option<String>,
@@ -102,6 +104,8 @@ pub struct Application {
     history_sync: HistorySyncStatus,
     session_page: AppSessionPage,
     user_push_name: Option<String>,
+    /// Sequence for the currently scheduled flush, if any.
+    contact_flush_seq: u64,
     synced_history_chats: HashSet<String>,
 }
 
@@ -221,6 +225,9 @@ pub enum AppMsg {
     LidMappingsLearned {
         pairs: Vec<(String, String)>,
     },
+    ContactBatchRefreshed {
+        jids: Vec<String>,
+    },
     GroupParticipantsLearned {
         chat_jid: String,
         total: usize,
@@ -323,6 +330,10 @@ pub enum AppCmd {
         chat: Chat,
         flipped: Vec<Uuid>,
     },
+    FlushContactUpdates {
+        seq: u64,
+    },
+
     ChatKeyRefreshed {
         jid: String,
         last_message_time: Timestamp,
@@ -754,6 +765,66 @@ impl Application {
                 self.pending_receipts.insert(chat_jid, receipts);
             }
         }
+    }
+
+    async fn handle_contact_batch_refreshed(&mut self, jids: Vec<String>) {
+        let mut title_touched: Vec<String> = Vec::new();
+
+        for jid in &jids {
+            self.refresh_open_chat_sender(jid).await;
+
+            let Some(contact_name) = self.contacts.get(jid).cloned() else {
+                continue;
+            };
+
+            let mut forms = vec![jid.clone()];
+            if is_lid_jid(jid)
+                && let Some(pn_jid) = self.db.lid_to_pn_jid(jid).await
+            {
+                forms.push(pn_jid);
+            } else if is_phone_jid(jid) {
+                forms.extend(self.db.pn_to_lid_jids(jid).await);
+            }
+
+            if let Some(chat) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
+                chat.name.clone_from(&contact_name);
+
+                let db = self.db.clone();
+                let jid_clone = jid.clone();
+                let chat_clone = chat.clone();
+                relm4::spawn(async move {
+                    if let Err(e) = chat_clone.upsert(&db).await {
+                        tracing::error!("Failed to update chat name for {}: {}", jid_clone, e);
+                    }
+                });
+
+                self.chat_list
+                    .emit(ChatListInput::UpdateChat { chat: chat.clone() });
+
+                if self.open_chat_jid.as_ref() == Some(&chat.jid) {
+                    self.chat_view
+                        .emit(ChatViewInput::ChatUpdated { chat: chat.clone() });
+                }
+
+                title_touched.push(jid.clone());
+            }
+
+            for chat in &mut self.chats {
+                let mut touched = false;
+                for form in &forms {
+                    if let Some(entry) = chat.participants.get_mut(form) {
+                        entry.clone_from(&contact_name);
+                        touched = true;
+                    }
+                }
+                if touched {
+                    self.chat_list
+                        .emit(ChatListInput::UpdateChat { chat: chat.clone() });
+                }
+            }
+        }
+
+        );
     }
 
     /// Marks a chat as read because the user read it on the phone. Chats
@@ -1470,6 +1541,7 @@ impl AsyncComponent for Application {
             lid_resolve_attempted: HashSet::new(),
             pending_avatar_fetches: Vec::new(),
             pending_group_metadata: Vec::new(),
+            pending_contact_updates: HashMap::new(),
 
             toaster: Toaster::default(),
             user_jid: None,
@@ -1484,6 +1556,7 @@ impl AsyncComponent for Application {
             },
             session_page: AppSessionPage::Empty,
             user_push_name: None,
+            contact_flush_seq: 0,
             synced_history_chats: HashSet::new(),
         };
 
@@ -1804,91 +1877,26 @@ impl AsyncComponent for Application {
                     self.push_names.insert(jid.clone(), push_name);
                 }
 
-                // The open chat may show this contact; re-render its
-                // rows with the new name live.
-                self.refresh_open_chat_sender(&jid).await;
+                self.pending_contact_updates.insert(
+                    jid.clone(),
+                    Contact {
+                        jid: jid.clone(),
+                        name,
+                        push_name,
+                        last_updated: 0,
+                        phone_number: Some(phone_number),
+                        is_registered: true,
+                        profile_picture_url: None,
+                    },
+                );
+                self.contact_flush_seq += 1;
 
-                // Save contact to database in background.
-                let db = self.db.clone();
-                let jid_for_contact = jid.clone();
-                let name_for_contact = name.clone();
-
-                let contact = Contact {
-                    jid: jid.clone(),
-                    name: name.clone(),
-                    push_name,
-                    last_updated: 0,
-                    phone_number: Some(phone_number),
-                    is_registered: true,
-                    profile_picture_url: None,
-                };
-
-                relm4::spawn(async move {
-                    if let Err(e) = db.save_contact(&contact).await {
-                        tracing::error!("Failed to save contact {}: {}", jid_for_contact, e);
-                    } else {
-                        tracing::debug!(
-                            "Saved contact: {} (name: {:?})",
-                            jid_for_contact,
-                            name_for_contact
-                        );
-                    }
+                let seq = self.contact_flush_seq;
+                sender.oneshot_command(async move {
+                    time::sleep(Duration::from_millis(400)).await;
+                    AppCmd::FlushContactUpdates { seq }
                 });
 
-                let mut forms = vec![jid.clone()];
-                if is_lid_jid(&jid)
-                    && let Some(pn_jid) = self.db.lid_to_pn_jid(&jid).await
-                {
-                    forms.push(pn_jid);
-                } else if is_phone_jid(&jid) {
-                    forms.extend(self.db.pn_to_lid_jids(&jid).await);
-                }
-
-                // Update chat name if this contact has a chat and we got a name.
-                if let Some(contact_name) = self.contacts.get(&jid) {
-                    if let Some(chat) = self.chats.iter_mut().find(|c| forms.contains(&c.jid)) {
-                        chat.name.clone_from(contact_name);
-
-                        let db = self.db.clone();
-                        let jid_clone = jid.clone();
-                        let chat_clone = chat.clone();
-                        relm4::spawn(async move {
-                            if let Err(e) = chat_clone.upsert(&db).await {
-                                tracing::error!(
-                                    "Failed to update chat name for {}: {}",
-                                    jid_clone,
-                                    e
-                                );
-                            }
-                        });
-
-                        self.chat_list
-                            .emit(ChatListInput::UpdateChat { chat: chat.clone() });
-
-                        // The open chat's header renders from its own
-                        // clone; hand it the fresh metadata.
-                        if self.open_chat_jid.as_ref() == Some(&chat.jid) {
-                            self.chat_view
-                                .emit(ChatViewInput::ChatUpdated { chat: chat.clone() });
-                        }
-
-                        tracing::info!("Updated chat name for {} to: {}", jid, contact_name);
-                    }
-
-                    for chat in &mut self.chats {
-                        let mut touched = false;
-                        for form in &forms {
-                            if let Some(entry) = chat.participants.get_mut(form) {
-                                entry.clone_from(contact_name);
-                                touched = true;
-                            }
-                        }
-
-                        if touched {
-                            self.chat_list
-                                .emit(ChatListInput::UpdateChat { chat: chat.clone() });
-                        }
-                    }
                 }
             }
             AppMsg::ContactRemoved { jid } => {
@@ -2213,6 +2221,9 @@ impl AsyncComponent for Application {
                         tracing::error!("Failed to learn LID mapping {lid} -> {phone}: {e}");
                     }
                 }
+            }
+            AppMsg::ContactBatchRefreshed { jids } => {
+                self.handle_contact_batch_refreshed(jids).await;
             }
             AppMsg::GroupParticipantsLearned {
                 chat_jid,
@@ -2704,7 +2715,7 @@ impl AsyncComponent for Application {
     async fn update_cmd(
         &mut self,
         command: Self::CommandOutput,
-        _sender: AsyncComponentSender<Self>,
+        sender: AsyncComponentSender<Self>,
         _root: &Self::Root,
     ) {
         match command {
@@ -3158,6 +3169,47 @@ impl AsyncComponent for Application {
 
                 self.chat_list.emit(ChatListInput::UpdateChat { chat });
             }
+            AppCmd::FlushContactUpdates { seq } => {
+                if seq != self.contact_flush_seq || self.pending_contact_updates.is_empty() {
+                    return;
+                }
+
+                let pending = mem::take(&mut self.pending_contact_updates)
+                    .into_values()
+                    .collect::<Vec<Contact>>();
+                let count = pending.len();
+
+                let db = self.db.clone();
+                let sender = sender.clone();
+                relm4::spawn(async move {
+                    let mut refreshed = Vec::new();
+                    for contact in pending {
+                        if let Err(e) = db.save_contact(&contact).await {
+                            tracing::debug!(
+                                "storm flush: failed to save contact {}: {e}",
+                                contact.jid
+                            );
+                            continue;
+                        }
+
+                        let mut forms = vec![contact.jid.clone()];
+                        if is_lid_jid(&contact.jid) {
+                            if let Some(pn) = db.lid_to_pn_jid(&contact.jid).await {
+                                forms.push(pn);
+                            }
+                        } else {
+                            forms.extend(db.pn_to_lid_jids(&contact.jid).await);
+                        }
+
+                        refreshed.extend(forms);
+                    }
+
+                    refreshed.sort_unstable();
+                    refreshed.dedup();
+                    sender.input(AppMsg::ContactBatchRefreshed { jids: refreshed });
+                });
+            }
+
             AppCmd::ChatKeyRefreshed {
                 jid,
                 last_message_time,
