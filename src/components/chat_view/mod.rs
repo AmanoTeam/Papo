@@ -1,5 +1,6 @@
 mod history;
 mod rows;
+pub(crate) mod scroll;
 
 use std::{
     cell::Cell,
