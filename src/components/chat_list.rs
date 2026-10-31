@@ -36,7 +36,7 @@ pub struct ChatList {
     chat_jid: Option<String>,
     own_forms: Vec<String>,
     filter_state: Rc<RefCell<ChatListFilter>>,
-    select_guard: Cell<bool>,
+    select_guard: Rc<Cell<bool>>,
     list_view_wrapper: TypedListView<ChatRow, gtk::SingleSelection>,
 }
 
@@ -189,7 +189,7 @@ impl SimpleAsyncComponent for ChatList {
             chat_jid: None,
             own_forms: Vec::new(),
             filter_state: Rc::new(RefCell::new(ChatListFilter::All)),
-            select_guard: Cell::new(false),
+            select_guard: Rc::new(Cell::new(false)),
             list_view_wrapper: TypedListView::new(),
         };
 
@@ -202,8 +202,16 @@ impl SimpleAsyncComponent for ChatList {
         let widgets = view_output!();
 
         let input_sender = sender.input_sender().clone();
-        selection_model.connect_selected_item_notify(move |model| {
-            input_sender.emit(ChatListInput::SelectPosition(model.selected()));
+        selection_model.connect_selected_item_notify({
+            let select_guard = model.select_guard.clone();
+
+            move |model| {
+                if select_guard.get() {
+                    return;
+                }
+
+                input_sender.emit(ChatListInput::SelectPosition(model.selected()));
+            }
         });
 
         let filter_state = model.filter_state.clone();
@@ -387,10 +395,22 @@ impl SimpleAsyncComponent for ChatList {
             }
             ChatListInput::RemoveChat { jid } => {
                 if let Some(index) = self.get_index_by_jid(&jid) {
+                    // Removing a row above the selection slides it too;
+                    // the open chat keeps its row truly selected.
+                    self.select_guard.set(true);
                     self.list_view_wrapper.remove(index);
+
                     if self.chat_jid.as_deref() == Some(&jid) {
                         self.chat_jid = None;
+                    } else if let Some(open) = self.chat_jid.clone()
+                        && let Some(position) = self.get_visible_index_by_jid(&open)
+                    {
+                        self.list_view_wrapper
+                            .selection_model
+                            .select_item(position, true);
                     }
+
+                    self.select_guard.set(false);
                 }
             }
             ChatListInput::PopulateAll(chats) => {
@@ -453,6 +473,10 @@ impl SimpleAsyncComponent for ChatList {
                 }
 
                 if let Some(index) = self.get_index_by_jid(&chat_jid) {
+                    // The spliced row may be the selected one, and the
+                    // splice would otherwise slide the selection onto a
+                    // neighbor as if the user clicked it.
+                    self.select_guard.set(true);
                     self.rebind_typing_row(&chat_jid, index).await;
 
                     // Re-select the row.
@@ -463,6 +487,8 @@ impl SimpleAsyncComponent for ChatList {
                             .selection_model
                             .select_item(position, true);
                     }
+
+                    self.select_guard.set(false);
                 }
             }
 
@@ -510,6 +536,10 @@ impl SimpleAsyncComponent for ChatList {
 
                     let updated_row = self.build_row(data);
                     let object = glib::BoxedAnyObject::new(updated_row);
+
+                    // Same select-guard as the other row surgery: the
+                    // replaced row may be the selected one.
+                    self.select_guard.set(true);
                     self.store().splice(index, 1, &[object]);
 
                     // Re-select the row.
@@ -520,6 +550,8 @@ impl SimpleAsyncComponent for ChatList {
                             .selection_model
                             .select_item(position, true);
                     }
+
+                    self.select_guard.set(false);
                 }
             }
 
