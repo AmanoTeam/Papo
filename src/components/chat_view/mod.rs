@@ -21,7 +21,10 @@ use crate::{
     i18n, i18n_f, ni18n_f,
     session::avatar,
     state::{Chat, ChatMessage, ChatQuote, HistoryAnchor, Media, MessageStatus, TypingSender},
-    utils::{bare_jid, is_lid_jid, is_status_broadcast, re_resolve_senders, truncate_lines},
+    utils::{
+        bare_jid, is_lid_jid, is_status_broadcast, re_resolve_senders, sender_color_class,
+        truncate_lines,
+    },
     widgets::TypingDots,
 };
 
@@ -589,7 +592,8 @@ impl AsyncComponent for ChatView {
                                         #[watch]
                                         set_label: model.pending_quote_sender().as_str(),
                                         set_halign: gtk::Align::Start,
-                                        set_css_classes: &["quote-sender"],
+                                        #[watch]
+                                        set_css_classes: &model.pending_quote_sender_classes(),
                                         set_ellipsize: pango::EllipsizeMode::End,
                                     },
 
@@ -1834,6 +1838,24 @@ impl ChatView {
         } else {
             self.state.unread_count.to_string()
         }
+    }
+
+    /// The composer quote preview's author label classes: the house
+    /// style plus the quoted author's own hue, so the preview matches
+    /// the inset it stands in for.
+    fn pending_quote_sender_classes(&self) -> Vec<&'static str> {
+        let mut classes = vec!["quote-sender"];
+        if let Some(participant) = self
+            .state
+            .pending_quote
+            .as_ref()
+            .and_then(|quote| quote.participant.as_deref())
+            .filter(|participant| !participant.is_empty())
+        {
+            classes.push(sender_color_class(participant));
+        }
+
+        classes
     }
 
     fn pending_quote_sender(&self) -> String {

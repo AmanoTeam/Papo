@@ -8,7 +8,10 @@ use crate::{
     i18n,
     session::avatar,
     state::{ChatMessage, MessageStatus},
-    utils::{bare_jid, format_date_label, is_group_jid, truncate_lines},
+    utils::{
+        SENDER_COLOR_CLASSES, bare_jid, format_date_label, is_group_jid, sender_color_class,
+        truncate_lines,
+    },
     widgets::{MessageTail, TailDirection},
 };
 
@@ -164,6 +167,10 @@ fn bind_group_avatar(widgets: &ChatRowWidgets, msg: &ChatMessage, first: bool, l
             widgets.sender_label.remove_css_class("push-name");
         }
 
+        widgets
+            .sender_label
+            .add_css_class(sender_color_class(&bare_jid(&msg.sender_jid)));
+
         widgets.sender_label.set_label(&label);
         widgets.sender_label.set_visible(true);
     }
@@ -189,6 +196,11 @@ fn hide_variants(widgets: &ChatRowWidgets, root: &gtk::Box) {
     root.remove_css_class("unread-first");
     root.remove_css_class("unread-last");
     root.set_margin_top(0);
+
+    for class in SENDER_COLOR_CLASSES {
+        widgets.sender_label.remove_css_class(class);
+        widgets.quote_sender.remove_css_class(class);
+    }
 }
 
 fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool) {
@@ -227,6 +239,16 @@ fn bind_quote(widgets: &ChatRowWidgets, msg: &ChatMessage, sender_visible: bool)
         widgets.quote_sender.set_visible(true);
     } else {
         widgets.quote_sender.set_visible(false);
+    }
+
+    if let Some(participant) = quote
+        .participant
+        .as_deref()
+        .filter(|participant| !participant.is_empty() && !is_group_jid(participant))
+    {
+        widgets
+            .quote_sender
+            .add_css_class(sender_color_class(participant));
     }
 
     // Long quotes are truncated in code: wrapping labels ignore

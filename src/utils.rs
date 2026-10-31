@@ -199,6 +199,49 @@ pub(crate) fn looks_like_jid(candidate: &str, sender_bare: &str) -> bool {
             && candidate.chars().any(|c| c.is_ascii_digit()))
 }
 
+/// Which bucket of the sender-name palette an identity mines for its
+/// hue: a stable FNV-1a hash of the bare identity, so the color rides
+/// the person rather than the row. The palette count must match the
+/// stylesheet's `sender-color` classes.
+pub(crate) fn sender_color_index(bare: &str) -> usize {
+    const PALETTE_SIZE: u64 = 18;
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bare.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+
+    usize::try_from(hash % PALETTE_SIZE).unwrap_or(0)
+}
+
+/// The stylesheet class each palette bucket wears, in bucket order;
+/// `sender_color_class` is the one-call lookup for a bare identity.
+pub(crate) const SENDER_COLOR_CLASSES: [&str; 18] = [
+    "sender-color-0",
+    "sender-color-1",
+    "sender-color-2",
+    "sender-color-3",
+    "sender-color-4",
+    "sender-color-5",
+    "sender-color-6",
+    "sender-color-7",
+    "sender-color-8",
+    "sender-color-9",
+    "sender-color-10",
+    "sender-color-11",
+    "sender-color-12",
+    "sender-color-13",
+    "sender-color-14",
+    "sender-color-15",
+    "sender-color-16",
+    "sender-color-17",
+];
+
+pub(crate) fn sender_color_class(bare: &str) -> &'static str {
+    SENDER_COLOR_CLASSES[sender_color_index(bare)]
+}
+
 /// Whether a display-name candidate is a junk placeholder: a number
 /// or LID pattern rendered as name, not a human name. Neither wire
 /// data nor row updates may persist one.

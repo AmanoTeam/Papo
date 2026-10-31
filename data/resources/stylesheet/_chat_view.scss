@@ -239,3 +239,14 @@
     background-color: var(--window-bg-color);
   }
 }
+
+// Sender-name hues: the whole palette spans eighteen buckets.
+// (Eighteen golden-angle hues: every group participant mines a
+// stable bucket from a hash of their identity, and the row's label
+// binds sender-color-N. Keep the 18 in sync with rows.rs and
+// utils.rs's PALETTE_SIZE.)
+@for $i from 0 through 17 {
+  .sender-color-#{$i} {
+    color: hsl($i * 21, 65%, 52%);
+  }
+}
