@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
-/// How long an arrival at the edge must remain unchallenged before
-/// the request may land. Small enough for the trigger to feel direct,
-/// long enough for a fling's own final drops to refresh the mark.
+/// Quiet time at the edge before a load request may land.
 const SETTLE: Duration = Duration::from_millis(150);
 
 #[derive(Default, Debug)]
@@ -15,10 +13,8 @@ impl TopTrigger {
         Self::default()
     }
 
-    /// Register an arrival at the top edge. Any other arrival
-    /// afterward refreshes the same mark — repeated ticks replace
-    /// rather than accumulate: the ticket only ever describes the
-    /// newest one. Whether anything should land for it is `eligible`.
+    /// Register an arrival at the top edge; a later arrival replaces
+    /// the ticket, never accumulates.
     pub(crate) fn mark(&mut self) {
         self.pending = Some(Instant::now());
     }
@@ -29,11 +25,7 @@ impl TopTrigger {
         self.pending = None;
     }
 
-    /// Whether the timeframe since the newest arrival is enough to
-    /// actually ask for the page. Instant-identity-matched: only the
-    /// ticket that the caller itself may or may not still *own* gets
-    /// to land, so a later mark never hands its work to an earlier
-    /// one.
+    /// Whether the newest ticket has sat past the quiet window.
     pub(crate) fn eligible(&self, ticket: Option<Instant>, now: Instant) -> bool {
         matches!(
             (self.pending, ticket),
@@ -42,8 +34,7 @@ impl TopTrigger {
         )
     }
 
-    /// Fire the shot for the holder of the matching ticket. Returns
-    /// `true` once, after which a new arrival is required.
+    /// Spend the newest ticket if eligible; `true` once per arrival.
     pub(crate) fn fire_if_eligible(&mut self, ticket: Option<Instant>) -> bool {
         if self.eligible(ticket, Instant::now()) {
             self.pending = None;

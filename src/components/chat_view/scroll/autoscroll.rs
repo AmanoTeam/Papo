@@ -1,16 +1,11 @@
 use relm4::gtk::{self, prelude::AdjustmentExt};
 
-/// The adjustment's lower end state, live, from one call: the only
-/// "am I at the bottom" the system ever asks, because candidates and
-/// gestures evaluate identically everywhere else.
+/// Viewport is at the bottom edge of the adjustment.
 pub(crate) fn touching_bottom(adj: &gtk::Adjustment) -> bool {
     adj.value() + adj.page_size() >= adj.upper() - 2.0
 }
 
-/// Whether the reader is parked in the near-bottom region loosely
-/// enough that growth should be re-pinned without a hiccup: zone in
-/// on the one the scroll-to-bottom flow deliberately used to mean
-/// "someone is watching the newest rows".
+/// Viewport is in the near-bottom band.
 pub(crate) fn parked_at_bottom(adj: &gtk::Adjustment) -> bool {
     adj.value() + adj.page_size() >= adj.upper() - 25.0
 }
@@ -34,9 +29,7 @@ impl AutoScroll {
         self.reader_at_bottom = false;
     }
 
-    /// The jump arrived — whatever draws the bottom did its part.
-    /// The viewport is now owned by the reader again until they
-    /// scroll.
+    /// The jump arrived; ownership returns to the reader.
     pub(crate) fn land(&mut self, adj: &gtk::Adjustment) {
         self.jump_in_flight = false;
         self.reader_at_bottom = touching_bottom(adj);
@@ -57,8 +50,7 @@ impl AutoScroll {
         self.jump_in_flight || self.reader_at_bottom
     }
 
-    /// The one home call: a bottom of the content just appeared, and
-    /// when the viewport belongs to us, snap, cleanly.
+    /// Snap to the bottom when the viewport belongs to us.
     pub(crate) fn pin_bottom(&mut self, adj: &gtk::Adjustment) {
         if !self.contents_grow() {
             return;
