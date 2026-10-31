@@ -31,6 +31,8 @@ const LOAD_MORE_COUNT: usize = 20;
 /// First slice of the inital window shown at once.
 const FILL_STREAM_CHUNK: usize = 20;
 const INITIAL_LOAD_COUNT: usize = 40;
+/// Quote-bar reveal animation; the history's quote glide is paced to it.
+const QUOTE_BAR_REVEAL_MS: u32 = 250;
 /// Cooldown between on-demand history requests for one chat.
 const HISTORY_FETCH_RETRY: Duration = Duration::from_secs(60);
 /// How long to wait for a phone answer before asking again. Requests
@@ -55,6 +57,7 @@ pub struct ChatView {
     generation: u64,
 
     quote_preview: gtk::Label,
+    quote_revealer: gtk::Revealer,
     message_entry: gtk::Entry,
     typing_avatars: gtk::Box,
     /// In-flight marker for an on-demand history request; doubles as the
@@ -553,11 +556,12 @@ impl AsyncComponent for ChatView {
                     },
                 },
 
-                gtk::Revealer {
+                #[local_ref]
+                quote_revealer -> gtk::Revealer {
                     #[watch]
                     set_reveal_child: model.state.pending_quote.is_some(),
                     set_transition_type: gtk::RevealerTransitionType::SlideUp,
-                    set_transition_duration: 250,
+                    set_transition_duration: QUOTE_BAR_REVEAL_MS,
 
                     gtk::Box {
                         set_spacing: 6,
@@ -660,6 +664,7 @@ impl AsyncComponent for ChatView {
             own_forms: Vec::new(),
             generation: 0,
             quote_preview: gtk::Label::new(None),
+            quote_revealer: gtk::Revealer::new(),
             message_entry: gtk::Entry::new(),
             typing_avatars: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             history_fetch_at: None,
@@ -670,6 +675,7 @@ impl AsyncComponent for ChatView {
 
         let list_view = model.history.view().clone();
         let quote_preview = &model.quote_preview;
+        let quote_revealer = &model.quote_revealer;
         let message_entry = &model.message_entry;
         let typing_avatars = &model.typing_avatars;
         let widgets = view_output!();
@@ -1167,7 +1173,8 @@ impl AsyncComponent for ChatView {
                 });
 
                 if self.history.live_at_bottom() {
-                    self.scroll_to_bottom(|| {});
+                    self.history
+                        .glide_for_quote_bar(Duration::from_millis(u64::from(QUOTE_BAR_REVEAL_MS)));
                 }
             }
             ChatViewInput::CancelPendingQuote => {

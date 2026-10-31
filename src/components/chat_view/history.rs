@@ -11,7 +11,10 @@ use gtk::{gio, glib, subclass::prelude::*};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use relm4::{prelude::*, typed_view::list::RelmListItem};
 
-use super::rows::ChatRow;
+use super::{
+    rows::ChatRow,
+    scroll::autoscroll::{AutoScroll, touching_bottom},
+};
 use crate::{
     components::ChatViewInput,
     state::{ChatMessage, MessageStatus},
@@ -451,6 +454,8 @@ pub(crate) struct ChatHistory {
     oldest_loaded_timestamp: Option<Timestamp>,
     newest_loaded_timestamp: Option<Timestamp>,
 
+    auto_scroll: Rc<RefCell<AutoScroll>>,
+    pinner_attached: Rc<Cell<bool>>,
     pending_highlight: Rc<RefCell<Option<String>>>,
 }
 
@@ -467,6 +472,7 @@ impl ChatHistory {
         let anchors = Rc::new(RefCell::new(HashMap::new()));
         let timeline = TimelineModel::new();
         let selection = gtk::NoSelection::new(Some(timeline.clone()));
+        let auto_scroll = Rc::new(RefCell::new(AutoScroll::new()));
         let pending_highlight = Rc::new(RefCell::new(None::<String>));
 
         let view = gtk::ListView::new(
@@ -490,6 +496,8 @@ impl ChatHistory {
             oldest_loaded_timestamp: None,
             newest_loaded_timestamp: None,
 
+            auto_scroll,
+            pinner_attached: Rc::new(Cell::new(false)),
             pending_highlight,
         }
     }
@@ -1240,45 +1248,6 @@ impl ChatHistory {
             .map_or((0.0, 0.0), |adj| (adj.value(), adj.upper()))
     }
 
-    /// Play the landing as a short ease-out glide from the current
-    /// scroll position to the bottom of the content. Never rewinds:
-    /// the value only moves toward the target, so the destination can
-    /// never flash before the slide.
-    fn play_glide(view: &gtk::ListView, adj: &gtk::Adjustment, gliding: Rc<Cell<bool>>) {
-        let start = adj.value();
-        let target = (adj.upper() - adj.page_size()).max(adj.lower());
-        let travel = (target - start).abs();
-        if travel < 2.0 {
-            return;
-        }
-
-        // Duration follows the distance: a row of travel is a snap,
-        // a couple of screens plays out fully without ever feeling
-        // like a page-turn.
-        // Clamped into a millisecond domain where truncation is
-        // provably value-less.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let truncated = (travel as i64).max(0) as u64;
-        let duration = (120u64 + truncated.saturating_mul(8) / 100).min(260);
-        let duration = u32::try_from(duration).unwrap_or(260);
-
-        gliding.set(true);
-
-        let animation = adw::TimedAnimation::new(
-            view,
-            start,
-            target,
-            duration,
-            adw::CallbackAnimationTarget::new({
-                let adj = adj.clone();
-                move |value| adj.set_value(value)
-            }),
-        );
-        animation.set_easing(adw::Easing::EaseOutCubic);
-        animation.connect_done(move |_| gliding.set(false));
-        animation.play();
-    }
-
     /// Reveal the newest row: the shared FOCUS hop both the prologue
     /// and the settle loop use. `true` when the viewport is inside the
     /// bottom band afterwards.
@@ -1296,153 +1265,328 @@ impl ChatHistory {
             .is_some_and(|adj| adj.value() + adj.page_size() >= adj.upper() - 25.0)
     }
 
-    /// The settle loop behind [`Self::scroll_to_bottom`]: re-anchors
-    /// only on real viewport changes and ends the moment the bottom is
-    /// verified against the edge.
-    fn settle_bottom(
-        view: gtk::ListView,
-        gliding: Rc<Cell<bool>>,
-        glide_trigger: Rc<Cell<Option<glib::SignalHandlerId>>>,
-        trigger_armed: Rc<Cell<bool>>,
+    /// Re-anchor on growth until the jump lands; a dead-man timeout
+    /// guarantees the landing even when the adjustment never moves.
+    fn watch_until_bottom(
+        view: &gtk::ListView,
+        adj: &gtk::Adjustment,
+        auto_scroll: Rc<RefCell<AutoScroll>>,
         on_settled: impl FnOnce() + 'static,
     ) {
-        let mut attempts = 0;
-        let (mut last_upper, mut last_page) = (None::<f64>, None::<f64>);
-        let mut on_settled = Some(on_settled);
+        let view = view.clone();
+        let landed = Rc::new(Cell::new(false));
+        let triggers = Rc::new(RefCell::new(Vec::new()));
+        let on_settled = Rc::new(RefCell::new(Some(on_settled)));
 
-        glib::timeout_add_local(Duration::from_millis(16), move || {
-            attempts += 1;
+        let finish = {
+            let view = view.clone();
+            let adj = adj.clone();
+            let triggers = triggers.clone();
 
-            let Some(adj) = view.vadjustment() else {
-                if attempts >= 40 {
-                    view.set_opacity(1.0);
-                    if let Some(on_settled) = on_settled.take() {
-                        on_settled();
-                    }
-                    return glib::ControlFlow::Break;
+            move || {
+                if landed.replace(true) {
+                    return;
                 }
 
-                return glib::ControlFlow::Continue;
-            };
-
-            // Re-anchor only when the viewport actually changed.
-            let upper_now = adj.upper();
-            let page_now = adj.page_size();
-            let upper_moved = last_upper.is_none_or(|last| last.to_bits() != upper_now.to_bits());
-            let page_moved = last_page.is_none_or(|last| last.to_bits() != page_now.to_bits());
-
-            if page_moved
-                && trigger_armed.get()
-                && let Some(trigger) = glide_trigger.take()
-            {
-                adj.disconnect(trigger);
-                trigger_armed.set(false);
-            }
-
-            let armed = gliding.get() || trigger_armed.get();
-            let moved = upper_moved || page_moved;
-            let settled = if moved && !armed {
-                Self::reveal_bottom(&view)
-            } else {
-                adj.value() + page_now >= upper_now - 25.0
-            };
-            last_upper = Some(upper_now);
-            last_page = Some(page_now);
-
-            if (settled && !moved) || attempts >= 40 {
-                if let Some(trigger) = glide_trigger.take() {
-                    adj.disconnect(trigger);
+                for id in triggers.borrow_mut().drain(..) {
+                    adj.disconnect(id);
                 }
-                trigger_armed.set(false);
 
                 // A landing that never materialized still owes the
-                // bottom one instant hop — verified against the edge,
-                // not the band, so no sliver of the last row stays
-                // hidden behind the bar.
-                if adj.value() + adj.page_size() < adj.upper() - 2.0 {
+                // bottom one hop: reveal first (item-anchored, safe
+                // against inflated estimates), then a numeric sliver
+                // correction only if still off the edge.
+                if !touching_bottom(&adj) {
                     Self::reveal_bottom(&view);
+
+                    let target = (adj.upper() - adj.page_size()).max(adj.lower());
+                    if adj.value() < target - 2.0 {
+                        adj.set_value(target);
+                    }
                 }
 
                 view.set_opacity(1.0);
+                auto_scroll.borrow_mut().land(&adj);
 
-                if let Some(on_settled) = on_settled.take() {
+                if let Some(on_settled) = on_settled.borrow_mut().take() {
                     on_settled();
                 }
+            }
+        };
 
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
+        triggers.borrow_mut().extend([
+            adj.connect_changed({
+                let finish = finish.clone();
+
+                move |adj| {
+                    Self::reveal_bottom(&view);
+
+                    if touching_bottom(adj) {
+                        finish();
+                    }
+                }
+            }),
+            adj.connect_value_changed({
+                let finish = finish.clone();
+
+                move |adj| {
+                    if touching_bottom(adj) {
+                        finish();
+                    }
+                }
+            }),
+        ]);
+        glib::timeout_add_local_once(Duration::from_millis(600), finish);
+    }
+
+    /// Re-pin the bottom on adjustment growth while the reader is
+    /// parked, and feed the latch any value change outside a jump as
+    /// reader movement. Attached once, on the first adjustment seen.
+    fn ensure_growth_pinner(&self, adj: &gtk::Adjustment) {
+        if self.pinner_attached.replace(true) {
+            return;
+        }
+
+        let idle_pending = Rc::new(Cell::new(false));
+        let auto_scroll = self.auto_scroll.clone();
+        let view = self.view.clone();
+
+        adj.connect_changed(move |adj| {
+            if idle_pending.replace(true) {
+                return;
+            }
+
+            glib::idle_add_local_once({
+                let idle_pending = idle_pending.clone();
+                let auto_scroll = auto_scroll.clone();
+                let view = view.clone();
+                let adj = adj.clone();
+
+                move || {
+                    idle_pending.set(false);
+
+                    {
+                        let latch = auto_scroll.borrow();
+                        if latch.is_jump_in_flight() || !latch.is_reader_at_bottom() {
+                            return;
+                        }
+                    }
+
+                    let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
+                    if travel <= Self::glide_budget(&adj) {
+                        // Small growth feels like the row sliding in:
+                        // the pinner takes the jump itself.
+                        auto_scroll.borrow_mut().begin_jump();
+                        Self::play_glide(&view, &adj, auto_scroll.clone(), || {});
+                        return;
+                    }
+
+                    Self::reveal_bottom(&view);
+                    auto_scroll.borrow_mut().pin_bottom(&adj);
+                }
+            });
+        });
+
+        let last_shape = Cell::new((adj.upper().to_bits(), adj.page_size().to_bits()));
+        adj.connect_value_changed({
+            let auto_scroll = self.auto_scroll.clone();
+
+            move |adj| {
+                // A value change arriving together with a shape
+                // change is the adjustment clamping during relayout,
+                // not reader input.
+                let shape = (adj.upper().to_bits(), adj.page_size().to_bits());
+                if shape != last_shape.replace(shape) {
+                    return;
+                }
+
+                // The cell being borrowed means a machine write is in
+                // flight (its signals fire synchronously) — skip.
+                let Ok(mut latch) = auto_scroll.try_borrow_mut() else {
+                    return;
+                };
+                if !latch.is_jump_in_flight() {
+                    latch.user_moved(adj);
+                }
             }
         });
     }
 
-    /// Scroll the list view to the bottom (last row). Landings within
-    /// a couple of screens replay as a short ease-out glide; longer
-    /// ones snap instantly.
-    pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
-        /// Longer travels (past a couple of screens) snap instantly:
-        /// easing across many rows reads as a zoom, not as a landing.
-        fn glide_budget(adj: &gtk::Adjustment) -> f64 {
-            6.0 * adj.page_size()
+    /// Ease-out glide to the bottom; snaps to the live target on done
+    /// if rows grew mid-flight.
+    fn play_glide(
+        view: &gtk::ListView,
+        adj: &gtk::Adjustment,
+        auto_scroll: Rc<RefCell<AutoScroll>>,
+        on_settled: impl FnOnce() + 'static,
+    ) {
+        let start = adj.value();
+        let target = (adj.upper() - adj.page_size()).max(adj.lower());
+        let travel = (target - start).abs();
+        if travel < 2.0 {
+            auto_scroll.borrow_mut().land(adj);
+            view.set_opacity(1.0);
+            on_settled();
+            return;
+        }
+
+        // Duration follows the distance: a row of travel is a snap,
+        // a couple of screens plays out fully without ever feeling
+        // like a page-turn.
+        // Clamped into a millisecond domain where truncation is
+        // provably value-less.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let truncated = (travel as i64).max(0) as u64;
+        let duration = (120u64 + truncated.saturating_mul(8) / 100).min(260);
+        let duration = u32::try_from(duration).unwrap_or(260);
+
+        let animation = adw::TimedAnimation::new(
+            view,
+            start,
+            target,
+            duration,
+            adw::CallbackAnimationTarget::new({
+                let adj = adj.clone();
+                move |value| adj.set_value(value)
+            }),
+        );
+        animation.set_easing(adw::Easing::EaseOutCubic);
+
+        let adj = adj.clone();
+        let view_done = view.clone();
+        let on_settled = Cell::new(Some(on_settled));
+        animation.connect_done(move |_| {
+            // Rows that arrived after the target was computed still
+            // owe the bottom one hop: snap to the live target so the
+            // landing never parks a row short of the bar.
+            let target = (adj.upper() - adj.page_size()).max(adj.lower());
+            if adj.value() < target - 2.0 {
+                adj.set_value(target);
+            }
+
+            auto_scroll.borrow_mut().land(&adj);
+            view_done.set_opacity(1.0);
+            if let Some(on_settled) = on_settled.take() {
+                on_settled();
+            }
+        });
+        animation.play();
+    }
+
+    /// Longer travels (past a couple of screens) snap instantly:
+    /// easing across many rows reads as a zoom, not as a landing.
+    fn glide_budget(adj: &gtk::Adjustment) -> f64 {
+        6.0 * adj.page_size()
+    }
+
+    /// Glide the viewport in lockstep with an external animation:
+    /// each frame recomputes the live bottom, so the easing tracks
+    /// the external own pace and lands flush.
+    fn play_glide_tracked(
+        view: &gtk::ListView,
+        adj: &gtk::Adjustment,
+        duration: Duration,
+        auto_scroll: Rc<RefCell<AutoScroll>>,
+    ) {
+        let start = adj.value();
+        let residual = (adj.upper() - adj.page_size()).max(adj.lower()) - start;
+        let duration = u32::try_from(duration.as_millis()).unwrap_or(250);
+
+        let animation = adw::TimedAnimation::new(
+            view,
+            0.0,
+            1.0,
+            duration,
+            adw::CallbackAnimationTarget::new({
+                let adj = adj.clone();
+
+                move |eased| {
+                    let target = (adj.upper() - adj.page_size()).max(adj.lower());
+                    let growth = (target - start - residual).max(0.0);
+                    adj.set_value(start + growth + residual * eased);
+                }
+            }),
+        );
+        animation.set_easing(adw::Easing::EaseOutCubic);
+
+        let adj = adj.clone();
+        animation.connect_done(move |_| {
+            let target = (adj.upper() - adj.page_size()).max(adj.lower());
+            if adj.value() < target - 2.0 {
+                adj.set_value(target);
+            }
+
+            auto_scroll.borrow_mut().land(&adj);
+        });
+        animation.play();
+    }
+
+    /// Quote-bar arrival while the reader is parked at the bottom: a
+    /// glide paced to the bar's reveal, so the history lifts together
+    /// with the bar instead of chasing it.
+    pub(crate) fn glide_for_quote_bar(&self, duration: Duration) {
+        let Some(adj) = self.view.vadjustment() else {
+            return;
+        };
+
+        self.ensure_growth_pinner(&adj);
+        if self.auto_scroll.borrow().is_jump_in_flight() {
+            return;
         }
 
         let view = self.view.clone();
-        let gliding = Rc::new(Cell::new(false));
-        let glide_trigger = Rc::new(Cell::new(None));
-        let trigger_armed = Rc::new(Cell::new(false));
+        let auto_scroll = self.auto_scroll.clone();
+        glib::idle_add_local_once(move || {
+            auto_scroll.borrow_mut().begin_jump();
+            Self::play_glide_tracked(&view, &adj, duration, auto_scroll);
+        });
+    }
+
+    /// Scroll to the bottom: glide at short range, reveal + watcher
+    /// at long range, absorbed while a jump is in flight.
+    pub(crate) fn scroll_to_bottom(&self, on_settled: impl FnOnce() + 'static) {
+        let Some(adj) = self.view.vadjustment() else {
+            on_settled();
+            return;
+        };
+
+        // The parked-reader re-pin is attached exactly once, the
+        // first time the adjustment exists.
+        self.ensure_growth_pinner(&adj);
+
+        // Another jump owns the adjustment right now: absorb the
+        // request into the same sequence — one home for either kind.
+        if self.auto_scroll.borrow().is_jump_in_flight() {
+            on_settled();
+            return;
+        }
+
+        let view = self.view.clone();
+        let auto_scroll = self.auto_scroll.clone();
 
         // Compose the landing on idle, past the model's own mutation
         // pass, and measure it from the adjustment alone.
-        glib::idle_add_local_once({
-            let view = view.clone();
-            let gliding = gliding.clone();
-            let glide_trigger = glide_trigger.clone();
-            let trigger_armed = trigger_armed.clone();
+        glib::idle_add_local_once(move || {
+            let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
 
-            move || {
-                let Some(adj) = view.vadjustment() else {
-                    return;
-                };
-
-                let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
-                if travel > glide_budget(&adj) {
-                    Self::reveal_bottom(&view);
-                    return;
-                }
-
-                if travel > 2.0 {
-                    Self::play_glide(&view, &adj, gliding.clone());
-                    return;
-                }
-
-                // Essentially at the bottom, or the new row is not laid
-                // out yet: wait for the growth that brings it, and let
-                // the trigger — not the loop — drive that landing.
-                let handler = {
-                    let view = view.clone();
-                    let gliding = gliding.clone();
-                    let glide_trigger = glide_trigger.clone();
-                    let trigger_armed = trigger_armed.clone();
-
-                    adj.connect_value_changed(move |adj| {
-                        if glide_trigger.take().is_none() {
-                            return;
-                        }
-                        trigger_armed.set(false);
-
-                        let travel = (adj.upper() - adj.page_size()).max(adj.lower()) - adj.value();
-                        if travel > 2.0 && travel <= glide_budget(adj) {
-                            Self::play_glide(&view, adj, gliding.clone());
-                        }
-                    })
-                };
-
-                trigger_armed.set(true);
-                glide_trigger.set(Some(handler));
+            if travel <= 2.0 {
+                // Essentially at the bottom already: nothing to add.
+                auto_scroll.borrow_mut().land(&adj);
+                view.set_opacity(1.0);
+                on_settled();
+                return;
             }
-        });
 
-        Self::settle_bottom(view, gliding, glide_trigger, trigger_armed, on_settled);
+            auto_scroll.borrow_mut().begin_jump();
+
+            if travel <= Self::glide_budget(&adj) {
+                Self::play_glide(&view, &adj, auto_scroll, on_settled);
+                return;
+            }
+
+            Self::reveal_bottom(&view);
+            Self::watch_until_bottom(&view, &adj, auto_scroll, on_settled);
+        });
     }
 
     /// A sent message drains the band: the unread divider goes away
