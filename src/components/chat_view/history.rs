@@ -217,14 +217,6 @@ impl TimelineModel {
             return;
         }
 
-        // Same pre-mutation scrub as append_batch: settle pending
-        // section tiles before the walk inside items_changed can
-        // cross them.
-        let stale_len = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
-        if stale_len > 0 {
-            self.sections_changed(0, stale_len);
-        }
-
         let added = {
             let mut rows = self.imp().rows.borrow_mut();
             let added = batch.len();
@@ -235,15 +227,14 @@ impl TimelineModel {
                     day,
                 }),
             );
+
             added
         };
 
         let added = u32::try_from(added).expect("row count fits u32");
         self.upcast_ref::<gio::ListModel>()
             .items_changed(0, 0, added);
-
-        let n_items = u32::try_from(self.imp().rows.borrow().len()).expect("row count fits u32");
-        self.sections_changed(0, n_items);
+        self.sections_changed(0, added.saturating_add(1));
     }
 
     /// Replaces the row at `index`, keeping its position.
@@ -261,6 +252,7 @@ impl TimelineModel {
                 object: glib::BoxedAnyObject::new(row),
                 day,
             };
+
             true
         };
 
@@ -325,49 +317,53 @@ fn build_row_factory(
         list_item.set_child(Some(&root));
     });
 
-    factory.connect_bind(move |_, list_item| {
-        let list_item = list_item
-            .downcast_ref::<gtk::ListItem>()
-            .expect("Needs to be ListItem");
+    factory.connect_bind({
+        let anchors = anchors.clone();
 
-        let Some(item) = list_item.item() else {
-            return;
-        };
-        let Some(wrapper) = item.downcast_ref::<glib::BoxedAnyObject>() else {
-            return;
-        };
-        let Some(mut root) = list_item
-            .child()
-            .and_downcast::<<ChatRow as RelmListItem>::Root>()
-        else {
-            return;
-        };
+        move |_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("Needs to be ListItem");
 
-        let mut row = wrapper.borrow_mut::<ChatRow>();
-        // SAFETY: as in setup — the stash lives as long as the root.
-        let mut widgets =
-            unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
-                .expect("row widgets stashed in setup");
-        row.bind(&mut widgets, &mut root);
+            let Some(item) = list_item.item() else {
+                return;
+            };
+            let Some(wrapper) = item.downcast_ref::<glib::BoxedAnyObject>() else {
+                return;
+            };
+            let Some(mut root) = list_item
+                .child()
+                .and_downcast::<<ChatRow as RelmListItem>::Root>()
+            else {
+                return;
+            };
 
-        if let ChatRow::Message { message, .. } = &*row {
-            let anchor = glib::WeakRef::new();
-            anchor.set(Some(root.upcast_ref::<gtk::Widget>()));
-            anchors
-                .borrow_mut()
-                .insert(message.server_id.clone(), anchor);
+            let mut row = wrapper.borrow_mut::<ChatRow>();
+            // SAFETY: as in setup — the stash lives as long as the root.
+            let mut widgets =
+                unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
+                    .expect("row widgets stashed in setup");
+            row.bind(&mut widgets, &mut root);
 
-            // The row just paged in for a quote-jump binds after the
-            // highlight was armed: pick the glow up at bind time.
-            if pending_highlight.borrow().as_deref() == Some(message.server_id.as_str()) {
-                root.add_css_class("highlight");
+            if let ChatRow::Message { message, .. } = &*row {
+                let anchor = glib::WeakRef::new();
+                anchor.set(Some(root.upcast_ref::<gtk::Widget>()));
+                anchors
+                    .borrow_mut()
+                    .insert(message.server_id.clone(), anchor);
+
+                // The row just paged in for a quote-jump binds after the
+                // highlight was armed: pick the glow up at bind time.
+                if pending_highlight.borrow().as_deref() == Some(message.server_id.as_str()) {
+                    root.add_css_class("highlight");
+                }
             }
-        }
 
-        unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
+            unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
+        }
     });
 
-    factory.connect_unbind(|_, list_item| {
+    factory.connect_unbind(move |_, list_item| {
         let list_item = list_item
             .downcast_ref::<gtk::ListItem>()
             .expect("Needs to be ListItem");
@@ -390,6 +386,12 @@ fn build_row_factory(
         let mut widgets =
             unsafe { root.steal_data::<<ChatRow as RelmListItem>::Widgets>(ROW_WIDGETS_KEY) }
                 .expect("row widgets stashed in setup");
+        // A recycled root stops standing for its old stanza here:
+        // purge every anchor still pointing at it.
+        anchors
+            .borrow_mut()
+            .retain(|_, weak| weak.upgrade().is_none_or(|widget| widget != root));
+
         row.unbind(&mut widgets, &mut root);
         unsafe { root.set_data(ROW_WIDGETS_KEY, widgets) };
     });
@@ -449,6 +451,8 @@ pub(crate) struct ChatHistory {
     is_group: bool,
     has_newer: bool,
     has_older: bool,
+    anchor_tick: Rc<RefCell<Option<gtk::TickCallbackId>>>,
+
     quote_anchors: Rc<RefCell<HashMap<String, glib::WeakRef<gtk::Widget>>>>,
     identity_lid_to_pn: HashMap<String, String>,
     oldest_loaded_timestamp: Option<Timestamp>,
@@ -491,6 +495,8 @@ impl ChatHistory {
             is_group: false,
             has_newer: false,
             has_older: false,
+            anchor_tick: Rc::new(RefCell::new(None)),
+
             quote_anchors: anchors,
             identity_lid_to_pn: HashMap::new(),
             oldest_loaded_timestamp: None,
@@ -587,109 +593,122 @@ impl ChatHistory {
     /// Reveals the row with the platform reveal scroll and glides the
     /// viewport over the segment it traveled, with no intermediate
     /// frame painted at the landing.
-    pub(crate) fn scroll_to_row(&self, index: u32) {
-        let Some(scroll) = self
-            .view
-            .ancestor(gtk::ScrolledWindow::static_type())
-            .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+    /// The row's widget fully inside the viewport, measured live.
+    pub(crate) fn row_fully_visible(&self, index: u32) -> bool {
+        let Some(ChatRow::Message { message, .. }) = self.timeline.row(index) else {
+            return false;
+        };
+        let Some(bounds) = self
+            .quote_anchors
+            .borrow()
+            .get(&message.server_id)
+            .and_then(glib::WeakRef::upgrade)
+            .and_then(|widget| widget.compute_bounds(&self.view))
         else {
-            self.view
-                .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
-            return;
+            return false;
         };
 
-        // The instant reveal computes the landing spot; the animation
-        // just replays the segment from where the reader was. the
-        // settled adjustment value is the target.
-        let adj = scroll.vadjustment();
-        let start = adj.value();
+        let page = self.view.vadjustment().map_or(0.0, |adj| adj.page_size());
+        page > 0.0
+            && f64::from(bounds.y()) >= -1.0
+            && f64::from(bounds.y() + bounds.height()) <= page + 1.0
+    }
+
+    /// Reveal a message row: the platform reveal seeds the rough
+    /// area, then a frame-clock loop re-centres the row from its
+    /// CURRENT widget bounds until it sits still — estimates never
+    /// get a vote on where the row actually is.
+    pub(crate) fn scroll_to_row(&self, index: u32) {
         self.view
             .scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
 
-        // Resetting to the start and gliding must happen while the
-        // layout holds the reveal, before it paints; doing it on a
-        // timer lets the landing frame flash first.
-        let glide = move |adj: gtk::Adjustment| {
-            let target = adj.value().clamp(
-                adj.lower(),
-                (adj.upper() - adj.page_size()).max(adj.lower()),
-            );
-
-            let travel = (target - start).abs();
-            if travel < 1.0 {
-                return;
-            }
-
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let corridor = travel.min(0.3 * adj.page_size());
-            let approach = if start < target {
-                target - corridor
-            } else {
-                target + corridor
-            };
-            let approach = approach.clamp(
-                adj.lower(),
-                (adj.upper() - adj.page_size()).max(adj.lower()),
-            );
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let duration = 120u64 + (corridor as u64).saturating_mul(8) / 100;
-
-            adj.set_value(approach);
-            let value_target = adw::CallbackAnimationTarget::new(move |value| {
-                adj.set_value(value);
-            });
-
-            let animation = adw::TimedAnimation::new(
-                &scroll,
-                approach,
-                target,
-                u32::try_from(duration).unwrap_or(200),
-                value_target,
-            );
-            animation.set_easing(adw::Easing::EaseOutCubic);
-            animation.play();
-        };
-
-        if (adj.value() - start).abs() > 0.5 {
-            // The reveal applied synchronously; animate from here
-            // before the frame paints.
-            glide(adj);
+        let Some(ChatRow::Message { message, .. }) = self.timeline.row(index) else {
             return;
+        };
+        let stanza = message.server_id;
+
+        self.auto_scroll.borrow_mut().begin_jump();
+        self.cancel_anchor_tick();
+
+        let scrolled = self.scrolled_window();
+        if let Some(scrolled) = &scrolled {
+            scrolled.set_kinetic_scrolling(false);
         }
 
-        // The reveal lands with the layout pass: catch its adjustment
-        // change mid-layout, reset to the start before the paint, and
-        // glide from there. The trigger is one-shot and expires, so a
-        // reveal that never moves the viewport leaves nothing armed
-        // against the reader's next manual scroll.
-        let armed = Rc::new(Cell::new(true));
-        let trigger = Rc::new(Cell::new(None::<glib::SignalHandlerId>));
-        let armed_trigger = armed.clone();
+        let frames = Cell::new(0u32);
+        let stable = Cell::new(0u32);
+        let anchors = self.quote_anchors.clone();
+        let anchor_tick = self.anchor_tick.clone();
+        let auto_scroll = self.auto_scroll.clone();
+        let first_frame = Cell::new(0i64);
 
-        let id_ref = trigger.clone();
-        let trigger_adj = adj.clone();
-        let conn = adj.connect_value_changed(move |adj| {
-            if !armed_trigger.replace(false) {
-                return;
+        let id = self.view.add_tick_callback(move |view, clock| {
+            frames.set(frames.get() + 1);
+
+            let now = clock.frame_time();
+            if first_frame.get() == 0 {
+                first_frame.set(now);
+            }
+            let deadline = now - first_frame.get() > 700_000;
+
+            let done = |_verdict: &str| {
+                anchor_tick.borrow_mut().take();
+
+                if let Some(scrolled) = &scrolled {
+                    scrolled.set_kinetic_scrolling(true);
+                }
+                if let Some(adj) = view.vadjustment() {
+                    auto_scroll.borrow_mut().land(&adj);
+                }
+
+                glib::ControlFlow::Break
+            };
+
+            let Some(adj) = view.vadjustment() else {
+                return done("no-adj");
+            };
+            let bounds = anchors
+                .borrow()
+                .get(&stanza)
+                .and_then(glib::WeakRef::upgrade)
+                .and_then(|widget| widget.compute_bounds(view));
+            let Some(bounds) = bounds else {
+                if deadline {
+                    return done("lost");
+                }
+
+                return glib::ControlFlow::Continue;
+            };
+
+            let page = adj.page_size();
+            let center_offset = (page - f64::from(bounds.height())) / 2.0;
+            let delta = f64::from(bounds.y()) - center_offset;
+
+            // Animate: glide a third of the distance each frame,
+            // recomputed from live bounds, so the landing keeps its
+            // precision even while estimates shift underneath.
+            if delta.abs() > 1.0 {
+                let target = (adj.value() + delta * 0.33)
+                    .clamp(adj.lower(), (adj.upper() - page).max(adj.lower()));
+                adj.set_value(target);
             }
 
-            if let Some(id) = id_ref.take() {
-                adj.disconnect(id);
+            if delta.abs() <= 1.5 {
+                stable.set(stable.get() + 1);
+            } else {
+                stable.set(0);
             }
 
-            glide(trigger_adj.clone());
+            if stable.get() >= 2 {
+                return done("stable");
+            } else if deadline {
+                return done("deadline");
+            }
+
+            glib::ControlFlow::Continue
         });
-        trigger.set(Some(conn));
 
-        let expiry_adj = adj;
-        let expiry_id = trigger;
-        glib::timeout_add_local_once(Duration::from_millis(150), move || {
-            if armed.replace(false)
-                && let Some(id) = expiry_id.take()
-            {
-                expiry_adj.disconnect(id);
-            }
-        });
+        self.anchor_tick.borrow_mut().replace(id);
     }
 
     /// Live-updates the sender name of rows whose sender matches any
@@ -945,10 +964,36 @@ impl ChatHistory {
         )]);
     }
 
+    /// The scrolled window above the list view.
+    fn scrolled_window(&self) -> Option<gtk::ScrolledWindow> {
+        self.view
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+    }
+
+    /// Cancel the owned settle loop; its kinetic guard dies with it
+    /// and the jump latch lands, since a cancelled glide's done can
+    /// never land it itself.
+    fn cancel_anchor_tick(&self) {
+        if let Some(id) = self.anchor_tick.borrow_mut().take() {
+            id.remove();
+        }
+        if let Some(adj) = self.view.vadjustment() {
+            self.auto_scroll.borrow_mut().land(&adj);
+        }
+        if let Some(scrolled) = self.scrolled_window() {
+            scrolled.set_kinetic_scrolling(true);
+        }
+    }
+
     /// Prepend a batch of older messages to the top, newest first.
-    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage]) {
+    pub(crate) fn prepend_messages(&mut self, messages: &[ChatMessage], preserve_top: bool) {
         if messages.is_empty() {
             return;
+        }
+
+        if !preserve_top {
+            self.cancel_anchor_tick();
         }
 
         // Update the oldest loaded timestamp cursor.
@@ -1410,6 +1455,23 @@ impl ChatHistory {
                 }
             }
         });
+
+        // User intent reads from the gesture itself, never inferred
+        // from adjustment deltas: estimate churn keeps the shape
+        // changing mid-scroll, and inference misclassifies input as
+        // layout echo, latching the reader at the bottom forever.
+        if let Some(scrolled) = self.scrolled_window() {
+            let adj = adj.clone();
+            let gesture =
+                gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            let auto_scroll = self.auto_scroll.clone();
+
+            gesture.connect_scroll(move |_, _, _| {
+                auto_scroll.borrow_mut().user_moved(&adj);
+                glib::Propagation::Proceed
+            });
+            scrolled.add_controller(gesture);
+        }
     }
 
     /// Ease-out glide to the bottom; snaps to the live target on done
@@ -1802,7 +1864,7 @@ mod timeline_tests {
         history.scroll_to_bottom(|| {});
         pump(100);
 
-        history.prepend_messages(tail);
+        history.prepend_messages(tail, true);
         assert_eq!(history.len(), 40);
         pump(900);
 
@@ -1817,7 +1879,7 @@ mod timeline_tests {
         history.fill(prefix);
         assert_eq!(history.len(), 20);
         history.scroll_to_bottom(|| {});
-        history.prepend_messages(tail);
+        history.prepend_messages(tail, true);
         assert_eq!(history.len(), 40);
         history.scroll_to_bottom(|| {});
         history.fill(&page(40, true, 14_400));
@@ -1839,7 +1901,7 @@ mod timeline_tests {
         history.scroll_to_bottom(|| {});
         pump(100);
 
-        history.prepend_messages(tail_e);
+        history.prepend_messages(tail_e, true);
         assert_eq!(history.len(), 40);
         history.scroll_to_bottom(|| {});
 

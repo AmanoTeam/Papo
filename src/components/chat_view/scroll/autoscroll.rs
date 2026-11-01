@@ -37,12 +37,8 @@ impl AutoScroll {
 
     /// The user took the adjustment out of machine hands.
     pub(crate) fn user_moved(&mut self, adj: &gtk::Adjustment) {
-        if touching_bottom(adj) {
-            self.jump_in_flight = false;
-            self.reader_at_bottom = true;
-        } else {
-            self.reader_at_bottom = false;
-        }
+        self.jump_in_flight = false;
+        self.reader_at_bottom = touching_bottom(adj);
     }
 
     /// Whether content growth may move the viewport at all right now.

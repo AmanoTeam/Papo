@@ -743,28 +743,28 @@ impl AsyncComponent for ChatView {
             let upper = adj.upper();
             let moving_up = value < prev_value.replace(value);
 
-            let near_top = value < page * 2.0 && upper > page;
+            let near_top = value < page && upper > page;
             let at_bottom = value + page >= upper - 25.0;
 
-            if near_top && moving_up {
-                was_at_top.set(true);
+            let was_near = was_at_top.replace(near_top);
+
+            if near_top && !was_near && moving_up {
                 was_at_bottom.set(false);
 
                 command_sender.emit(ChatViewCommand::ScrollPositionChanged {
                     at_top: true,
                     at_bottom: false,
                 });
-            } else {
-                let left_top = was_at_top.replace(false);
-                let bottom_toggled = at_bottom != was_at_bottom.get();
+            }
 
-                if left_top || bottom_toggled {
-                    was_at_bottom.set(at_bottom);
-                    command_sender.emit(ChatViewCommand::ScrollPositionChanged {
-                        at_top: false,
-                        at_bottom,
-                    });
-                }
+            let bottom_toggled = at_bottom != was_at_bottom.get();
+
+            if (was_near && !near_top) || bottom_toggled {
+                was_at_bottom.set(at_bottom);
+                command_sender.emit(ChatViewCommand::ScrollPositionChanged {
+                    at_top: false,
+                    at_bottom,
+                });
             }
         });
 
@@ -1074,7 +1074,10 @@ impl AsyncComponent for ChatView {
                     return;
                 };
 
-                self.history.scroll_to_row(index);
+                // A row already in view asks for the glow alone.
+                if !self.history.row_fully_visible(index) {
+                    self.history.scroll_to_row(index);
+                }
 
                 // The glow reads as arriving with the row, never
                 // as the tail end of a timer that started before
@@ -1096,14 +1099,10 @@ impl AsyncComponent for ChatView {
                     return;
                 };
                 let Some(before_ts) = self.history.oldest_timestamp() else {
-                    tracing::debug!("quote-probe: no loaded window to page below for {stanza_id}");
                     return;
                 };
 
                 if tries >= QUOTE_JUMP_MAX_TRIES {
-                    tracing::debug!(
-                        "quote-probe: gave up paging to {stanza_id} after {tries} rounds"
-                    );
                     return;
                 }
 
@@ -1447,7 +1446,7 @@ impl AsyncComponent for ChatView {
 
                 // The identity map was installed by the initial fill;
                 // streaming chunks ride on it.
-                self.history.prepend_messages(&messages);
+                self.history.prepend_messages(&messages, true);
             }
             ChatViewCommand::OlderMessagesLoaded {
                 generation,
@@ -1461,7 +1460,7 @@ impl AsyncComponent for ChatView {
                 self.history.set_identities(identities);
                 self.history
                     .set_has_older(messages.len() == LOAD_MORE_COUNT);
-                self.history.prepend_messages(&messages);
+                self.history.prepend_messages(&messages, true);
                 self.state.is_loading = false;
             }
             ChatViewCommand::NewerMessagesLoaded {
@@ -1522,13 +1521,12 @@ impl AsyncComponent for ChatView {
                 // Local history has nothing older: the quoted row lives
                 // before the phone answered anything papo stored.
                 if older.is_empty() {
-                    tracing::debug!("quote-probe: {stanza_id} lies beyond local history");
                     return;
                 }
 
                 self.history
                     .set_has_older(older.len() == QUOTE_JUMP_PAGE_COUNT);
-                self.history.prepend_messages(&older);
+                self.history.prepend_messages(&older, false);
 
                 sender.input(ChatViewInput::PumpQuoteJump {
                     stanza_id,
@@ -1555,7 +1553,7 @@ impl AsyncComponent for ChatView {
 
                 if !older.is_empty() {
                     self.history.set_has_older(older.len() == LOAD_MORE_COUNT);
-                    self.history.prepend_messages(&older);
+                    self.history.prepend_messages(&older, true);
                 }
 
                 if !newer.is_empty() {
